@@ -50,6 +50,7 @@ from src.gladia_stt import (
     gladia_transcript_payload_to_text,
     transcribe_with_gladia_pre_recorded,
 )
+from src.openrouter_region import normalize_openrouter_region, openrouter_stt_url
 from src.runtime.audio_spool import (
     append_pcm_frame,
     close_pcm_spool,
@@ -62,7 +63,6 @@ from src.runtime.cancellation import await_with_delayed_cancellation, to_thread_
 from src.runtime.env_values import env_float
 from src.runtime.http_response import read_response_text_limited
 
-OPENROUTER_STT_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
 _OPENROUTER_STT_MAX_ATTEMPTS = 3
 _OPENROUTER_STT_RETRY_WINDOW_SECONDS = 5.0
 OPENROUTER_MAI_TRANSCRIBE_MODEL = Config.DEFAULT_OPENROUTER_STT_MODEL
@@ -838,6 +838,7 @@ async def transcribe_with_openrouter_audio_transcription(
     language: Language | str | None,
     on_progress: Callable[[str], None] | None = None,
     timeout_secs: float = 900.0,
+    region: str | None = None,
 ) -> dict[str, Any]:
     """Transcribe verified audio through OpenRouter's dedicated STT endpoint."""
 
@@ -846,6 +847,8 @@ async def transcribe_with_openrouter_audio_transcription(
         raise ValueError("OpenRouter STT has no verified exact model contract.")
     audio_format = openrouter_audio_format(filename, content_type)
     language_code = provider_language_code(language)
+    selected_region = normalize_openrouter_region(Config.OPENROUTER_REGION if region is None else region)
+    url = openrouter_stt_url(selected_region)
 
     source_position = None
     if not isinstance(audio_source, bytes):
@@ -889,7 +892,8 @@ async def transcribe_with_openrouter_audio_transcription(
                 _report_progress(on_progress, "Uploading audio...")
                 _report_progress(on_progress, "Processing transcription...")
                 async with session.post(
-                    OPENROUTER_STT_URL,
+                    url,
+                    allow_redirects=False,
                     data=body,
                     headers={
                         "Authorization": f"Bearer {api_key}",
@@ -900,7 +904,7 @@ async def transcribe_with_openrouter_audio_transcription(
                     timeout=aiohttp.ClientTimeout(total=max(0.001, deadline - loop.time())),
                 ) as response:
                     raw = await read_response_text_limited(response, 64 * 1024 * 1024)
-                    if response.status < 400:
+                    if response.status < 300:
                         if not raw:
                             return {}
                         parsed = parse_provider_json_response("openrouter_stt", "transcription_response", raw)
@@ -911,6 +915,7 @@ async def transcribe_with_openrouter_audio_transcription(
                         status=response.status,
                         response_body=raw,
                         request_bytes=request_bytes,
+                        region=selected_region,
                     )
                     if (
                         response.status != 429
@@ -1443,11 +1448,13 @@ class OpenRouterSTTProcessor(_BufferedAsyncProcessor):
         language: Language | str | None,
         session: aiohttp.ClientSession | None = None,
         on_progress: Callable[[str], None] | None = None,
+        region: str | None = None,
     ) -> None:
         super().__init__(session=session, on_progress=on_progress, diarize=False)
         self._api_key = api_key
         self._model = model
         self._language = language
+        self._region = normalize_openrouter_region(Config.OPENROUTER_REGION if region is None else region)
 
     async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
         async with prepare_provider_wav_stream(wav_source, provider="openrouter_stt", model=self._model) as (
@@ -1464,6 +1471,7 @@ class OpenRouterSTTProcessor(_BufferedAsyncProcessor):
                     filename=f"audio{prepared.path.suffix}",
                     content_type=prepared.content_type,
                     model=self._model,
+                    region=self._region,
                     language=self._language,
                     on_progress=self._on_progress,
                 )

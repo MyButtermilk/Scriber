@@ -33,6 +33,7 @@ from src.data.transcript_artifact_store import (
     RouteSnapshotDraft,
     StageUnit,
 )
+from src.openrouter_region import normalize_openrouter_region, openrouter_stt_url
 from src.provider_transcript import azure_mai_used_text_fallback, has_speaker_evidence, normalize_provider_segments
 from src.youtube_download import YouTubeCaptionCue
 
@@ -349,6 +350,17 @@ def freeze_provider_route(
         resolved_endpoint_sha256,
     ):
         raise UnsupportedProviderAudioRoute("Provider endpoint fingerprint is invalid.")
+
+    if key == "openrouter_stt":
+        # Meeting finalization also freezes routes directly through this
+        # boundary. Bind both tracks and recovered snapshots to the same origin.
+        resolved_region = normalize_openrouter_region(
+            Config.OPENROUTER_REGION if provider_region is None else provider_region
+        )
+        endpoint_sha256 = hashlib.sha256(openrouter_stt_url(resolved_region).encode("utf-8")).hexdigest()
+        if resolved_endpoint_sha256 and resolved_endpoint_sha256 != endpoint_sha256:
+            raise UnsupportedProviderAudioRoute("OpenRouter endpoint no longer matches the frozen region.")
+        resolved_endpoint_sha256 = endpoint_sha256
 
     # OpenRouter's Microsoft MAI transcription contract does not expose a
     # prompt or phrase-list field. Keep the frozen execution evidence aligned

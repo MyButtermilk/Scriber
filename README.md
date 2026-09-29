@@ -251,6 +251,8 @@ specifies December 31, 2026 as the end of the introductory price.
 OpenRouter currently charges **5.5% (minimum $0.80) on standard credit
 purchases** or **5% on cryptocurrency purchases**; this is an account-funding
 fee, not a markup on the model's inference price.
+Regional routing requires Business or Enterprise; Business credit purchases
+carry an 8% fee instead of the Standard-plan fee.
 [See the OpenRouter model page.](https://openrouter.ai/microsoft/mai-transcribe-2)
 [See the OpenRouter fee details.](https://openrouter.ai/docs/faq)
 
@@ -306,6 +308,41 @@ streaming, without optional add-ons. Settings uses **4.43% word error rate** as
 the comparison benchmark and sorts models by their displayed error rate.
 [See Modulate's official API pricing.](https://www.modulate.ai/api-pricing)
 [Transcription quick start.](https://docs.modulate.ai/quickstart)
+
+### OpenRouter EU, US, and global routing
+
+Open the OpenRouter API-key popup in Settings to select the data processing
+region. **EU is the default**, including existing installations without an
+explicit region setting. `SCRIBER_OPENROUTER_REGION` persists `eu`, `us`, or
+`global` independently of the API key. Invalid values are rejected. Keys and
+model IDs do not change, and the Soniox region remains separate.
+
+All OpenRouter STT, summaries, Meeting analysis, cloud post-processing, and
+OpenRouter fallback requests use the selected region. Other providers retain
+their own routing. Regional routing requires OpenRouter Business or Enterprise.
+Regional HTTP 404 errors explain that no endpoint is available and ask the user
+to select a compatible model or explicitly change the region. Scriber never
+retries through the global route and does not follow HTTP redirects. [1]
+
+Requests pin their region across retries; buffered Live Mic pins it at processor
+creation, and File/YouTube/Meeting STT persists it with the endpoint fingerprint.
+Already frozen jobs keep their explicit region. Old region-less jobs with a
+global endpoint fingerprint fail the existing consistency check under the EU
+default: explicitly select Global to resume that contract, or submit a new job
+under the desired region. No existing job is silently rerouted.
+
+Model availability is live, not a hard-coded allowlist. Check `/api/v1/models`
+on the selected regional domain; dedicated STT requires the
+`output_modalities=transcription` query parameter. A chat-catalog omission alone
+does not establish STT unavailability. [2] A configured model, including
+Microsoft MAI transcription, may lack a regional endpoint even when available
+globally. Scriber keeps the selected model and reports its regional failure;
+it does not substitute an unverified transcription model.
+
+Sources for regional routing:
+
+1. [https://openrouter.ai/docs/guides/features/in-region-routing](https://openrouter.ai/docs/guides/features/in-region-routing)
+2. [https://openrouter.ai/blog/tutorials/transcription-on-openrouter/](https://openrouter.ai/blog/tutorials/transcription-on-openrouter/)
 
 ### Soniox US and EU regions
 

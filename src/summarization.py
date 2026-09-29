@@ -31,6 +31,7 @@ from src.core.provider_errors import (
     provider_public_code,
     provider_transport_error,
 )
+from src.openrouter_region import normalize_openrouter_region, openrouter_api_base_url
 from src.runtime.http_response import read_response_text_limited
 from src.runtime.provider_http import ProviderHttpTransport
 from src.summary_html import normalize_summary_document_html
@@ -884,6 +885,12 @@ async def _try_openrouter_summary_fallback(
         # Preserve the bounded public classification for Meeting recovery.
         # Provider/model diagnostics were already written by the transport.
         raise
+    except ProviderTransportError as exc:
+        if exc.code == "region_unavailable":
+            raise
+        if _is_incomplete_summary_error(primary_error):
+            raise primary_error from None
+        raise RuntimeError(f"{primary_model} summarization failed and the OpenRouter fallback also failed.") from None
     except TimeoutError as exc:
         if _is_incomplete_summary_error(primary_error):
             raise primary_error from None
@@ -1619,6 +1626,7 @@ async def _post_chat_completion_json(
     payload: dict[str, Any],
     headers: dict[str, str],
     session: aiohttp.ClientSession,
+    region: str = "",
 ) -> dict[str, Any]:
     """Read one bounded chat response, retrying a truncated HTTP payload once."""
 
@@ -1631,14 +1639,16 @@ async def _post_chat_completion_json(
     retryable_errors = (aiohttp.ClientPayloadError, aiohttp.ClientConnectionError)
     for attempt in range(retries + 1):
         try:
-            async with session.post(url, json=payload, headers=headers) as resp:
+            routing_options = {"allow_redirects": False} if provider == "openrouter" else {}
+            async with session.post(url, json=payload, headers=headers, **routing_options) as resp:
                 raw = await read_response_text_limited(resp, 8 * 1024 * 1024)
-                if resp.status >= 400:
+                if resp.status >= 400 or (provider == "openrouter" and resp.status >= 300):
                     raise provider_transport_error(
                         provider,
                         "summarization",
                         status=resp.status,
                         response_body=raw,
+                        region=region,
                     )
                 try:
                     return json.loads(raw)
@@ -1669,13 +1679,17 @@ async def _post_openrouter_chat_completion(
     payload: dict[str, Any],
     headers: dict[str, str],
     session: aiohttp.ClientSession,
+    *,
+    region: str | None = None,
 ) -> dict[str, Any]:
+    selected_region = normalize_openrouter_region(Config.OPENROUTER_REGION if region is None else region)
     return await _post_chat_completion_json(
         provider="openrouter",
-        url="https://openrouter.ai/api/v1/chat/completions",
+        url=f"{openrouter_api_base_url(selected_region)}/chat/completions",
         payload=payload,
         headers=headers,
         session=session,
+        region=selected_region,
     )
 
 
@@ -1754,6 +1768,9 @@ async def _summarize_openrouter(
     api_key = getattr(Config, "OPENROUTER_API_KEY", "") or ""
     if not api_key:
         raise ValueError("OpenRouter API key not configured. Please add it in Settings.")
+    # Pin the origin across every semantic/HTTP retry, including Settings edits
+    # made while an earlier attempt is awaiting its response.
+    region = normalize_openrouter_region(Config.OPENROUTER_REGION)
 
     timeout_seconds = _summary_timeout_seconds()
     timeout = aiohttp.ClientTimeout(
@@ -1820,7 +1837,7 @@ async def _summarize_openrouter(
             attempt_models = attempts[attempt_index]
             attempt_max_tokens = attempt_budgets[attempt_index]
             payload = _build_openrouter_payload(prompt, attempt_models, attempt_max_tokens)
-            data = await _post_openrouter_chat_completion(payload, headers, session)
+            data = await _post_openrouter_chat_completion(payload, headers, session, region=region)
 
             content = _extract_openrouter_response_text(data).strip()
             used_model = _openrouter_used_model(data, attempt_models)

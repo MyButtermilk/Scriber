@@ -49,18 +49,25 @@ export function meetingAnalysisFailurePresentation(
     normalizedCode === "meeting_analysis_incomplete_response" ||
     /max_tokens|finish_reason|max output|partial summary was discarded/.test(normalizedMessage);
   const timedOut = normalizedCode === "meeting_analysis_timeout" || /timed out|time limit/.test(normalizedMessage);
+  const regionUnavailable = normalizedCode === "meeting_analysis_region_unavailable";
 
   return {
     title: t("The meeting brief could not be completed."),
-    reason: incomplete
-      ? t("The AI service did not return a complete response for every part of this meeting.")
-      : timedOut
-        ? t("The AI service took too long to finish the meeting brief.")
-        : t("The AI service could not finish the meeting brief."),
+    reason: regionUnavailable
+      ? t("The selected OpenRouter model is unavailable in your region. Scriber did not switch to Global.")
+      : incomplete
+        ? t("The AI service did not return a complete response for every part of this meeting.")
+        : timedOut
+          ? t("The AI service took too long to finish the meeting brief.")
+          : t("The AI service could not finish the meeting brief."),
     safety: t("Your transcript, recording, speaker names, and notes are saved."),
     retryGuidance: t(
       "Select “Try meeting brief again” below. Scriber reuses completed parts and only creates the meeting brief again.",
     ),
-    settingsGuidance: t("If it fails again, choose another summary model in Meeting settings and try again."),
+    settingsGuidance: regionUnavailable
+      ? t(
+          "Choose a model available in your OpenRouter region, or explicitly change that region in Settings before retrying.",
+        )
+      : t("If it fails again, choose another summary model in Meeting settings and try again."),
   };
 }

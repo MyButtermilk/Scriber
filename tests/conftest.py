@@ -10,6 +10,7 @@ if PROJECT_ROOT not in sys.path:
 os.environ.setdefault("SCRIBER_INJECT_METHOD", "type")
 os.environ.setdefault("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
 os.environ["SCRIBER_MIC_ALWAYS_ON"] = "0"
+os.environ["SCRIBER_OPENROUTER_REGION"] = "eu"
 
 # Never let the automated suite inherit real provider credentials from a
 # developer shell or local .env file. Tests that exercise credential handling

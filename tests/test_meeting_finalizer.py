@@ -102,6 +102,30 @@ def test_direct_meeting_route_freezes_exact_preparation_before_attempt(
     assert recovered["audio_input_format_verified"] is True
 
 
+@pytest.mark.parametrize(
+    "region,host", [("eu", "eu.openrouter.ai"), ("us", "us.openrouter.ai"), ("global", "openrouter.ai")]
+)
+def test_openrouter_meeting_tracks_and_recovery_keep_frozen_region(monkeypatch, tmp_path, region, host):
+    from src.config import Config
+
+    monkeypatch.setattr(Config, "OPENROUTER_REGION", region)
+    finalizer = MeetingFinalizer(
+        SimpleNamespace(),
+        tmp_path,
+        lambda **_kwargs: None,
+        lambda *_args, **_kwargs: None,
+        artifact_store=SimpleNamespace(),
+    )
+    route = finalizer._frozen_meeting_route(
+        {"finalProvider": "openrouter_stt", "language": "de", "captureMetadata": {}}
+    )
+    Config.OPENROUTER_REGION = "us" if region == "eu" else "eu"
+    recovered = finalizer._execution_route_for_snapshot(route.snapshot_draft())
+    assert recovered["provider_region"] == route.execution_route()["provider_region"] == region
+    expected = hashlib.sha256(f"https://{host}/api/v1/audio/transcriptions".encode()).hexdigest()
+    assert recovered["provider_endpoint_sha256"] == route.execution_route()["provider_endpoint_sha256"] == expected
+
+
 def test_voice_reprocess_temp_cleanup_is_bounded_to_runtime_directory(tmp_path):
     audio_root = tmp_path / "meetings"
     stale = audio_root / ".runtime" / "voice-reprocess" / "interrupted"

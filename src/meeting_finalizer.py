@@ -250,6 +250,8 @@ class MeetingFinalizer:
 
         return freeze_provider_route(
             **route_args,
+            provider_region=base_route.provider_region or None,
+            provider_endpoint_sha256=base_route.provider_endpoint_sha256 or None,
             provider_route=base_route.provider_route,
             audio_input_format=selected_format,
             audio_selection_mode=selection_mode,
@@ -504,6 +506,8 @@ class MeetingFinalizer:
             "custom_vocab": vocab,
             "transport": snapshot.transport,
             "provider_route": options.get("providerRoute"),
+            "provider_region": options.get("providerRegion"),
+            "provider_endpoint_sha256": options.get("providerEndpointSha256"),
             "audio_input_format": options.get("audioInputFormat"),
             "provider_audio_capability_id": options.get("providerAudioCapabilityId"),
             "provider_audio_capability_revision": options.get("providerAudioCapabilityRevision"),

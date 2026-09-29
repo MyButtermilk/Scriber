@@ -12,7 +12,6 @@ from pipecat.processors.frame_processor import FrameDirection
 
 from src.cloud_async_stt import (
     OPENROUTER_MAI_TRANSCRIBE_MODEL,
-    OPENROUTER_STT_URL,
     OpenRouterSTTProcessor,
     SpeechmaticsAsyncProcessor,
     _build_openrouter_stt_json_body,
@@ -32,6 +31,7 @@ from src.cloud_async_stt import (
 from src.config import Config
 from src.core.provider_errors import ProviderTransportError
 from src.microphone import RustCaptureWavArtifact
+from src.openrouter_region import openrouter_stt_url
 from src.runtime.audio_spool import create_pcm_spool
 from src.runtime.media_tools import find_media_tool
 
@@ -155,7 +155,7 @@ async def test_openrouter_mai_uses_dedicated_json_stt_contract_without_openai_on
     )
     request = json.loads(session.raw_body)
 
-    assert session.url == OPENROUTER_STT_URL
+    assert session.url == openrouter_stt_url(Config.OPENROUTER_REGION)
     assert session.headers["Authorization"] == "Bearer openrouter-secret"
     assert session.headers["Content-Type"] == "application/json"
     assert request == {
@@ -233,7 +233,7 @@ async def test_openrouter_live_wav_uploads_real_mp3_and_cleans_on_every_exit(mon
             self.calls += 1
             self.body = kwargs["data"]
             request = json.loads(self.body.read())
-            assert url == OPENROUTER_STT_URL
+            assert url == openrouter_stt_url(Config.OPENROUTER_REGION)
             assert request["input_audio"]["format"] == "mp3"
             audio = base64.b64decode(request["input_audio"]["data"], validate=True)
             assert len(audio) < len(original)

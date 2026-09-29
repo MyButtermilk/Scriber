@@ -260,6 +260,7 @@ async def test_openrouter_mai_freezes_exact_model_route_and_endpoint(monkeypatch
     snapshot_options = route.snapshot_draft().request_options
 
     assert route.model == "microsoft/mai-transcribe-2"
+    assert route.provider_region == "eu"
     assert route.provider_route == "audio_transcriptions"
     assert route.response_shape == "final_text"
     assert route.timestamp_mode == "estimated"
@@ -267,16 +268,56 @@ async def test_openrouter_mai_freezes_exact_model_route_and_endpoint(monkeypatch
     assert route.provider_audio_capability_id == ("openrouter_stt:audio_transcriptions:microsoft/mai-transcribe-2")
     assert (
         route.provider_endpoint_sha256
-        == hashlib.sha256(b"https://openrouter.ai/api/v1/audio/transcriptions").hexdigest()
+        == hashlib.sha256(b"https://eu.openrouter.ai/api/v1/audio/transcriptions").hexdigest()
     )
     assert route.custom_vocab == ""
     assert persisted["customVocabularyPresent"] is False
+    assert persisted["providerRegion"] == "eu"
     assert persisted["customVocabularyCount"] == 0
     assert persisted["customVocabularySha256"] is None
     assert snapshot_options["customVocabularyPresent"] is False
     assert snapshot_options["customVocabularyCount"] == 0
     assert "customVocabularySha256" not in snapshot_options
     assert controller._persisted_endpoint_evidence_complete(persisted) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("region", ["eu", "us", "global"])
+@pytest.mark.parametrize("workload", ["file", "youtube", "meeting"])
+async def test_openrouter_frozen_region_survives_settings_changes(monkeypatch, region, workload):
+    monkeypatch.setattr(Config, "OPENROUTER_REGION", region)
+    controller = ScriberWebController(asyncio.get_running_loop())
+    route = controller._freeze_background_provider_route(workload=workload, provider="openrouter_stt", language="de")
+    monkeypatch.setattr(Config, "OPENROUTER_REGION", "us" if region == "eu" else "eu")
+    restored = controller._freeze_background_provider_route(
+        workload=workload,
+        provider="openrouter_stt",
+        language="de",
+        provider_region=route.provider_region,
+        provider_endpoint_sha256=route.provider_endpoint_sha256,
+    )
+    assert restored.provider_region == region
+    assert restored.provider_endpoint_sha256 == route.provider_endpoint_sha256
+    with pytest.raises(TranscriptPersistenceError, match="endpoint no longer matches"):
+        controller._freeze_background_provider_route(
+            workload=workload,
+            provider="openrouter_stt",
+            language="de",
+            provider_endpoint_sha256=route.provider_endpoint_sha256,
+        )
+
+
+@pytest.mark.asyncio
+async def test_legacy_frozen_global_job_cannot_silently_escape_eu_default(monkeypatch):
+    monkeypatch.setattr(Config, "OPENROUTER_REGION", "eu")
+    controller = ScriberWebController(asyncio.get_running_loop())
+    with pytest.raises(TranscriptPersistenceError, match="endpoint no longer matches"):
+        controller._freeze_background_provider_route(
+            workload="file",
+            provider="openrouter_stt",
+            language="de",
+            provider_endpoint_sha256=hashlib.sha256(b"https://openrouter.ai/api/v1/audio/transcriptions").hexdigest(),
+        )
 
 
 @pytest.mark.asyncio

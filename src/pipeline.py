@@ -66,6 +66,7 @@ from src.core.provider_audio_formats import (
 )
 from src.core.provider_capabilities import get_capabilities
 from src.mic_silence_stop import MicSilenceStopObserver
+from src.openrouter_region import openrouter_stt_url
 from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool, pcm_stream_to_wav
 from src.runtime.env_values import env_float
 from src.runtime.http_response import read_response_json_limited, read_response_text_limited
@@ -2278,6 +2279,8 @@ class ScriberPipeline:
         }
         if service in {"soniox", "soniox_async"}:
             configuration["region"] = self._execution_provider_region(Config.SONIOX_REGION)
+        elif service == "openrouter_stt":
+            configuration["region"] = self._execution_provider_region(Config.OPENROUTER_REGION)
         return configuration
 
     def _log_stt_runtime_configuration(self, *, workload: str) -> None:
@@ -3426,7 +3429,6 @@ class ScriberPipeline:
         elif self.service_name == "openrouter_stt":
             from src.cloud_async_stt import (
                 OPENROUTER_MAI_TRANSCRIBE_MODELS,
-                OPENROUTER_STT_URL,
                 OpenRouterSTTProcessor,
             )
 
@@ -3449,11 +3451,13 @@ class ScriberPipeline:
                 AudioInputFormat.MP3,
                 route_kind=ProviderAudioRouteKind.BATCH,
             )
-            self._bind_execution_provider_endpoint(OPENROUTER_STT_URL)
+            region = self._execution_provider_region(Config.OPENROUTER_REGION)
+            self._bind_execution_provider_endpoint(openrouter_stt_url(region))
             logger.info("Using Microsoft MAI Transcribe through OpenRouter")
             return OpenRouterSTTProcessor(
                 api_key=api_key,
                 model=bound_model,
+                region=region,
                 language=self._execution_language(),
                 session=session,
                 on_progress=self.on_progress,
@@ -4682,7 +4686,6 @@ class ScriberPipeline:
 
             if self.service_name == "openrouter_stt":
                 from src.cloud_async_stt import (
-                    OPENROUTER_STT_URL,
                     openai_transcript_payload_to_text,
                     transcribe_with_openrouter_audio_transcription,
                 )
@@ -4690,7 +4693,8 @@ class ScriberPipeline:
                 api_key = Config.get_api_key("openrouter_stt")
                 if not api_key:
                     raise ValueError("OpenRouter API key is missing")
-                self._bind_execution_provider_endpoint(OPENROUTER_STT_URL)
+                region = self._execution_provider_region(Config.OPENROUTER_REGION)
+                self._bind_execution_provider_endpoint(openrouter_stt_url(region))
 
                 async with self._provider_session() as session:
                     with open(path, "rb") as f:
@@ -4701,6 +4705,7 @@ class ScriberPipeline:
                             filename=path.name,
                             content_type=content_type,
                             model=self._execution_model(Config.DEFAULT_OPENROUTER_STT_MODEL),
+                            region=region,
                             language=self._execution_language(),
                             on_progress=self.on_progress,
                             timeout_secs=batch_timeout_seconds,

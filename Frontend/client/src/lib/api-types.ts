@@ -1090,6 +1090,7 @@ export interface SettingsApiKeys {
 }
 
 export type OverlayVisualizerStyle = "bars" | "energy_wave" | "blue_flame";
+export type OpenRouterRegion = "eu" | "us" | "global";
 
 export interface SettingsResponse {
   hotkey?: string;
@@ -1098,6 +1099,7 @@ export interface SettingsResponse {
   defaultSttService?: string;
   sonioxMode?: "realtime" | "async" | string;
   sonioxRegion?: "us" | "eu" | string;
+  openrouterRegion?: OpenRouterRegion;
   sonioxRealtimeModel?: string;
   sonioxAsyncModel?: string;
   transcriptionProviderModels?: Record<string, string>;
@@ -1153,6 +1155,7 @@ export interface SettingsUpdatePayload {
   defaultSttService?: string;
   sonioxMode?: "realtime" | "async";
   sonioxRegion?: "us" | "eu";
+  openrouterRegion?: OpenRouterRegion;
   sonioxAsyncModel?: string;
   language?: string;
   micDevice?: string;

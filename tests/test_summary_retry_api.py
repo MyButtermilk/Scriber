@@ -6,6 +6,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from src import summarization, web_api
+from src.core.provider_errors import provider_transport_error
 from src.data.job_store import JobStore
 from src.web_api import ScriberWebController, TranscriptRecord
 
@@ -97,9 +98,11 @@ async def test_summary_retry_uses_durable_transcript_and_rejects_duplicate_reque
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("region", [None, "eu", "us"])
 async def test_summary_retry_failure_keeps_transcript_completed_and_persists_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
+    region,
 ):
     monkeypatch.delenv("SCRIBER_SESSION_TOKEN", raising=False)
     controller = ScriberWebController(
@@ -108,9 +111,15 @@ async def test_summary_retry_failure_keeps_transcript_completed_and_persists_err
     )
     record = _failed_summary_record()
     controller._add_to_history(record)
+    error = (
+        provider_transport_error("openrouter", "summarization", status=404, region=region)
+        if region
+        else RuntimeError("summary provider timed out")
+    )
+    expected = str(error) if region else "Could not create the summary. Please try again."
 
     async def fail_summary(*_args, **_kwargs) -> str:
-        raise RuntimeError("summary provider timed out")
+        raise error
 
     save_state = AsyncMock()
     broadcast = AsyncMock()
@@ -127,11 +136,11 @@ async def test_summary_retry_failure_keeps_transcript_completed_and_persists_err
         await client.close()
 
     assert response.status == 500
-    assert payload == {"message": "Could not create the summary. Please try again."}
+    assert payload == {"message": expected}
     assert record.status == "completed"
     assert record.content.startswith("This durable transcript")
     assert record.summary_status == "failed"
-    assert record.summary_error == "Could not create the summary. Please try again."
+    assert record.summary_error == expected
     assert "provider timed out" not in payload["message"]
     assert record.summary == "## Previous summary"
     assert record.summary_format == "markdown"

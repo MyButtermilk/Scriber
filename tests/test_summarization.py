@@ -265,7 +265,7 @@ async def test_meta_muse_chat_completion_uses_official_contract(monkeypatch: pyt
     calls: list[tuple[dict[str, object], dict[str, str]]] = []
     monkeypatch.setattr(summarization.Config, "MODEL_API_KEY", "meta-test-key", raising=False)
 
-    async def _fake_post(payload, headers, _session):
+    async def _fake_post(payload, headers, _session, **_routing):
         calls.append((payload, headers))
         return {
             "model": "muse-spark-1.3",
@@ -294,7 +294,7 @@ async def test_meta_muse_chat_completion_uses_official_contract(monkeypatch: pyt
 async def test_meta_muse_discards_output_marked_incomplete(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(summarization.Config, "MODEL_API_KEY", "meta-test-key", raising=False)
 
-    async def _fake_post(_payload, _headers, _session):
+    async def _fake_post(_payload, _headers, _session, **_routing):
         return {
             "model": "muse-spark-1.3-contributor",
             "choices": [
@@ -461,7 +461,7 @@ async def test_live_mic_generation_uses_context_local_low_reasoning(monkeypatch:
     monkeypatch.delenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_EFFORT", raising=False)
     monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
 
-    async def _fake_post(payload, _headers, _session):
+    async def _fake_post(payload, _headers, _session, **_routing):
         calls.append(payload)
         return {
             "model": "minimax/minimax-m3",
@@ -527,7 +527,7 @@ async def test_live_mic_generation_temporarily_bypasses_rejected_primary_per_cre
             retryable=False,
         )
 
-    async def _accepted_fallback(payload, _headers, _session):
+    async def _accepted_fallback(payload, _headers, _session, **_routing):
         fallback_calls.append(payload)
         return {
             "model": "z-ai/glm-5.3-flash",
@@ -615,7 +615,7 @@ async def test_live_mic_generation_does_not_cache_transient_primary_failure(monk
             retryable=True,
         )
 
-    async def _accepted_fallback(_payload, _headers, _session):
+    async def _accepted_fallback(_payload, _headers, _session, **_routing):
         return {
             "model": "minimax/minimax-m3",
             "choices": [
@@ -666,7 +666,7 @@ async def test_live_mic_generation_latches_celeris_status_only_auth_failure(
             retryable=False,
         )
 
-    async def _accepted_fallback(_payload, _headers, _session):
+    async def _accepted_fallback(_payload, _headers, _session, **_routing):
         return {
             "model": "minimax/minimax-m3",
             "choices": [
@@ -722,7 +722,7 @@ async def test_live_mic_generation_does_not_cache_request_specific_400(monkeypat
             retryable=False,
         )
 
-    async def _accepted_fallback(_payload, _headers, _session):
+    async def _accepted_fallback(_payload, _headers, _session, **_routing):
         return {
             "model": "minimax/minimax-m3",
             "choices": [
@@ -778,7 +778,7 @@ async def test_live_mic_generation_temporarily_bypasses_quota_limited_primary(
             retryable=False,
         )
 
-    async def _accepted_fallback(_payload, _headers, _session):
+    async def _accepted_fallback(_payload, _headers, _session, **_routing):
         return {
             "model": "minimax/minimax-m3",
             "choices": [
@@ -844,7 +844,7 @@ async def test_live_mic_generation_disables_transport_payload_replay(monkeypatch
             return False
 
     class _Session:
-        def post(self, _url, *, json, headers):
+        def post(self, _url, *, json, headers, **_routing):
             del json, headers
             post_calls.append(mode)
             return _Response()
@@ -867,7 +867,7 @@ async def test_live_mic_generation_disables_transport_payload_replay(monkeypatch
             }
         )
 
-    async def _post_with_fake_session(payload, headers, _session):
+    async def _post_with_fake_session(payload, headers, _session, **_routing):
         return await summarization._post_chat_completion_json(
             provider="openrouter",
             url="https://openrouter.invalid/v1/chat/completions",
@@ -1125,7 +1125,7 @@ async def test_live_mic_openrouter_borrows_bounded_session_without_closing_it(mo
             providers.append(provider)
             return borrowed
 
-    async def _fake_post(_payload, _headers, session):
+    async def _fake_post(_payload, _headers, session, **_routing):
         observed_sessions.append(session)
         assert isinstance(session, summarization._RequestTimeoutSessionView)
         assert session._session is borrowed
@@ -1162,7 +1162,7 @@ async def test_live_mic_generation_caps_openrouter_attempts(monkeypatch: pytest.
     monkeypatch.delenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_EFFORT", raising=False)
     monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
 
-    async def _fake_post(payload, _headers, _session):
+    async def _fake_post(payload, _headers, _session, **_routing):
         calls.append(payload)
         max_tokens = payload["max_tokens"]
         return {
@@ -1202,7 +1202,7 @@ async def test_live_mic_openrouter_retries_remain_single_model(monkeypatch: pyte
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
 
-    async def _fake_post(payload, _headers, _session):
+    async def _fake_post(payload, _headers, _session, **_routing):
         calls.append(payload)
         if len(calls) == 1:
             max_tokens = payload["max_tokens"]
@@ -1767,7 +1767,7 @@ async def test_summarize_text_retries_next_openrouter_model_after_invalid_html_w
         def error(self, message: str, *args: object) -> None:
             log_records.append((message, args))
 
-    async def _fake_post(payload, _headers, _session):
+    async def _fake_post(payload, _headers, _session, **_routing):
         calls.append(payload)
         if len(calls) == 1:
             return {
@@ -1813,7 +1813,7 @@ async def test_summarize_text_stops_after_all_openrouter_models_return_invalid_h
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
 
-    async def _fake_post(payload, _headers, _session):
+    async def _fake_post(payload, _headers, _session, **_routing):
         calls.append(payload)
         response_model = "minimax/minimax-m3" if len(calls) == 1 else "z-ai/glm-5.3-flash-20260826"
         return {
@@ -1847,7 +1847,7 @@ async def test_generate_text_with_openrouter_preserves_raw_text_contract(
     raw_text = "RAW_TEXT_WITHOUT_SUMMARY_HTML"
     monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
 
-    async def _fake_post(payload, _headers, _session):
+    async def _fake_post(payload, _headers, _session, **_routing):
         calls.append(payload)
         return {
             "model": "minimax/minimax-m3",
@@ -1880,7 +1880,7 @@ async def test_summarize_openrouter_retries_empty_selected_model_with_default_fa
     sessions: list[object] = []
     monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
 
-    async def _fake_post(payload, _headers, session):
+    async def _fake_post(payload, _headers, session, **_routing):
         calls.append(payload)
         sessions.append(session)
         if len(calls) == 1:
@@ -1925,7 +1925,7 @@ async def test_summarize_openrouter_uses_gpt_oss_provider_route_before_default_f
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
 
-    async def _fake_post(payload, _headers, _timeout):
+    async def _fake_post(payload, _headers, _timeout, **_routing):
         calls.append(payload)
         if len(calls) == 1:
             return {
@@ -1967,7 +1967,7 @@ async def test_summarize_openrouter_retries_empty_length_response_with_next_mode
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
 
-    async def _fake_post(payload, _headers, _timeout):
+    async def _fake_post(payload, _headers, _timeout, **_routing):
         calls.append(payload)
         if len(calls) == 1:
             return {
@@ -2017,7 +2017,7 @@ async def test_summarize_openrouter_retries_partial_length_response_instead_of_s
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
 
-    async def _fake_post(payload, _headers, _timeout):
+    async def _fake_post(payload, _headers, _timeout, **_routing):
         calls.append(payload)
         if len(calls) == 1:
             return {
@@ -2066,7 +2066,7 @@ async def test_summarize_openrouter_discards_partial_length_response_at_retry_ca
     monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
     monkeypatch.setenv("SCRIBER_SUMMARY_OPENROUTER_RETRY_MAX_TOKENS", "900")
 
-    async def _fake_post(_payload, _headers, _timeout):
+    async def _fake_post(_payload, _headers, _timeout, **_routing):
         return {
             "model": "z-ai/glm-5.3-flash-20260826",
             "choices": [
@@ -2093,7 +2093,7 @@ async def test_summarize_openrouter_stops_after_larger_partial_retry_without_mod
     monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
     monkeypatch.setenv("SCRIBER_SUMMARY_OPENROUTER_RETRY_MAX_TOKENS", "8192")
 
-    async def _fake_post(payload, _headers, _timeout):
+    async def _fake_post(payload, _headers, _timeout, **_routing):
         calls.append(payload)
         return {
             "model": "minimax/minimax-m3",
@@ -2131,7 +2131,7 @@ async def test_summarize_openrouter_tries_alternate_model_after_larger_partial_r
     monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
     monkeypatch.setenv("SCRIBER_SUMMARY_OPENROUTER_RETRY_MAX_TOKENS", "8192")
 
-    async def _fake_post(payload, _headers, _timeout):
+    async def _fake_post(payload, _headers, _timeout, **_routing):
         calls.append(payload)
         if len(calls) < 3:
             return {
@@ -2182,7 +2182,7 @@ async def test_summarize_openrouter_retries_initial_model_at_full_budget_after_o
     monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
     monkeypatch.setenv("SCRIBER_SUMMARY_OPENROUTER_RETRY_MAX_TOKENS", "8192")
 
-    async def _fake_post(payload, _headers, _timeout):
+    async def _fake_post(payload, _headers, _timeout, **_routing):
         calls.append(payload)
         if len(calls) == 1:
             model = "minimax/minimax-m3"
@@ -2245,7 +2245,7 @@ async def test_meeting_analysis_tries_complete_alternate_without_scriber_token_c
     async def _fake_gemini(_prompt: str, _model: str, _max_output_tokens: int) -> str:
         raise RuntimeError("Gemini API error 503: UNAVAILABLE")
 
-    async def _fake_post(payload, _headers, _timeout):
+    async def _fake_post(payload, _headers, _timeout, **_routing):
         calls.append(payload)
         if len(calls) == 1:
             return {
@@ -2421,7 +2421,7 @@ async def test_summarize_gemini_never_sends_a_scriber_output_token_limit(monkeyp
     monkeypatch.setattr(summarization.Config, "GOOGLE_API_KEY", "test-key")
     monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_THINKING_LEVEL", "high")
 
-    async def _fake_post(_session, _url, payload, *, retries):
+    async def _fake_post(_session, _url, payload, *, retries, **_routing):
         calls.append(payload)
         assert payload["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "HIGH"}
         return {
@@ -2447,7 +2447,7 @@ async def test_summarize_gemini_never_sends_a_scriber_output_token_limit(monkeyp
 async def test_summarize_gemini_discards_partial_at_native_max_tokens(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(summarization.Config, "GOOGLE_API_KEY", "test-key")
 
-    async def _fake_post(_session, _url, payload, *, retries):
+    async def _fake_post(_session, _url, payload, *, retries, **_routing):
         assert "maxOutputTokens" not in payload["generationConfig"]
         return {
             "candidates": [
@@ -2551,7 +2551,7 @@ async def test_summarize_gemini_without_scriber_cap_still_discards_native_trunca
     calls: list[dict[str, object]] = []
     monkeypatch.setattr(summarization.Config, "GOOGLE_API_KEY", "test-key")
 
-    async def _fake_post(_session, _url, payload, *, retries):
+    async def _fake_post(_session, _url, payload, *, retries, **_routing):
         calls.append(payload)
         return {
             "candidates": [

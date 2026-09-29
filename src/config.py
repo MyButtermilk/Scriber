@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from dotenv import dotenv_values, load_dotenv
 
+from src.openrouter_region import DEFAULT_OPENROUTER_REGION, normalize_openrouter_region
 from src.runtime.paths import env_path, migrate_legacy_runtime_data, repo_root, settings_path
 from src.soniox_region import (
     DEFAULT_SONIOX_REGION as SONIOX_DEFAULT_REGION,
@@ -290,6 +291,7 @@ class Config:
     DEFAULT_SONIOX_ASYNC_MODEL = "stt-async-v5"
     DEFAULT_SONIOX_RT_MODEL = "stt-rt-v5"
     DEFAULT_SONIOX_REGION = SONIOX_DEFAULT_REGION
+    DEFAULT_OPENROUTER_REGION = DEFAULT_OPENROUTER_REGION
     _LEGACY_DEFAULT_SONIOX_ASYNC_MODELS: ClassVar[set[str]] = {
         "stt-async-preview",
         "stt-async-v3",
@@ -320,6 +322,7 @@ class Config:
     DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+    OPENROUTER_REGION = normalize_openrouter_region(os.getenv("SCRIBER_OPENROUTER_REGION"))
     MODEL_API_KEY = os.getenv("MODEL_API_KEY")
     CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
     CELERIS_API_KEY = os.getenv("CELERIS_API_KEY")
@@ -810,6 +813,11 @@ ${output}"""
         os.environ["SCRIBER_SONIOX_REGION"] = cls.SONIOX_REGION
 
     @classmethod
+    def set_openrouter_region(cls, region: str) -> None:
+        cls.OPENROUTER_REGION = normalize_openrouter_region(region, strict=True)
+        os.environ["SCRIBER_OPENROUTER_REGION"] = cls.OPENROUTER_REGION
+
+    @classmethod
     def set_debug(cls, enabled: bool) -> None:
         cls.DEBUG = bool(enabled)
         os.environ["SCRIBER_DEBUG"] = "1" if enabled else "0"
@@ -1124,6 +1132,7 @@ ${output}"""
         add("SCRIBER_MODE", cls.MODE)
         add("SCRIBER_SONIOX_MODE", cls.SONIOX_MODE)
         add("SCRIBER_SONIOX_REGION", cls.SONIOX_REGION)
+        add("SCRIBER_OPENROUTER_REGION", cls.OPENROUTER_REGION)
         add("SCRIBER_SONIOX_ASYNC_MODEL", cls.SONIOX_ASYNC_MODEL)
         add("SCRIBER_SONIOX_RT_MODEL", cls.SONIOX_RT_MODEL)
         add("SCRIBER_ASSEMBLYAI_ASYNC_MODEL", cls.ASSEMBLYAI_ASYNC_MODEL)

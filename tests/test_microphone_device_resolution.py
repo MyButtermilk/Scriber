@@ -420,6 +420,30 @@ async def test_soniox_region_settings_are_validated_and_exposed(
 
 
 @pytest.mark.asyncio
+async def test_openrouter_region_settings_validate_before_mutating_other_settings(monkeypatch):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    monkeypatch.setattr(Config, "OPENROUTER_REGION", "eu")
+    monkeypatch.setenv("SCRIBER_OPENROUTER_REGION", "eu")
+    monkeypatch.setattr(ctl, "list_microphones", lambda: [{"deviceId": "default", "label": "Default"}])
+    monkeypatch.setattr(ctl, "_schedule_settings_persist", lambda: None)
+    key, soniox = Config.OPENROUTER_API_KEY, Config.SONIOX_REGION
+    try:
+        for region in ["eu", "us", "global"]:
+            assert (await ctl.update_settings({"openrouterRegion": region}))["openrouterRegion"] == region
+            assert ctl.get_settings()["openrouterRegion"] == region
+        for invalid in ["jp", "", "https://openrouter.ai", None, 42, False]:
+            with pytest.raises(ValueError, match="OpenRouter region"):
+                await ctl.update_settings(
+                    {"openrouterRegion": invalid, "sonioxRegion": "eu", "apiKeys": {"openrouter": "changed"}}
+                )
+            assert Config.OPENROUTER_REGION == "global"
+            assert key == Config.OPENROUTER_API_KEY
+            assert soniox == Config.SONIOX_REGION
+    finally:
+        ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_get_settings_falls_back_to_first_available_when_favorite_missing(
     monkeypatch: pytest.MonkeyPatch,
 ):

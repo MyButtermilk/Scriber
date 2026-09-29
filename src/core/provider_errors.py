@@ -31,6 +31,7 @@ class ProviderTransportError(RuntimeError):
         request_bytes: int | None = None,
         reason: str = "",
         upstream_code: str = "",
+        region: str = "",
     ) -> None:
         self.provider = _bounded_identifier(provider, fallback="provider")
         self.operation = _bounded_identifier(operation, fallback="request")
@@ -39,6 +40,7 @@ class ProviderTransportError(RuntimeError):
         self.retryable = retryable
         self.reason = reason if reason in _PROVIDER_REASON_MESSAGES else ""
         self.upstream_code = upstream_code if _is_safe_code(upstream_code) else ""
+        self.region = region if region in {"eu", "us", "global"} else ""
         self.response_bytes = (
             max(0, int(response_bytes))
             if isinstance(response_bytes, int) and not isinstance(response_bytes, bool)
@@ -56,12 +58,16 @@ class ProviderTransportError(RuntimeError):
         if self.code:
             details.append(f"code={self.code}")
         suffix = f" ({', '.join(details)})" if details else ""
-        super().__init__(f"{self.provider} {self.operation} failed{suffix}")
+        message = f"{self.provider} {self.operation} failed{suffix}"
+        if self.code == "region_unavailable" and self.region in _OPENROUTER_REGION_MESSAGES:
+            message = _OPENROUTER_REGION_MESSAGES[self.region]
+        super().__init__(message)
 
     def diagnostic_metadata(self) -> dict[str, Any]:
         """Bounded protocol details that survive the public log projection."""
         return {
             "provider_operation": self.operation,
+            **({"region": self.region} if self.region else {}),
             **({"status": self.status} if self.status is not None else {}),
             **({"provider_error_code": self.code} if self.code else {}),
             **({"reason": self.reason} if self.reason else {}),
@@ -88,6 +94,7 @@ class ProviderUserError:
 _HTTP_STATUS_RE = re.compile(r"(?<![\d:])([1-5]\d{2})(?!\d)")
 _SAFE_CODE_RE = re.compile(r"^[A-Za-z0-9_.:-]{2,80}$")
 _KNOWN_CODES = (
+    "region_unavailable",
     "model_not_available",
     "model_not_found",
     "invalid_request_error",
@@ -202,6 +209,15 @@ _PROVIDER_REASON_SIGNALS = (
     ("upstream_unavailable", ("service unavailable", "no healthy upstream", "bad gateway")),
 )
 
+_OPENROUTER_REGION_MESSAGES = {
+    region: (
+        f"OpenRouter has no available endpoint for the selected model in the {label} region (HTTP 404). "
+        "Choose a model available in that region or explicitly change the OpenRouter region in Settings. "
+        "Scriber did not switch to the global endpoint."
+    )
+    for region, label in (("eu", "EU"), ("us", "US"))
+}
+
 
 def provider_user_error(provider: str | None, error: Exception | str) -> ProviderUserError:
     dependency_error = error if isinstance(error, ProviderRuntimeDependencyError) else None
@@ -220,6 +236,20 @@ def provider_user_error(provider: str | None, error: Exception | str) -> Provide
         if transport_error is not None and transport_error.code
         else _public_error_code(raw, payload, status=status)
     )
+
+    if normalized_provider in {"openrouter", "openrouter_stt"}:
+        # Live STT crosses Pipecat's string-only ErrorFrame boundary. Match only
+        # our complete canonical message, then reconstruct it without raw text.
+        region_message = next((message for message in _OPENROUTER_REGION_MESSAGES.values() if message in raw), None)
+        if region_message:
+            return _make_error(
+                normalized_provider,
+                label,
+                ErrorCategory.CONFIG_INVALID,
+                region_message,
+                code="region_unavailable",
+                retryable=False,
+            )
 
     if dependency_error:
         return _make_error(
@@ -357,10 +387,14 @@ def provider_transport_error(
     code: str = "",
     retryable: bool | None = None,
     request_bytes: int | None = None,
+    region: str = "",
 ) -> ProviderTransportError:
     """Build a sanitized provider error without retaining response content."""
 
     extracted_code = code if _is_safe_code(code) else _provider_code_from_body(response_body)
+    if provider in {"openrouter", "openrouter_stt"} and region in {"eu", "us"} and status == 404:
+        extracted_code = "region_unavailable"
+        retryable = False
     reason, upstream_code = _provider_response_details(response_body)
     if isinstance(response_body, bytes):
         response_bytes = len(response_body)
@@ -378,6 +412,7 @@ def provider_transport_error(
         request_bytes=request_bytes,
         reason=reason,
         upstream_code=upstream_code,
+        region=region,
     )
 
 

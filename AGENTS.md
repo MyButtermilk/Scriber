@@ -1474,6 +1474,19 @@ Packaging and scripts:
   to MP3 before upload. The shipped control remains post-stop FFmpeg MP3;
   capture-time FFmpeg MP3 is production-safe but default-off after its mixed
   canonical A/B result. Do not restore WAV upload without measured provider need.
+- OpenRouter data residency is independent of Soniox. `SCRIBER_OPENROUTER_REGION`
+  accepts only `eu`, `us`, and `global`, with EU as the default for missing legacy
+  settings. `src/openrouter_region.py` owns the allowlisted origins for STT and
+  all text-generation paths, including Meeting analysis and cloud cleanup
+  fallbacks. Never follow HTTP redirects or silently switch to global after a
+  regional failure. Preserve `region_unavailable` HTTP 404 guidance through
+  Pipecat ErrorFrames, summary retries, Meeting recovery, and post-processing;
+  never retain raw provider messages. Freeze STT region plus endpoint hash and
+  pin the region across request retries. Region-less legacy global hashes fail
+  consistency checks under EU rather than silently changing their route.
+  OpenRouter keys/model IDs remain unchanged; regional routing needs Business
+  or Enterprise. Availability must be checked through the region's models API;
+  dedicated STT needs `output_modalities=transcription`, not the chat catalog.
 - `openrouter_stt` is the separate active OpenRouter route for Microsoft
   MAI-Transcribe-2. Keep its exact model fixed to
   `microsoft/mai-transcribe-2`, reuse the existing `OPENROUTER_API_KEY` used

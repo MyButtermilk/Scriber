@@ -238,6 +238,7 @@ from src.native_overlay import (
     show_transcribing_overlay,
     update_overlay_audio,
 )
+from src.openrouter_region import normalize_openrouter_region, openrouter_stt_url
 from src.outlook_calendar import OutlookCalendarService
 from src.podcasts.processor import PodcastProcessor
 from src.podcasts.service import PodcastService
@@ -1964,6 +1965,8 @@ class ProviderResultReconciliationRequired(RuntimeError):
 def _meeting_analysis_failure_details(exc: Exception) -> tuple[str, str]:
     """Return stable public recovery details without exposing provider internals."""
 
+    if isinstance(exc, ProviderTransportError) and exc.code == "region_unavailable":
+        return "meeting_analysis_region_unavailable", provider_user_error(None, exc).message
     if isinstance(exc, ProviderTransportError) and exc.provider == "gemini" and exc.code == "authentication_error":
         return (
             "meeting_analysis_provider_auth",
@@ -2000,6 +2003,7 @@ _SAFE_PERSISTED_MEETING_ANALYSIS_ERROR_CODES = frozenset(
         "meeting_analysis_timeout",
         "meeting_analysis_failed",
         "meeting_analysis_provider_auth",
+        "meeting_analysis_region_unavailable",
         "process_interrupted_during_analysis",
     }
 )
@@ -5483,7 +5487,10 @@ class ScriberWebController:
         elif provider_key == "groq":
             endpoint_identity = "https://api.groq.com/openai/v1"
         elif provider_key == "openrouter_stt":
-            endpoint_identity = "https://openrouter.ai/api/v1/audio/transcriptions"
+            resolved_region = normalize_openrouter_region(
+                Config.OPENROUTER_REGION if provider_region is None else provider_region
+            )
+            endpoint_identity = openrouter_stt_url(resolved_region)
         elif provider_key in {"meta_stt", "meta_stt_async"}:
             endpoint_identity = "https://api.meta.ai/v1/asr/transcribe"
         resolved_endpoint_sha256 = (
@@ -8524,6 +8531,8 @@ class ScriberWebController:
     @staticmethod
     def _post_processing_error_summary(exc: Exception) -> str:
         if isinstance(exc, ProviderTransportError):
+            if exc.code == "region_unavailable":
+                return provider_user_error(None, exc).message
             return str(exc)[:240]
         return f"{exc.__class__.__name__} during live mic post-processing"
 
@@ -9589,7 +9598,14 @@ class ScriberWebController:
                 raise pending_cancel
         if processing_failure is not None:
             await self.broadcast(
-                status_event("Post-processing failed; inserting raw transcript", False, session_id=session_id)
+                status_event(
+                    processing_failure_summary
+                    if isinstance(processing_failure, ProviderTransportError)
+                    and processing_failure.code == "region_unavailable"
+                    else "Post-processing failed; inserting raw transcript",
+                    False,
+                    session_id=session_id,
+                )
             )
             self._emit_workflow_event(
                 message="Live mic post-processing failed; raw transcript retained",
@@ -17670,6 +17686,7 @@ class ScriberWebController:
             "defaultSttService": Config.DEFAULT_STT_SERVICE,
             "sonioxMode": Config.SONIOX_MODE,
             "sonioxRegion": Config.SONIOX_REGION,
+            "openrouterRegion": Config.OPENROUTER_REGION,
             "sonioxRealtimeModel": Config.SONIOX_RT_MODEL,
             "sonioxAsyncModel": Config.SONIOX_ASYNC_MODEL,
             "transcriptionProviderModels": Config.transcription_provider_models(),
@@ -17764,6 +17781,7 @@ class ScriberWebController:
         validated_service: str | None = None
         validated_soniox_mode: str | None = None
         validated_soniox_region: str | None = None
+        validated_openrouter_region: str | None = None
         validated_summarization_model: str | None = None
         validated_meeting_analysis_model: str | None = None
         validated_meeting_transcription_mode: str | None = None
@@ -17795,6 +17813,10 @@ class ScriberWebController:
             if not isinstance(payload["sonioxRegion"], str):
                 raise ValueError("Soniox region must be text.")
             validated_soniox_region = _validate_soniox_region(payload["sonioxRegion"])
+        if "openrouterRegion" in payload:
+            if not isinstance(payload["openrouterRegion"], str):
+                raise ValueError("OpenRouter region must be text.")
+            validated_openrouter_region = normalize_openrouter_region(payload["openrouterRegion"], strict=True)
         if "summarizationModel" in payload and isinstance(payload["summarizationModel"], str):
             validated_summarization_model = _validate_summarization_model(payload["summarizationModel"])
         if "meetingAnalysisModel" in payload and isinstance(payload["meetingAnalysisModel"], str):
@@ -17945,6 +17967,8 @@ class ScriberWebController:
 
         if validated_soniox_region is not None:
             Config.set_soniox_region(validated_soniox_region)
+        if validated_openrouter_region is not None:
+            Config.set_openrouter_region(validated_openrouter_region)
 
         if "sonioxAsyncModel" in payload and isinstance(payload["sonioxAsyncModel"], str):
             Config.SONIOX_ASYNC_MODEL = payload["sonioxAsyncModel"].strip()
@@ -18269,7 +18293,9 @@ class ScriberWebController:
             return SummaryOutcome(kind="rejected", message=str(exc))
         except Exception as exc:
             info = provider_user_error(None, exc)
-            public_message = "Could not create the summary. Please try again."
+            public_message = (
+                info.message if info.code == "region_unavailable" else "Could not create the summary. Please try again."
+            )
             logger.error(
                 "Summarization failed (error_type={}, code={})",
                 type(exc).__name__,

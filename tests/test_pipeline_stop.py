@@ -1138,11 +1138,13 @@ async def test_openrouter_mai_direct_uses_frozen_model_and_language_without_open
         fake_transcribe,
     )
     monkeypatch.setattr(Config, "OPENROUTER_API_KEY", "one-key")
+    monkeypatch.setattr(Config, "OPENROUTER_REGION", "global")
     pipeline = ScriberPipeline(
         service_name="openrouter_stt",
         execution_route={
             "model": model,
             "language": "de-DE",
+            "provider_region": "eu",
         },
     )
     monkeypatch.setattr(Config, "LANGUAGE", "en-US")
@@ -1152,6 +1154,7 @@ async def test_openrouter_mai_direct_uses_frozen_model_and_language_without_open
     assert captured["api_key"] == "one-key"
     assert captured["model"] == model
     assert captured["language"] == "de-DE"
+    assert captured["region"] == "eu"
     assert "custom_vocab" not in captured
     assert "diarize" not in captured
 
@@ -1559,6 +1562,7 @@ def test_buffered_provider_factories_enable_diarization_for_batch_jobs(monkeypat
 def test_openrouter_mai_factory_and_runtime_configuration_use_pinned_batch_route(monkeypatch, model):
     monkeypatch.setattr(Config, "OPENROUTER_API_KEY", "shared-openrouter-key")
     monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr(Config, "OPENROUTER_REGION", "us")
     session = object()
     pipeline = ScriberPipeline(
         service_name="openrouter_stt",
@@ -1577,6 +1581,8 @@ def test_openrouter_mai_factory_and_runtime_configuration_use_pinned_batch_route
     assert configuration["model"] == (model or "microsoft/mai-transcribe-2")
     assert configuration["mode"] == "batch"
     assert configuration["language"] == "de-DE"
+    assert configuration["region"] == "us"
+    assert service._region == "us"
 
 
 def test_onnx_file_factory_uses_bounded_flushing_service(monkeypatch):

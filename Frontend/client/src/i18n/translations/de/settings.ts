@@ -84,8 +84,7 @@ export const settingsTranslations = {
     "Schätzung für eine Stunde mit getrennten Mikrofon- und Systemaudiospuren. Tatsächliche Kosten können je nach Sprachanteil, Textausgabe, Tarif, Steuern, Wiederholungen und Anbieteränderungen abweichen. Der Einführungspreis für Azure MAI-Transcribe-2 gilt bis zum 31.12.2026.",
   "Microsoft MAI · OpenRouter": "Microsoft MAI · OpenRouter",
   "Microsoft MAI · Azure direct": "Microsoft MAI · Azure direkt",
-  "One key for STT and AI · about 5% credit purchase fee":
-    "Ein Schlüssel für STT und KI · rund 5 % Gebühr beim Guthabenkauf",
+  "One key for STT and AI · EU by default": "Ein Schlüssel für STT und KI · EU als Standard",
   "Azure direct · $0.10/audio hour through December 31, 2026 · no OpenRouter fee":
     "Azure direkt · 0,10 $/Audiostunde bis 31.12.2026 · keine OpenRouter-Gebühr",
   "Gemini 3.5 Transcribe": "Gemini 3.5 Transcribe",
@@ -132,6 +131,24 @@ export const settingsTranslations = {
   "Cerebras API key": "Cerebras-API-Schlüssel",
   "Celeris API key": "Celeris-API-Schlüssel",
   "OpenRouter API key": "OpenRouter-API-Schlüssel",
+  "OpenRouter data processing region": "OpenRouter-Region für die Datenverarbeitung",
+  "European Union (default)": "Europäische Union (Standard)",
+  "United States": "USA",
+  "Global (no region restriction)": "Global (ohne Regionsbeschränkung)",
+  "Applies to OpenRouter transcription, summaries, meeting analysis, and cloud cleanup, including OpenRouter fallbacks. Other providers keep their own settings.":
+    "Gilt für OpenRouter-Transkription, Zusammenfassungen, Meeting-Analyse und Cloud-Nachbearbeitung einschließlich OpenRouter-Fallbacks. Für andere Anbieter gelten deren eigene Einstellungen.",
+  "EU and US routing require OpenRouter Business or Enterprise. Your API key and model IDs stay the same. Models unavailable in the selected region fail with HTTP 404; Scriber never switches to Global automatically.":
+    "EU- und US-Routing erfordern OpenRouter Business oder Enterprise. API-Schlüssel und Modell-IDs bleiben gleich. In der gewählten Region nicht verfügbare Modelle führen zu HTTP 404; Scriber wechselt niemals automatisch zu Global.",
+  "One OpenRouter API key covers Microsoft MAI STT, summaries, meeting analysis, and cloud cleanup. Europe is the default region.":
+    "Ein OpenRouter-API-Schlüssel gilt für Microsoft-MAI-Transkription, Zusammenfassungen, Meeting-Analyse und Cloud-Nachbearbeitung. Europa ist die Standardregion.",
+  "The selected OpenRouter model is unavailable in your region. Scriber did not switch to Global.":
+    "Das gewählte OpenRouter-Modell ist in deiner Region nicht verfügbar. Scriber hat nicht zu Global gewechselt.",
+  "Choose a model available in your OpenRouter region, or explicitly change that region in Settings before retrying.":
+    "Wähle ein in deiner OpenRouter-Region verfügbares Modell oder ändere diese Region ausdrücklich in den Einstellungen, bevor du es erneut versuchst.",
+  "OpenRouter has no available endpoint for the selected model in the EU region (HTTP 404). Choose a model available in that region or explicitly change the OpenRouter region in Settings. Scriber did not switch to the global endpoint.":
+    "OpenRouter hat für das gewählte Modell keinen verfügbaren Endpunkt in der EU (HTTP 404). Wähle ein in dieser Region verfügbares Modell oder ändere die OpenRouter-Region ausdrücklich in den Einstellungen. Scriber hat nicht zum globalen Endpunkt gewechselt.",
+  "OpenRouter has no available endpoint for the selected model in the US region (HTTP 404). Choose a model available in that region or explicitly change the OpenRouter region in Settings. Scriber did not switch to the global endpoint.":
+    "OpenRouter hat für das gewählte Modell keinen verfügbaren Endpunkt in den USA (HTTP 404). Wähle ein in dieser Region verfügbares Modell oder ändere die OpenRouter-Region ausdrücklich in den Einstellungen. Scriber hat nicht zum globalen Endpunkt gewechselt.",
   "Data processing region": "Region der Datenverarbeitung",
   "This selection applies to Soniox realtime and uploaded-audio transcription.":
     "Diese Auswahl gilt für Soniox-Echtzeittranskription und die Transkription hochgeladener Audiodateien.",
@@ -754,8 +771,6 @@ export const settingsTranslations = {
   "Used for OpenAI STT and summarization.": "Wird für OpenAI-STT und Zusammenfassungen verwendet.",
   "One key unlocks Gemini STT, summaries, and cleanup.":
     "Ein Schlüssel aktiviert Gemini-STT, Zusammenfassungen und Bereinigung.",
-  "One OpenRouter API key covers Microsoft MAI STT, summaries, meeting analysis, and cloud cleanup. OpenRouter does not mark up model prices; buying credits currently adds about 5%: 5.5% (minimum $0.80) for standard payments or 5% for crypto.":
-    "Ein OpenRouter-API-Schlüssel deckt Microsoft-MAI-STT, Zusammenfassungen, Meeting-Analysen und Cloud-Bereinigung ab. OpenRouter erhebt keinen Aufschlag auf Modellpreise; beim Guthabenkauf fallen derzeit rund 5 % an: 5,5 % (mindestens 0,80 $) bei normalen Zahlungen oder 5 % bei Krypto.",
   "Used for direct Cerebras summary and cleanup models.":
     "Wird für direkte Cerebras-Modelle zur Zusammenfassung und Bereinigung verwendet.",
   "Short structured summaries with an 8K context window":

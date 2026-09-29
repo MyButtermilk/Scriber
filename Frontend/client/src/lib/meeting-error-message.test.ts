@@ -50,3 +50,15 @@ test("hides legacy provider errors behind generic meeting-analysis guidance", ()
   assert.equal(presentation.reason, "The AI service could not finish the meeting brief.");
   assert.equal(JSON.stringify(presentation).includes("gemini-3.1-pro-preview"), false);
 });
+
+test("regional model errors retain region guidance without exposing provider text", () => {
+  const presentation = meetingAnalysisFailurePresentation(
+    "meeting_analysis_region_unavailable",
+    "PRIVATE-ECHO",
+    translate,
+  );
+  assert.match(presentation.reason, /unavailable in your region/);
+  assert.match(presentation.reason, /did not switch to Global/);
+  assert.match(presentation.settingsGuidance, /explicitly change that region/);
+  assert.equal(JSON.stringify(presentation).includes("PRIVATE-ECHO"), false);
+});

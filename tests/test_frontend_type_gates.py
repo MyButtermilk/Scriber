@@ -1640,7 +1640,7 @@ def test_settings_exposes_microsoft_mai_through_openrouter_with_one_key() -> Non
     ]
     assert_source_contains_tokens(
         provider_options_source,
-        'benchmarkOption("openrouter_stt", t("Microsoft MAI · OpenRouter"), 1.6667, 2.0, "cloud_async", "openrouter", t("One key for STT and AI · about 5% credit purchase fee"))',
+        'benchmarkOption("openrouter_stt", t("Microsoft MAI · OpenRouter"), 1.6667, 2.0, "cloud_async", "openrouter", t("One key for STT and AI · EU by default"))',
     )
     assert_source_contains_tokens(
         provider_options_source,
@@ -1678,14 +1678,10 @@ def test_settings_exposes_microsoft_mai_through_openrouter_with_one_key() -> Non
 
     openrouter_key_note = (
         "One OpenRouter API key covers Microsoft MAI STT, summaries, meeting analysis, and cloud cleanup. "
-        "OpenRouter does not mark up model prices; buying credits currently adds about 5%: 5.5% "
-        "(minimum $0.80) for standard payments or 5% for crypto."
+        "Europe is the default region."
     )
     assert_source_contains_tokens(settings_source, f't("{openrouter_key_note}")')
     assert f'"{openrouter_key_note}":' in translations
-    assert "OpenRouter erhebt keinen Aufschlag auf Modellpreise" in translations
-    assert "5,5 % (mindestens 0,80 $)" in translations
-    assert "5 % bei Krypto" in translations
 
 
 def test_settings_exposes_modulate_final_text_only_realtime_and_batch() -> None:

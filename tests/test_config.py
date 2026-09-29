@@ -819,6 +819,24 @@ def test_persist_to_env_file_includes_soniox_region(monkeypatch, tmp_path):
     assert "SCRIBER_SONIOX_REGION=eu" in target.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("stored", [None, "eu", "us", "global"])
+def test_openrouter_region_survives_restart_and_legacy_defaults_to_eu(tmp_path, stored):
+    if stored is not None:
+        (tmp_path / ".env").write_text(f"SCRIBER_OPENROUTER_REGION={stored}\n", encoding="utf-8")
+    env = os.environ.copy()
+    env.pop("SCRIBER_OPENROUTER_REGION", None)
+    env.update(SCRIBER_DATA_DIR=str(tmp_path), SCRIBER_SKIP_LEGACY_DATA_MIGRATION="1")
+    result = subprocess.run(
+        [sys.executable, "-c", "from src.config import Config; print(Config.OPENROUTER_REGION)"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == (stored or "eu")
+
+
 def test_meeting_transcription_mode_is_validated_and_persisted(monkeypatch, tmp_path):
     target = tmp_path / ".env"
     monkeypatch.setattr(Config, "MEETING_TRANSCRIPTION_MODE", "live_final")

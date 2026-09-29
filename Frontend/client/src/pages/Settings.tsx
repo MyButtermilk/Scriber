@@ -29,6 +29,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
+import { OpenRouterRegionPicker } from "@/components/settings/OpenRouterRegionPicker";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
@@ -86,6 +87,7 @@ import type {
   OnnxModelInfo,
   OnnxModelsResponse,
   OverlayVisualizerStyle,
+  OpenRouterRegion,
   OutlookCalendarStatus,
   OutlookCalendarSyncResponse,
   PostProcessingEngine,
@@ -942,7 +944,7 @@ function createProviderModelOptions(
       2.0,
       "cloud_async",
       "openrouter",
-      t("One key for STT and AI · about 5% credit purchase fee"),
+      t("One key for STT and AI · EU by default"),
     ),
     benchmarkOption(
       "azure_mai",
@@ -1853,6 +1855,7 @@ export default function Settings() {
   const [youtubeKey, setYoutubeKey] = useState("");
   const [sonioxKey, setSonioxKey] = useState("");
   const [sonioxRegion, setSonioxRegion] = useState<"us" | "eu">("us");
+  const [openrouterRegion, setOpenrouterRegion] = useState<OpenRouterRegion>("eu");
   const [modulateKey, setModulateKey] = useState("");
   const [mistralKey, setMistralKey] = useState("");
   const [smallestKey, setSmallestKey] = useState("");
@@ -2844,6 +2847,7 @@ export default function Settings() {
         setSonioxRealtimeModel(settings.sonioxRealtimeModel || "stt-rt-v5");
         setTranscriptionProviderModels(settings.transcriptionProviderModels || {});
         setSonioxRegion(settings.sonioxRegion === "eu" ? "eu" : "us");
+        setOpenrouterRegion(settings.openrouterRegion ?? "eu");
         setMeetingTranscriptionMode(settings.meetingTranscriptionMode === "final_only" ? "final_only" : "live_final");
         setMeetingFinalProvider(settings.meetingFinalProvider || "soniox_async");
         setMeetingAnalysisModel(
@@ -3128,6 +3132,7 @@ export default function Settings() {
       await updateSettings({
         apiKeys,
         ...(provider === "Soniox" ? { sonioxRegion } : {}),
+        ...(provider === "OpenRouter" ? { openrouterRegion } : {}),
       });
 
       const credentialReady = (() => {
@@ -6020,9 +6025,7 @@ export default function Settings() {
                 </div>
                 <SettingLine
                   label={t("Clean up meeting audio")}
-                  description={t(
-                    "Reduces speaker echo, background noise, and reverberation locally on your computer.",
-                  )}
+                  description={t("Reduces speaker echo, background noise, and reverberation locally on your computer.")}
                 >
                   <Switch
                     checked={meetingAecEnabled}
@@ -6813,10 +6816,19 @@ export default function Settings() {
                 saved={savedKeys.OpenRouter === true}
                 onSave={() => handleSaveApiKey("OpenRouter")}
                 note={t(
-                  "One OpenRouter API key covers Microsoft MAI STT, summaries, meeting analysis, and cloud cleanup. OpenRouter does not mark up model prices; buying credits currently adds about 5%: 5.5% (minimum $0.80) for standard payments or 5% for crypto.",
+                  "One OpenRouter API key covers Microsoft MAI STT, summaries, meeting analysis, and cloud cleanup. Europe is the default region.",
                 )}
                 {...credentialDialogProps("OpenRouter")}
-              />
+              >
+                <OpenRouterRegionPicker
+                  value={openrouterRegion}
+                  onValueChange={(region) => {
+                    setOpenrouterRegion(region);
+                    setSavedKeys((prev) => ({ ...prev, OpenRouter: false }));
+                    setCredentialReadyKeys((prev) => ({ ...prev, OpenRouter: false }));
+                  }}
+                />
+              </ApiCredentialRow>
               <ApiCredentialRow
                 provider="Cerebras"
                 icon="cerebras"

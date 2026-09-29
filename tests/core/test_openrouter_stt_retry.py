@@ -85,7 +85,9 @@ async def test_openrouter_retries_confirmed_429_with_identical_audio_over_real_h
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
     monkeypatch.setattr(
-        cloud_async_stt, "OPENROUTER_STT_URL", f"http://127.0.0.1:{runner.addresses[0][1]}/transcriptions"
+        cloud_async_stt,
+        "openrouter_stt_url",
+        lambda _region: f"http://127.0.0.1:{runner.addresses[0][1]}/transcriptions",
     )
     audio = io.BytesIO(b"prefix:retained-audio")
     audio.seek(7)
