@@ -9,6 +9,9 @@ Browser smoke processes write startup output into their temporary profile's
 `browser-process.log`, never an undrained pipe that can stall Chromium startup.
 CDP discovery yields the event loop while probing HTTP. The real File smoke
 prints a bounded log tail and process exit status if CDP startup fails.
+The real File smoke allows 45 seconds for browser startup and one fresh-profile
+startup retry, selecting another installed Chromium browser when available.
+Cancellation is terminal. No upload assertion or completed test is retried.
 
 Tagged releases run the downloaded installer smoke with `-SimulateUpgrade`.
 The overlay fixture restores the retired `backend/app/src/gemini_transcribe.py`

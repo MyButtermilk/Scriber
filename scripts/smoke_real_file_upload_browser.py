@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -29,6 +30,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.measure_history_scroll_baseline import (  # noqa: E402
     CdpClient,
+    browser_candidates,
     connect_to_browser,
     find_free_port,
     resolve_browser_path,
@@ -44,6 +46,33 @@ from scripts.smoke_frontend_browser import (  # noqa: E402
 )
 from src import web_api  # noqa: E402
 from src.data.job_store import JobStore  # noqa: E402
+
+
+async def _start_test_browser(args: argparse.Namespace, profile_root: Path) -> tuple[subprocess.Popen[str], CdpClient]:
+    primary = resolve_browser_path(args.browser)
+    alternatives = [str(Path(path)) for path in browser_candidates() if Path(path).is_file() and path != primary]
+    fallback = primary if args.browser or not alternatives else alternatives[0]
+    for attempt, executable in enumerate((primary, fallback), start=1):
+        profile = profile_root / str(attempt)
+        profile.mkdir()
+        port = find_free_port()
+        browser = start_browser(executable, port, profile, headed=args.headed)
+        try:
+            cdp = await connect_to_browser(port, timeout_sec=args.startup_timeout_sec)
+            return browser, cdp
+        except BaseException as exc:
+            print(f"Browser startup attempt {attempt}: executable={executable}, exit={browser.poll()}", file=sys.stderr)
+            log_path = profile / "browser-process.log"
+            if log_path.is_file():
+                with log_path.open("rb") as log:
+                    log.seek(max(0, log_path.stat().st_size - 8192))
+                    print(log.read().decode("utf-8", errors="replace"), file=sys.stderr)
+            terminate_process_tree(browser)
+            # Retry startup only. Cancellation and every test assertion remain
+            # terminal; the caller begins its assertions after this returns.
+            if attempt == 2 or not isinstance(exc, Exception):
+                raise
+    raise AssertionError("Browser startup attempts exhausted")
 
 
 def _write_fixture(path: Path) -> None:
@@ -126,7 +155,6 @@ new Promise((resolve) => {{
 async def run(args: argparse.Namespace) -> dict[str, Any]:
     backend_port = find_free_port()
     frontend_port = find_free_port()
-    debug_port = find_free_port()
     vite = None
     browser = None
     cdp: CdpClient | None = None
@@ -149,22 +177,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         try:
             vite = start_vite(frontend_port, backend_url)
             wait_http(f"{frontend_url}/", timeout_sec=args.startup_timeout_sec)
-            browser = start_browser(
-                resolve_browser_path(args.browser),
-                debug_port,
-                profile,
-                headed=args.headed,
-            )
-            try:
-                cdp = await connect_to_browser(debug_port)
-            except Exception:
-                print(f"Browser startup failed: exit={browser.poll()}, CDP port={debug_port}", file=sys.stderr)
-                log_path = profile / "browser-process.log"
-                if log_path.is_file():
-                    with log_path.open("rb") as log:
-                        log.seek(max(0, log_path.stat().st_size - 8192))
-                        print(log.read().decode("utf-8", errors="replace"), file=sys.stderr)
-                raise
+            browser, cdp = await _start_test_browser(args, profile)
             await install_page_error_capture(cdp)
             await cdp.call("Page.navigate", {"url": f"{frontend_url}/file"}, timeout=10)
             await wait_for_interaction_state(
@@ -328,7 +341,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--browser", default="")
     parser.add_argument("--headed", action="store_true")
-    parser.add_argument("--startup-timeout-sec", type=float, default=30.0)
+    parser.add_argument("--startup-timeout-sec", type=float, default=45.0)
     parser.add_argument("--page-timeout-sec", type=float, default=30.0)
     parser.add_argument("--output", default="tmp/real-file-browser-smoke.json")
     return parser.parse_args()
