@@ -15,7 +15,9 @@ import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Any, BinaryIO
+from uuid import uuid4
 
 import aiohttp
 from loguru import logger
@@ -203,6 +205,60 @@ def _build_openrouter_stt_json_body(
             raise provider_transport_error(
                 "openrouter_stt", "audio_preparation", code="audio_limit_exceeded", retryable=False
             )
+        body.seek(0)
+        return body
+    except BaseException:
+        body.close()
+        raise
+
+
+def _build_openrouter_stt_mp3_body(
+    audio_source: bytes | BinaryIO,
+    *,
+    model: str,
+    language: str,
+    boundary: str,
+) -> BinaryIO:
+    """Spool a bounded multipart request without decoding/re-encoding MP3.
+
+    Keep an independent body per attempt: aiohttp closes its upload stream,
+    while the caller retains the original for an explicitly rejected 429.
+    """
+    body = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024, mode="w+b")  # noqa: SIM115
+    try:
+        fields = {"model": model, "response_format": "json", "temperature": "0"}
+        if language:
+            fields["language"] = language
+        for name, value in fields.items():
+            body.write(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
+        # Only a fixed synthetic filename reaches the provider.
+        body.write(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.mp3"\r\n'
+            "Content-Type: audio/mpeg\r\n\r\n".encode("ascii")
+        )
+        audio_bytes = 0
+
+        def write_audio(chunk: bytes | memoryview) -> None:
+            nonlocal audio_bytes
+            audio_bytes += len(chunk)
+            if audio_bytes > OPENROUTER_STT_MAX_AUDIO_BYTES:
+                raise provider_transport_error(
+                    "openrouter_stt", "audio_preparation", code="audio_limit_exceeded", retryable=False
+                )
+            body.write(chunk)
+
+        if isinstance(audio_source, bytes):
+            source_view = memoryview(audio_source)
+            for offset in range(0, len(source_view), _OPENROUTER_BASE64_READ_BYTES):
+                write_audio(source_view[offset : offset + _OPENROUTER_BASE64_READ_BYTES])
+        else:
+            while chunk := audio_source.read(_OPENROUTER_BASE64_READ_BYTES):
+                if not isinstance(chunk, bytes):
+                    raise TypeError("OpenRouter STT audio source must yield bytes.")
+                write_audio(chunk)
+        body.write(f"\r\n--{boundary}--\r\n".encode("ascii"))
+        if body.tell() - audio_bytes > 4096:
+            raise ValueError("OpenRouter STT multipart fields exceed the bounded request framing.")
         body.seek(0)
         return body
     except BaseException:
@@ -869,15 +925,26 @@ async def transcribe_with_openrouter_audio_transcription(
             _report_progress(on_progress, "Preparing audio...")
             # aiohttp owns/closes each uploaded body. Rebuild from the retained
             # audio, never reuse the first request's possibly closed file handle.
-            body, pending_cancel = await await_with_delayed_cancellation(
-                asyncio.to_thread(
+            request_content_type = "application/json"
+            if audio_format == "mp3":
+                boundary = uuid4().hex
+                request_content_type = f"multipart/form-data; boundary={boundary}"
+                preparation = asyncio.to_thread(
+                    _build_openrouter_stt_mp3_body,
+                    audio_source,
+                    model=selected_model,
+                    language=language_code,
+                    boundary=boundary,
+                )
+            else:
+                preparation = asyncio.to_thread(
                     _build_openrouter_stt_json_body,
                     audio_source,
                     model=selected_model,
                     audio_format=audio_format,
                     language=language_code,
                 )
-            )
+            body, pending_cancel = await await_with_delayed_cancellation(preparation)
             try:
                 if pending_cancel is not None:
                     raise pending_cancel
@@ -893,7 +960,7 @@ async def transcribe_with_openrouter_audio_transcription(
                     data=body,
                     headers={
                         "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
+                        "Content-Type": request_content_type,
                         "HTTP-Referer": "https://scriber.local",
                         "X-OpenRouter-Title": "Scriber",
                     },
@@ -936,6 +1003,72 @@ async def transcribe_with_openrouter_audio_transcription(
             await asyncio.sleep(delay)
 
     raise AssertionError("OpenRouter STT attempt limit must produce a result or error")
+
+
+async def transcribe_openrouter_file(
+    *,
+    session: aiohttp.ClientSession,
+    api_key: str,
+    path: Path,
+    content_type: str,
+    language: Language | str | None,
+    model: str = OPENROUTER_MAI_TRANSCRIBE_MODEL,
+    on_progress: Callable[[str], None] | None = None,
+    timeout_secs: float = 900.0,
+) -> dict[str, Any]:
+    """Transcribe an entire prepared file, splitting MP3 and merging final text."""
+    from src.openrouter_audio import openrouter_audio_parts
+
+    if openrouter_audio_format(path.name, content_type) != "mp3":
+        # Preserve exact WAV/FLAC requests already frozen in legacy jobs.
+        with path.open("rb") as source:
+            return await transcribe_with_openrouter_audio_transcription(
+                session=session,
+                api_key=api_key,
+                audio_source=source,
+                filename=path.name,
+                content_type=content_type,
+                model=model,
+                language=language,
+                on_progress=on_progress,
+                timeout_secs=timeout_secs,
+            )
+
+    texts: list[str] = []
+    usage: dict[str, float] = {}
+    completed = 0
+    async with asyncio.timeout(timeout_secs), openrouter_audio_parts(path) as parts:
+        async for part in parts:
+
+            def progress(_message: str, *, index: int = part.index, count: int = part.count) -> None:
+                if count > 1:
+                    _report_progress(on_progress, f"Transcribing part {index} of {count}...")
+                else:
+                    _report_progress(on_progress, _message)
+
+            progress("Preparing audio...")
+            with part.path.open("rb") as source:
+                payload = await transcribe_with_openrouter_audio_transcription(
+                    session=session,
+                    api_key=api_key,
+                    audio_source=source,
+                    filename="audio.mp3",
+                    content_type="audio/mpeg",
+                    model=model,
+                    language=language,
+                    on_progress=progress,
+                    timeout_secs=timeout_secs,
+                )
+            completed += 1
+            text = openai_transcript_payload_to_text(payload, prefer_speaker_labels=False)
+            if text:
+                texts.append(text)
+            part_usage = payload.get("usage")
+            if isinstance(part_usage, dict):
+                for key, value in part_usage.items():
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        usage[key] = usage.get(key, 0) + value
+    return {"text": "\n\n".join(texts), "usage": usage, "_scriberChunkCount": completed}
 
 
 def speechmatics_transcript_payload_to_text(
@@ -1451,17 +1584,16 @@ class OpenRouterSTTProcessor(_BufferedAsyncProcessor):
 
     async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
         async with prepare_provider_wav_stream(wav_source, provider="openrouter_stt", model=self._model) as (
-            audio_source,
+            _audio_source,
             prepared,
         ):
             self._audio_preparation_implementation = prepared.implementation
 
             async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
-                return await transcribe_with_openrouter_audio_transcription(
+                return await transcribe_openrouter_file(
                     session=session,
                     api_key=self._api_key,
-                    audio_source=audio_source,
-                    filename=f"audio{prepared.path.suffix}",
+                    path=prepared.path,
                     content_type=prepared.content_type,
                     model=self._model,
                     language=self._language,

@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import io
 import threading
 from datetime import UTC, datetime, timedelta
@@ -69,7 +68,11 @@ async def test_openrouter_retries_confirmed_429_with_identical_audio_over_real_h
     requests = []
 
     async def transcribe(request):
-        requests.append(await request.json())
+        reader = await request.multipart()
+        fields = {}
+        async for part in reader:
+            fields[part.name] = bytes(await part.read()) if part.name == "file" else await part.text()
+        requests.append(fields)
         if len(requests) < 3:
             return web.json_response(
                 {"error": {"code": 429, "message": "Provider returned error"}},
@@ -102,7 +105,7 @@ async def test_openrouter_retries_confirmed_429_with_identical_audio_over_real_h
         assert result == {"text": "Recovered dictation"}
         assert len(requests) == 3
         assert requests[0] == requests[1] == requests[2]
-        assert base64.b64decode(requests[0]["input_audio"]["data"]) == b"retained-audio"
+        assert requests[0]["file"] == b"retained-audio"
         assert not audio.closed
     finally:
         audio.close()
@@ -237,7 +240,7 @@ async def test_openrouter_canceled_preparation_closes_its_body_without_upload(mo
     prepared = asyncio.Event()
     release = threading.Event()
     bodies = []
-    build = cloud_async_stt._build_openrouter_stt_json_body
+    build = cloud_async_stt._build_openrouter_stt_mp3_body
 
     def blocked_build(*args, **kwargs):
         body = build(*args, **kwargs)
@@ -246,7 +249,7 @@ async def test_openrouter_canceled_preparation_closes_its_body_without_upload(mo
         release.wait(timeout=5)
         return body
 
-    monkeypatch.setattr(cloud_async_stt, "_build_openrouter_stt_json_body", blocked_build)
+    monkeypatch.setattr(cloud_async_stt, "_build_openrouter_stt_mp3_body", blocked_build)
     session = ReplySession()
     task = asyncio.create_task(transcribe(session))
     try:

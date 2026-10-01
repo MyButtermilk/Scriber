@@ -99,6 +99,7 @@ export const transcriptionTranslations = {
   "Transcript copied to clipboard.": "Transkript wurde in die Zwischenablage kopiert.",
   "Transcript removed successfully.": "Transkript wurde gelöscht.",
   Transcribing: "Wird transkribiert",
+  "Transcribing part {{part}} of {{total}}...": "Teil {{part}} von {{total}} wird transkribiert …",
   "Transcribing recording": "Aufnahme wird transkribiert",
   "Transcribing recording.": "Aufnahme wird transkribiert.",
   "Transcribing...": "Wird transkribiert …",

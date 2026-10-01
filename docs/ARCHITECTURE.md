@@ -1832,8 +1832,8 @@ OGG/Opus, WebM/Vorbis, and WebM/Opus are different values, and generic OGG or
 WebM documentation is never promoted into an exact codec claim. Exact lookup
 rejects unknown/custom routes and inactive entries. The active `openrouter_stt`
 route selects the exact `microsoft/mai-transcribe-2` model for new work and accepts
-WAV/PCM16, MP3, or FLAC. Its direct adapter posts JSON with base64
-`input_audio` to OpenRouter's `/api/v1/audio/transcriptions` endpoint and reuses
+WAV/PCM16, MP3, or FLAC. Its direct adapter posts MP3 bytes as a multipart
+`file` to OpenRouter's `/api/v1/audio/transcriptions` endpoint and reuses
 the same `OPENROUTER_API_KEY` as existing OpenRouter summarization and
 post-processing. The response boundary retains final text only; this route does
 not claim native timestamps, diarization, or custom-vocabulary support. Direct
@@ -1842,9 +1842,24 @@ and capability path. The OpenRouter route is not marked five-hour-capable
 without exact long-input evidence.
 New OpenRouter file/YouTube and buffered live requests always upload MP3:
 in-budget MP3 originals pass through, while other inputs use mono 64-kbit/s
-MP3 at every duration. WAV/FLAC acceptance is retained for frozen legacy jobs.
-The audio and serialized-request byte budgets remain enforced after preparation;
-they are not duration thresholds.
+MP3 at every duration. The logical source limit is 2 GiB, distinct from the
+documented 25,000,000-byte multipart file limit. `openrouter_audio` preserves
+MP3 originals within the request limit and divides oversized MP3s into
+packet-copied parts targeting 20,000,000 bytes, with a smaller final remainder.
+There is no fixed duration cutoff. Variable-bitrate parts exceeding the request
+limit are resized before HTTP. Each part is verified before upload and cleaned before the next
+part; only one derivative is retained. The file adapter sends parts sequentially
+under one deadline, reports their progress, sums usage, and joins final text in
+source order. It exposes no successful full transcript until every part succeeds.
+The existing no-replay job fence prevents a later-part failure from restarting
+already completed provider work. File ingest bypasses generic WebM recompression
+for OpenRouter MP3s, so large originals reach this splitter without another lossy
+encode. The upload does not base64-expand MP3.
+WAV/FLAC acceptance and base64 JSON transport are retained for frozen legacy
+jobs, with the conservative 25,000,000-byte serialized JSON budget. Audio limits
+remain enforced after preparation and again before HTTP; request spools are
+bounded and cleaned on success, rejection, and cancellation. Only confirmed
+429 rejection may replay the retained source within the existing retry budget.
 Exact MAI 1.5 capabilities remain available for frozen Azure/OpenRouter jobs
 and explicit Azure overrides. Recovery preserves their original capability
 identity and request model, including locally durable provider results.

@@ -119,6 +119,8 @@ test("dynamic interface labels have complete German translations", () => {
   assert.equal(translate("de", "Audio cleanup"), "Audiobereinigung");
   assert.equal(translate("de", "Reduces echo, noise, and reverberation"), "Reduziert Echo, Rauschen und Hall");
   assert.equal(translate("de", "Preparing audio"), "Audio wird vorbereitet");
+  assert.equal(translate("de", "Transcribing part 2 of 11..."), "Teil 2 von 11 wird transkribiert …");
+  assert.equal(translate("en", "Transcribing part 2 of 11..."), "Transcribing part 2 of 11...");
   assert.equal(translate("de", "Preparing audio download..."), "Audiodownload wird vorbereitet …");
   assert.equal(
     translate("de", "Retrying audio download in {{seconds}}s ({{attempt}}/{{total}})", {

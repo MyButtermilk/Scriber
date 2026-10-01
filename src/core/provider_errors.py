@@ -232,15 +232,21 @@ def provider_user_error(provider: str | None, error: Exception | str) -> Provide
         )
 
     if status == 413 or (transport_error is not None and code == "audio_limit_exceeded" and status is None):
-        smaller_input = (
-            "a smaller compressed MP3" if normalized_provider == "openrouter_stt" else "a smaller supported audio file"
-        )
+        if normalized_provider == "openrouter_stt":
+            message = (
+                f"{label} rejected an MP3 upload as too large{(' (HTTP 413)' if status == 413 else '')}. "
+                "Scriber splits long recordings automatically. Please retry or select another transcription provider."
+            )
+        else:
+            message = (
+                f"{label} audio upload is too large{(' (HTTP 413)' if status == 413 else '')}. "
+                "Use a smaller supported audio file, split the recording, or select another transcription provider."
+            )
         return _make_error(
             normalized_provider,
             label,
             ErrorCategory.AUDIO_INVALID,
-            f"{label} audio upload is too large{(' (HTTP 413)' if status == 413 else '')}. Use {smaller_input}, "
-            "split the recording, or select another transcription provider.",
+            message,
             code=code or "413",
             retryable=False,
         )

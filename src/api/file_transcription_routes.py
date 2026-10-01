@@ -449,10 +449,14 @@ async def transcribe_file(request: web.Request) -> web.Response:
                 logger.error("Audio extraction failed (error_type={})", type(exc).__name__)
                 return web.json_response({"message": "Failed to extract audio from video."}, status=500)
         else:
-            transcribe_path = await maybe_compress_audio_upload(
-                save_path,
-                max_bytes=plan.final_audio_max_bytes,
-            )
+            # OpenRouter's file adapter divides MP3 into bounded requests.
+            # Do not turn a larger, already compressed MP3 into WebM here and
+            # force a second lossy MP3 encode before that adapter sees it.
+            if plan.route.provider != "openrouter_stt" or save_path.suffix.lower() != ".mp3":
+                transcribe_path = await maybe_compress_audio_upload(
+                    save_path,
+                    max_bytes=plan.final_audio_max_bytes,
+                )
             compressed_size = transcribe_path.stat().st_size
             if compressed_size > plan.final_audio_max_bytes:
                 return web.json_response(
