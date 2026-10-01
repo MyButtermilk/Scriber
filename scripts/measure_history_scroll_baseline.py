@@ -363,8 +363,8 @@ def read_json_url(url: str) -> Any:
         return json.loads(response.read().decode("utf-8"))
 
 
-async def connect_to_browser(debug_port: int) -> CdpClient:
-    deadline = time.monotonic() + 15
+async def connect_to_browser(debug_port: int, *, timeout_sec: float = 15.0) -> CdpClient:
+    deadline = time.monotonic() + timeout_sec
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
