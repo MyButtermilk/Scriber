@@ -368,7 +368,7 @@ async def connect_to_browser(debug_port: int) -> CdpClient:
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            pages = read_json_url(f"http://127.0.0.1:{debug_port}/json/list")
+            pages = await asyncio.to_thread(read_json_url, f"http://127.0.0.1:{debug_port}/json/list")
             page = next((item for item in pages if item.get("type") == "page"), None)
             if page and page.get("webSocketDebuggerUrl"):
                 cdp = await CdpClient.connect(page["webSocketDebuggerUrl"])
@@ -593,13 +593,16 @@ def start_browser(browser_path: str, debug_port: int, profile_dir: Path, *, head
     if not sys.platform.startswith("win"):
         args.append("--no-sandbox")
     args.append("about:blank")
-    return subprocess.Popen(
-        args,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        creationflags=process_creation_flags(),
-    )
+    # No reader drains a browser PIPE: startup diagnostics can fill its buffer
+    # and block Chromium before CDP becomes available. The profile owns this log.
+    with (profile_dir / "browser-process.log").open("w", encoding="utf-8") as output:
+        return subprocess.Popen(
+            args,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            text=True,
+            creationflags=process_creation_flags(),
+        )
 
 
 async def run_browser_benchmark(args: argparse.Namespace) -> dict[str, Any]:

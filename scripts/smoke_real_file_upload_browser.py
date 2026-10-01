@@ -155,7 +155,16 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 profile,
                 headed=args.headed,
             )
-            cdp = await connect_to_browser(debug_port)
+            try:
+                cdp = await connect_to_browser(debug_port)
+            except Exception:
+                print(f"Browser startup failed: exit={browser.poll()}, CDP port={debug_port}", file=sys.stderr)
+                log_path = profile / "browser-process.log"
+                if log_path.is_file():
+                    with log_path.open("rb") as log:
+                        log.seek(max(0, log_path.stat().st_size - 8192))
+                        print(log.read().decode("utf-8", errors="replace"), file=sys.stderr)
+                raise
             await install_page_error_capture(cdp)
             await cdp.call("Page.navigate", {"url": f"{frontend_url}/file"}, timeout=10)
             await wait_for_interaction_state(
