@@ -4684,7 +4684,7 @@ class ScriberPipeline:
                 from src.cloud_async_stt import (
                     OPENROUTER_STT_URL,
                     openai_transcript_payload_to_text,
-                    transcribe_with_openrouter_audio_transcription,
+                    transcribe_openrouter_file,
                 )
 
                 api_key = Config.get_api_key("openrouter_stt")
@@ -4693,18 +4693,16 @@ class ScriberPipeline:
                 self._bind_execution_provider_endpoint(OPENROUTER_STT_URL)
 
                 async with self._provider_session() as session:
-                    with open(path, "rb") as f:
-                        payload = await transcribe_with_openrouter_audio_transcription(
-                            session=session,
-                            api_key=api_key,
-                            audio_source=f,
-                            filename=path.name,
-                            content_type=content_type,
-                            model=self._execution_model(Config.DEFAULT_OPENROUTER_STT_MODEL),
-                            language=self._execution_language(),
-                            on_progress=self.on_progress,
-                            timeout_secs=batch_timeout_seconds,
-                        )
+                    payload = await transcribe_openrouter_file(
+                        session=session,
+                        api_key=api_key,
+                        path=path,
+                        content_type=content_type,
+                        model=self._execution_model(Config.DEFAULT_OPENROUTER_STT_MODEL),
+                        language=self._execution_language(),
+                        on_progress=self.on_progress,
+                        timeout_secs=batch_timeout_seconds,
+                    )
 
                 text = openai_transcript_payload_to_text(
                     payload,

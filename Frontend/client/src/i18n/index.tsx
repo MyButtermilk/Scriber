@@ -104,6 +104,13 @@ function interpolate(template: string, values?: TranslationValues): string {
 }
 
 export function translate(locale: AppLocale, source: string, values?: TranslationValues): string {
+  const partProgress = /^Transcribing part (\d+) of (\d+)\.\.\.$/.exec(source);
+  if (partProgress) {
+    return translate(locale, "Transcribing part {{part}} of {{total}}...", {
+      part: partProgress[1],
+      total: partProgress[2],
+    });
+  }
   const template =
     locale === "de" && Object.prototype.hasOwnProperty.call(germanTranslations, source)
       ? germanTranslations[source]

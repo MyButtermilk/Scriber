@@ -5,6 +5,11 @@ Last verified: 2026-09-08
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
 
+Browser smoke processes write startup output into their temporary profile's
+`browser-process.log`, never an undrained pipe that can stall Chromium startup.
+CDP discovery yields the event loop while probing HTTP. The real File smoke
+prints a bounded log tail and process exit status if CDP startup fails.
+
 Tagged releases run the downloaded installer smoke with `-SimulateUpgrade`.
 The overlay fixture restores the retired `backend/app/src/gemini_transcribe.py`
 module from the v0.5.98 layout before rerunning the installer. Require its

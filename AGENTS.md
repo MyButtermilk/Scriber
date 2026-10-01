@@ -1478,7 +1478,7 @@ Packaging and scripts:
   MAI-Transcribe-2. Keep its exact model fixed to
   `microsoft/mai-transcribe-2`, reuse the existing `OPENROUTER_API_KEY` used
   by OpenRouter summaries and post-processing, and send MP3 audio
-  to `/api/v1/audio/transcriptions` as JSON with base64 `input_audio`. This route
+  to `/api/v1/audio/transcriptions` as a multipart `file` with `audio/mpeg`. This route
   returns final text only: request normal JSON, do not claim native timestamps
   or diarization, and do not forward `SCRIBER_CUSTOM_VOCAB` or an Azure
   `phraseList`. The direct `azure_mai` route remains a distinct credential,
@@ -1486,17 +1486,26 @@ Packaging and scripts:
   Already frozen `microsoft/mai-transcribe-1.5` work retains its exact legacy
   capability and request model; new work continues to select version 2.
   All new file/YouTube and buffered live uploads use MP3 regardless of duration.
-  Non-MP3 imports and live WAV spools use mono 64-kbit/s MP3 before base64
-  encoding. Keep the route-local Scriber safety
-  budget of 18,000,000 audio bytes and 25,000,000 serialized JSON bytes; these
-  are conservative application budgets, not universal provider limits. Verified
-  MP3 originals within budget pass through unchanged; larger originals select MP3
-  before the route is frozen. A frozen oversized representation fails closed
-  without changing format or replaying a provider request. In-budget frozen
-  WAV/FLAC jobs retain their exact persisted representation. Preparation and the
-  JSON serializer both reject oversize input before HTTP; generated artifacts
+  Non-MP3 imports and live WAV spools use mono 64-kbit/s MP3 before upload.
+  Multipart carries the MP3 bytes unchanged and enforces OpenRouter's documented
+  25,000,000-byte file limit; do not restore the former 18,000,000-byte base64
+  allowance as an audio limit. The logical file route admits up to 2 GiB of
+  prepared audio and preserves MP3 originals even above the per-request limit.
+  `src/openrouter_audio.py` divides oversized MP3s into approximately 20 MB
+  parts, with a smaller final remainder and no fixed duration cutoff. MP3s within
+  the 25 MB request limit remain whole. It copies audio packets
+  into one temporary MP3 at a time, validates each part, and cleans it before
+  moving on. `transcribe_openrouter_file` transcribes sequentially, reports
+  part progress, and joins the final text in order under one overall timeout.
+  Do not apply the generic lossy WebM ingest compression to OpenRouter MP3s.
+  An incomplete sequence must never be published as a successful full transcript
+  or automatically replay completed parts; existing durable job fences remain.
+  In-budget frozen
+  WAV/FLAC jobs retain their exact persisted representation and legacy JSON
+  transport with a 25,000,000-byte serialized-request budget. Preparation and
+  both serializers enforce their respective source/request limits; generated artifacts
   and request spools are cleaned on failure. HTTP 413 is an `audio_invalid`
-  failure with compression/splitting guidance, not `internal_bug`.
+  failure, not `internal_bug`.
   File/YouTube failure events use the typed provider category and expose bounded
   HTTP status, public error code, request/response byte counts, operation, and
   canonical reason. Recognize JSON, plain/HTML gateway failures, and nested

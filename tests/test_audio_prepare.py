@@ -308,7 +308,6 @@ async def test_frozen_passthrough_must_match_probed_source(monkeypatch, tmp_path
     [
         (AudioInputFormat.WEBM_OPUS, 17_300_000),
         (AudioInputFormat.WAV_PCM16, 61_942_444),
-        (AudioInputFormat.MP3, 31_000_000),
     ],
 )
 def test_openrouter_long_import_uses_compact_mp3(model, source_format, source_bytes):
@@ -318,13 +317,13 @@ def test_openrouter_long_import_uses_compact_mp3(model, source_format, source_by
         model=model,
         probe=probe,
     )
-    assert capability.max_upload_bytes == 18_000_000
+    assert capability.max_upload_bytes == 2 * 1024 * 1024 * 1024
     assert selection.audio_format == AudioInputFormat.MP3
     assert selection.mode == AudioSelectionMode.GENERATED
 
 
 @pytest.mark.parametrize("model", ["microsoft/mai-transcribe-2", "microsoft/mai-transcribe-1.5"])
-@pytest.mark.parametrize("source_bytes", [128, 18_000_000])
+@pytest.mark.parametrize("source_bytes", [128, 18_000_000, 18 * 1024 * 1024, 25_000_000, 31_000_000])
 def test_openrouter_mp3_within_budget_remains_unchanged(model, source_bytes):
     _, selection = audio_prepare.resolve_provider_audio_selection(
         provider="openrouter_stt",
@@ -371,7 +370,7 @@ async def test_openrouter_preparation_rejects_oversize_output_and_cleans_only_ge
         assert "libmp3lame" in command
         generated.append(target)
         with target.open("wb") as output:
-            output.truncate(18_000_001)
+            output.truncate(25_000_001)
 
     monkeypatch.setattr(audio_prepare, "_run_generated_preparation", prepare)
     with pytest.raises(ProviderTransportError) as caught:
@@ -379,6 +378,7 @@ async def test_openrouter_preparation_rejects_oversize_output_and_cleans_only_ge
             source,
             provider="openrouter_stt",
             model="microsoft/mai-transcribe-2",
+            max_bytes=25_000_000,
         ):
             pytest.fail("Oversize audio must never reach the provider")
     assert caught.value.code == "audio_limit_exceeded"
@@ -414,6 +414,7 @@ async def test_openrouter_frozen_oversize_wav_fails_without_silently_changing_ro
             provider="openrouter_stt",
             model="microsoft/mai-transcribe-1.5",
             frozen_selection=frozen,
+            max_bytes=25_000_000,
         ):
             pytest.fail("Frozen oversize input must fail before upload")
     assert source.exists()

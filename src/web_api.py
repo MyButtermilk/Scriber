@@ -639,7 +639,7 @@ _MEETING_FIVE_HOUR_ROUTE_REASONS: dict[str, str] = {
     "mistral": "The configured Voxtral Mini Transcribe 2 route accepts up to 3 hours per request.",
     "mistral_async": "The configured Voxtral Mini Transcribe 2 route accepts up to 3 hours per request.",
     "azure_mai": "Scriber transcodes each track to bounded mono 64-kbit/s MP3 before upload.",
-    "openrouter_stt": "OpenRouter accepts base64 audio, but this whole-track route is not yet verified for five-hour processing.",
+    "openrouter_stt": "OpenRouter accepts MP3 uploads, but this route is not yet verified for five-hour processing.",
     "onnx_local": "Local ONNX transcription does not require a cloud file upload.",
     "gladia": "Gladia pre-recorded transcription is limited to 135 minutes per request.",
     "gladia_async": "Gladia pre-recorded transcription is limited to 135 minutes per request.",

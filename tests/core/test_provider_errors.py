@@ -354,7 +354,8 @@ def test_openrouter_oversize_error_explains_remedy_without_retry(status, code):
     assert info.retryable is False
     assert "too large" in info.message
     assert "MP3" in info.message
-    assert "split" in info.message
+    assert "splits long recordings automatically" in info.message
+    assert "split the recording" not in info.message
     assert "private" not in info.message
 
 

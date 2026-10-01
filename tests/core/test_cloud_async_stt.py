@@ -4,6 +4,8 @@ import io
 import json
 import threading
 import wave
+from email.parser import BytesParser
+from email.policy import default
 from functools import partial
 
 import pytest
@@ -232,10 +234,14 @@ async def test_openrouter_live_wav_uploads_real_mp3_and_cleans_on_every_exit(mon
         def post(self, url, **kwargs):
             self.calls += 1
             self.body = kwargs["data"]
-            request = json.loads(self.body.read())
+            request = BytesParser(policy=default).parsebytes(
+                f"Content-Type: {kwargs['headers']['Content-Type']}\r\n\r\n".encode() + self.body.read()
+            )
             assert url == OPENROUTER_STT_URL
-            assert request["input_audio"]["format"] == "mp3"
-            audio = base64.b64decode(request["input_audio"]["data"], validate=True)
+            file_part = next(part for part in request.iter_parts() if part.get_filename())
+            assert file_part.get_filename() == "audio.mp3"
+            assert file_part.get_content_type() == "audio/mpeg"
+            audio = file_part.get_payload(decode=True)
             assert len(audio) < len(original)
             # Inspect the real encoded payload, not merely its filename/label.
             uploaded = tmp_path / "uploaded.mp3"
@@ -1018,8 +1024,8 @@ async def test_openrouter_oversize_body_never_posts_and_closes_spool(monkeypatch
             session=session,
             api_key="never-send",
             audio_source=io.BytesIO(audio) if stream else audio,
-            filename="audio.mp3",
-            content_type="audio/mpeg",
+            filename="audio.wav" if limit_kind == "json" else "audio.mp3",
+            content_type="audio/wav" if limit_kind == "json" else "audio/mpeg",
             language="de",
         )
     assert caught.value.code == "audio_limit_exceeded"

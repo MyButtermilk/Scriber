@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -113,6 +113,25 @@ async def test_file_upload_reaches_durable_admission_through_the_domain_route(tm
     assert admitted_path.read_bytes() == b"RIFF-WAVE"
     assert admitted_name == "admitted.wav"
     assert admitted_plan is controller._plan
+
+
+@pytest.mark.asyncio
+async def test_openrouter_mp3_bypasses_lossy_ingest_compression(monkeypatch, tmp_path):
+    route = replace(_route(), provider="openrouter_stt", model="microsoft/mai-transcribe-2")
+    plan = FileUploadPlan(route=route, limits=file_upload_limits("openrouter_stt", source_is_video=False))
+    controller = _Controller(tmp_path / "files", plan=plan)
+    compressor = AsyncMock(side_effect=AssertionError("An MP3 must reach the chunking adapter unchanged"))
+    monkeypatch.setattr(file_transcription_routes, "maybe_compress_audio_upload", compressor)
+    client = await _client(controller)
+    try:
+        form = FormData()
+        form.add_field("file", b"original-mp3", filename="recording.mp3", content_type="audio/mpeg")
+        response = await client.post("/api/file/transcribe", data=form)
+        assert response.status == 200
+    finally:
+        await client.close()
+    compressor.assert_not_called()
+    assert controller.started[0][0].read_bytes() == b"original-mp3"
 
 
 @pytest.mark.asyncio

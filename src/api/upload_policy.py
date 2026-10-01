@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.core.provider_audio_formats import OPENROUTER_STT_MAX_SOURCE_BYTES
 from src.core.provider_capabilities import supports_direct_file_upload
 
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f\ud800-\udfff]')
@@ -58,7 +59,7 @@ _PROVIDER_AUDIO_UPLOAD_LIMITS: dict[str, tuple[int, str]] = {
     "assemblyai": (2_200_000_000, "2.2GB"),
     "deepgram_async": (2_000_000_000, "2GB"),
     "openai_async": (25 * 1024 * 1024, "25MB"),
-    "openrouter_stt": (300 * 1024 * 1024, "300MB"),
+    "openrouter_stt": (OPENROUTER_STT_MAX_SOURCE_BYTES, "2GB"),
     "modulate": (100 * 1024 * 1024, "100MB"),
     "modulate_async": (100 * 1024 * 1024, "100MB"),
     "meta_stt": (32_000_000 - 65_536, "32MB including multipart overhead"),

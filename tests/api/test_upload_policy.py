@@ -173,7 +173,7 @@ def test_limits_are_rendered_for_the_rejection_message(limit_bytes, expected):
         ("assemblyai", 2_200_000_000, "2.2GB"),
         ("smallest", 25 * 1024 * 1024, "25MB"),
         ("azure_mai", 300 * 1024 * 1024, "300MB"),
-        ("openrouter_stt", 300 * 1024 * 1024, "300MB"),
+        ("openrouter_stt", 2 * 1024 * 1024 * 1024, "2GB"),
         ("modulate_async", 100 * 1024 * 1024, "100MB"),
         ("openai", 2048 * 1024 * 1024, "2GB"),
     ],
