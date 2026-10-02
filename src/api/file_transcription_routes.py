@@ -164,6 +164,8 @@ class FileTranscriptionControllerPort(Protocol):
         transcript_id: str | None = None,
     ) -> PublicRecordPort: ...
 
+    async def resume_checkpointed_transcription(self, transcript_id: str) -> bool: ...
+
 
 @dataclass(frozen=True, slots=True)
 class FileTranscriptionRoutesService:
@@ -452,7 +454,10 @@ async def transcribe_file(request: web.Request) -> web.Response:
             # OpenRouter's file adapter divides MP3 into bounded requests.
             # Do not turn a larger, already compressed MP3 into WebM here and
             # force a second lossy MP3 encode before that adapter sees it.
-            if plan.route.provider != "openrouter_stt" or save_path.suffix.lower() != ".mp3":
+            preserve_for_provider = plan.route.provider in {"soniox", "soniox_async"} or (
+                plan.route.provider in {"openrouter_stt", "azure_mai"} and save_path.suffix.lower() == ".mp3"
+            )
+            if not preserve_for_provider:
                 transcribe_path = await maybe_compress_audio_upload(
                     save_path,
                     max_bytes=plan.final_audio_max_bytes,
@@ -492,6 +497,26 @@ async def transcribe_file(request: web.Request) -> web.Response:
             await _cleanup_unowned_workspace(save_dir)
 
 
+async def resume_file_transcription(request: web.Request) -> web.Response:
+    """Resume retained parts only after the controller verifies their checkpoint."""
+
+    controller = request.app[APP_FILE_TRANSCRIPTION_SERVICE].controller
+    transcript_id = request.match_info["id"]
+    try:
+        resumed = await controller.resume_checkpointed_transcription(transcript_id)
+    except ValueError:
+        resumed = False
+    except Exception:
+        logger.exception("Failed to resume checkpointed file transcription")
+        return web.json_response({"message": "Failed to resume transcription."}, status=500)
+    if not resumed:
+        return web.json_response(
+            {"message": "This transcription cannot be safely resumed from its saved progress."},
+            status=409,
+        )
+    return web.json_response({"success": True, "id": transcript_id}, status=202)
+
+
 def register_file_transcription_routes(
     app: web.Application,
     *,
@@ -499,3 +524,4 @@ def register_file_transcription_routes(
 ) -> None:
     app[APP_FILE_TRANSCRIPTION_SERVICE] = FileTranscriptionRoutesService(controller=controller)
     app.router.add_post("/api/file/transcribe", transcribe_file)
+    app.router.add_post("/api/transcripts/{id}/resume-file", resume_file_transcription)

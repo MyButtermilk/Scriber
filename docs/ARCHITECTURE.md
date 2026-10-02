@@ -1019,6 +1019,20 @@ before native capture or recorder shutdown begins; a reservation conflict leaves
 the recording and its admission claim untouched. After shutdown, the handler
 commits `finalizing`, opens the gate, and only then delivers a pending request
 cancellation.
+The complete Stop settlement has a supervised owner even if the HTTP request
+times out. A confirmed SQLite busy/locked failure during capture-end persistence
+or audio-claim release retries locally without sending native Stop twice or
+starting the provider early. HTTP waiting is bounded to 30 seconds; recovery
+continues while the backend is active. Shutdown stops further retry attempts
+after the active database call settles, leaving the durable state for startup
+recovery. Other settlement failures use `finalization_failed` when persistence
+is available; uncertain audio ownership is retained.
+
+A finalizer whose canonical artifact committed before Meeting projection failed
+may reuse that exact completed head on retry, including initial finalization.
+Recovery compares the frozen route, explicit reprocess generation, and every
+track's decoded PCM digest, sample count, duration, and timeline origin. An
+intentional new transcription or changed audio must not adopt the older result.
 
 Live Mic, Meeting start/resume/reconnect, Meeting device test, Voice enrollment,
 and shutdown share one audio-admission coordinator. The process lock is acquired
@@ -1835,8 +1849,11 @@ route selects the exact `microsoft/mai-transcribe-2` model for new work and acce
 WAV/PCM16, MP3, or FLAC. Its direct adapter posts MP3 bytes as a multipart
 `file` to OpenRouter's `/api/v1/audio/transcriptions` endpoint and reuses
 the same `OPENROUTER_API_KEY` as existing OpenRouter summarization and
-post-processing. The response boundary retains final text only; this route does
-not claim native timestamps, diarization, or custom-vocabulary support. Direct
+post-processing. New MAI-Transcribe-2 routes request `verbose_json` with
+`timestamp_granularities[]=word` and preserve returned word timestamps. Native
+speaker evidence is accepted only when the response actually contains it;
+custom vocabulary is not enabled on this route. Frozen text-only routes and
+MAI-Transcribe-1.5 retain their separate request contract. Direct
 `azure_mai` remains a separate Azure credential, endpoint, audio-preparation,
 and capability path. The OpenRouter route is not marked five-hour-capable
 without exact long-input evidence.
@@ -1844,17 +1861,26 @@ New OpenRouter file/YouTube and buffered live requests always upload MP3:
 in-budget MP3 originals pass through, while other inputs use mono 64-kbit/s
 MP3 at every duration. The logical source limit is 2 GiB, distinct from the
 documented 25,000,000-byte multipart file limit. `openrouter_audio` preserves
-MP3 originals within the request limit and divides oversized MP3s into
-packet-copied parts targeting 20,000,000 bytes, with a smaller final remainder.
-There is no fixed duration cutoff. Variable-bitrate parts exceeding the request
-limit are resized before HTTP. Each part is verified before upload and cleaned before the next
-part; only one derivative is retained. The file adapter sends parts sequentially
-under one deadline, reports their progress, sums usage, and joins final text in
-source order. It exposes no successful full transcript until every part succeeds.
-The existing no-replay job fence prevents a later-part failure from restarting
-already completed provider work. File ingest bypasses generic WebM recompression
-for OpenRouter MP3s, so large originals reach this splitter without another lossy
-encode. The upload does not base64-expand MP3.
+in-limit MP3 originals. Necessary parts have a versioned manifest containing
+original-time upload and ownership intervals. Adjacent uploads share a short
+context zone, normally eight seconds; a bounded local PCM scan prefers quiet
+boundaries without requiring additional FFmpeg filters. Every derivative is
+probed and checked against the actual request limit before HTTP, including VBR
+inputs. Temporary derivatives are released by their owning context.
+MP3 packet-copy boundaries are frame-aligned rather than sample-exact. The
+manifest records a conservative 250-ms source-clock tolerance for derivatives
+(zero for unchanged originals); provider word timing remains distinct from
+this source-clock precision. Stage evidence retains `audioBoundaryToleranceMs`.
+The file adapter sends parts sequentially under one deadline and publishes a
+complete transcript only after every part succeeds. `transcription_merge`
+rebases word times, uses monotone text-and-time alignment within the overlap,
+and preserves genuine repetitions. Conflicting words or missing word timing
+retain the recognized text and produce structured boundary warnings for the
+transcript detail view. A warning never becomes a spoken transcript segment.
+There is no global LLM rewrite or automatic paid boundary repair. Speaker IDs
+remain part-scoped unless matching overlap evidence supports a mapping.
+File ingest bypasses generic WebM recompression for OpenRouter MP3s. Multipart
+uploads do not base64-expand MP3.
 WAV/FLAC acceptance and base64 JSON transport are retained for frozen legacy
 jobs, with the conservative 25,000,000-byte serialized JSON budget. Audio limits
 remain enforced after preparation and again before HTTP; request spools are
@@ -1863,6 +1889,49 @@ bounded and cleaned on success, rejection, and cancellation. Only confirmed
 Exact MAI 1.5 capabilities remain available for frozen Azure/OpenRouter jobs
 and explicit Azure overrides. Recovery preserves their original capability
 identity and request model, including locally durable provider results.
+
+Provider limits were checked against official documentation on **2026-10-02**:
+
+| Route | Per-request provider boundary | Implementation distinction |
+| --- | --- | --- |
+| Microsoft Speech REST `2025-10-15`, MAI | Less than 250 MB and less than two hours; WAV, MP3, FLAC | Conservative decimal conversion: 249,999,999 bytes and 7,199,999 ms. The logical local source limit is separate. |
+| OpenRouter multipart, MAI-Transcribe-2 | 25 MB; conservatively at most two hours from the MAI2 model card | 25,000,000 audio bytes. OpenRouter publishes no separate MAI audio-duration ceiling; the two-hour bound is model-derived and applies only to MAI2. The documented 60-second upstream processing timeout is not an audio-duration limit. Large-base64 exceptions for other upstream providers do not apply to MAI. |
+| Soniox async | At most 300 minutes | No public numerical per-file byte limit was found. The documented 10 GB is total stored-file capacity; Scriber's local 2 GiB admission bound is not a Soniox limit. |
+
+Soniox uploads remain whole-file requests up to that duration. Inputs beyond
+300 minutes are rejected before transcription; this change does not introduce
+multi-job Soniox segmentation. No OpenRouter byte policy is applied to Soniox.
+
+Sources: [Microsoft REST](https://learn.microsoft.com/en-us/rest/api/speechtotext/transcriptions/transcribe?view=rest-speechtotext-2025-10-15),
+[MAI integration](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe),
+[OpenRouter STT](https://openrouter.ai/docs/guides/overview/multimodal/stt),
+[Soniox limits](https://soniox.com/docs/stt/async/limits-and-quotas), and
+[Soniox upload API](https://soniox.com/docs/api-reference/stt/files/upload_file).
+Microsoft's [MAI model card](https://microsoft.ai/pdf/MAI-Transcribe-2-Model-Card.pdf)
+lists 300 MB/two hours, while general Speech quotas describe a different
+boundary. Scriber follows the narrower reference for the endpoint and API
+version it actually calls. Neither provider processing timeouts nor undocumented
+diarization-duration reports justify fixed-minute segmentation.
+
+Durable File checkpoints are job-owned, source-hash and frozen-route bound.
+The manifest and each successful provider result are committed before advancing
+to another paid part. Explicit resume reuses completed parts and requests only
+work known not to have succeeded. In-flight requests without a durable response
+remain ambiguous and are never silently repeated. Source files required for
+resume remain owned by the job; deleting the transcript also removes its
+checkpoints. Soniox remote IDs allow polling and fetching an existing job;
+`client_reference_id` is not treated as an idempotency guarantee. A synchronous
+Microsoft/OpenRouter result lost before local persistence cannot be recovered
+without a potentially chargeable new request. Automated fixtures validate these
+local contracts, not provider recognition quality or billing.
+
+Deleting a checkpointed Soniox transcript first moves known remote resource IDs
+and their frozen region into a credential-free cleanup outbox. Local deletion
+does not wait for the network. Bounded background and startup attempts delete
+the remote transcription before its file and acknowledge only confirmed
+deletion (including an already-absent resource); failures remain durable for
+later cleanup. An upload whose response was lost before its remote ID was
+recorded cannot be identified by this local outbox.
 
 File-backed direct transcription probes the real stream with ffprobe before
 selection. An allowed lossy original below the effective upload bound is

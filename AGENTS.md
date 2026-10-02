@@ -93,7 +93,8 @@ Backend and runtime:
   connection stays visible in `status()`. File Transcription owns multipart
   parsing, bounded disk streaming, ffmpeg preparation, workspace cleanup, and
   the one ownership hand-off to its durable job. Its controller port exposes
-  only the immutable admission plan, a public workspace root, and that hand-off;
+  only the immutable admission plan, a public workspace root, that hand-off,
+  and explicit checkpointed File-job resume;
   the route must never read `_downloads_dir` or mutable provider settings.
   WebSocket routes own browser-origin validation, initial state delivery, ping
   handling, and the add/remove-client lifecycle behind a four-member controller
@@ -1269,6 +1270,29 @@ Packaging and scripts:
   provider route, exact format, capability id/revision, selection mode, and
   implementation before the provider request; recovery must not switch any of
   those fields silently.
+- Long-file limits are specific to the active endpoint: OpenRouter MAI multipart
+  is 25,000,000 bytes, with a conservative MAI2-only two-hour model-card bound;
+  Azure Speech REST `2025-10-15` is below 250 MB and two
+  hours per request. Soniox async documents 300 minutes, but no numerical
+  per-file byte ceiling; its 10-GB stored-file quota is not an upload limit.
+  Keep local ingestion bounds distinct from these provider limits. See the
+  dated official-source table in `docs/ARCHITECTURE.md` before changing them.
+  Preserve fitting files intact. Necessary audio parts retain a versioned
+  original-time manifest and short overlap, prefer locally detected pauses,
+  and are individually size/duration checked before HTTP. Only exact
+  `microsoft/mai-transcribe-2` OpenRouter requests use `verbose_json` plus word
+  timestamps; MAI-1.5 and frozen text-only attempts keep their own contract.
+  Merge by monotone timestamp-and-text evidence, never global string dedup or
+  an LLM rewrite. Preserve uncertain text and project boundary warnings outside
+  transcript speech. Scope provider speaker IDs to each request until overlap
+  evidence supports a mapping.
+- File-job part checkpoints bind the exact source hash, frozen route, request
+  shape, and manifest. Commit each received result before starting the next
+  part. Explicit resume reuses paid results and must refuse ambiguous in-flight
+  requests; never clear a no-replay fence merely because a partial result
+  exists. Retain owned source audio while resume requires it, and delete the
+  checkpoints with transcript deletion. Soniox can resume known remote IDs
+  through polling; a lost create response is not an idempotent request.
 - Caption-first YouTube jobs persist the audio STT route only as
   `plannedFallbackRoute`. They select one actual `executionRoute` after caption
   resolution, and `executedRoute` must later match that selection. A successful

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -31,6 +32,7 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
 from src.config import Config
+from src.core.provider_audio_formats import AZURE_MAI_MAX_AUDIO_BYTES, AZURE_MAI_MAX_AUDIO_DURATION_MS
 from src.core.provider_errors import ProviderTransportError, provider_transport_error, provider_user_error
 from src.provider_transcript import AZURE_MAI_DIARIZATION_FALLBACK_KEY
 from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool
@@ -77,6 +79,7 @@ async def transcribe_azure_mai_file(
     on_progress: Callable[[str], None] | None = None,
     timeout_secs: float = 900.0,
     raw_transport: AzureMaiRawTransport | None = None,
+    request_word_timestamps: bool = False,
 ) -> dict[str, Any]:
     """One explicit text-only recovery after Azure rejects native diarization.
 
@@ -103,6 +106,7 @@ async def transcribe_azure_mai_file(
                     on_progress=on_progress,
                     timeout_secs=timeout_secs,
                     raw_transport=raw_transport,
+                    request_word_timestamps=request_word_timestamps,
                 )
             # This marker belongs to Scriber, never to the provider response.
             payload.pop(AZURE_MAI_DIARIZATION_FALLBACK_KEY, None)
@@ -122,6 +126,75 @@ async def transcribe_azure_mai_file(
             logger.warning("Azure MAI native diarization unavailable; attempting one clean text-only transcription")
             _report_progress(on_progress, "Speaker diarization unavailable; transcribing without speaker labels...")
     raise AssertionError("unreachable MAI transcription attempt")
+
+
+async def transcribe_azure_mai_file_parts(
+    *,
+    audio_path: Path,
+    session: aiohttp.ClientSession,
+    speech_key: str,
+    region: str,
+    content_type: str,
+    language: Language | str | None,
+    model: str | None = None,
+    custom_vocab: str | None = None,
+    diarize: bool = False,
+    on_progress: Callable[[str], None] | None = None,
+    timeout_secs: float = 900.0,
+    raw_transport: AzureMaiRawTransport | None = None,
+    checkpoint: Any = None,
+) -> dict[str, Any]:
+    """Apply this REST route's byte AND duration bound to prepared file MP3."""
+    from src.file_transcription_parts import transcribe_mp3_parts
+    from src.openrouter_audio import OpenRouterAudioPart
+
+    selected_model = azure_mai_model(model)
+    words = selected_model.casefold() == "mai-transcribe-2"
+
+    async def transcribe(part: OpenRouterAudioPart) -> dict[str, Any]:
+        def progress(message: str) -> None:
+            _report_progress(
+                on_progress,
+                f"Transcribing part {part.index} of {part.count}..." if part.count > 1 else message,
+            )
+
+        return await transcribe_azure_mai_file(
+            audio_path=part.path,
+            session=session,
+            speech_key=speech_key,
+            region=region,
+            content_type=content_type,
+            language=language,
+            model=selected_model,
+            custom_vocab=custom_vocab,
+            diarize=diarize,
+            on_progress=progress,
+            timeout_secs=timeout_secs,
+            raw_transport=raw_transport,
+            request_word_timestamps=words,
+        )
+
+    return await transcribe_mp3_parts(
+        source=audio_path,
+        provider="azure_mai",
+        max_audio_bytes=AZURE_MAI_MAX_AUDIO_BYTES,
+        max_duration_ms=AZURE_MAI_MAX_AUDIO_DURATION_MS,
+        request_shape={
+            "provider": "azure_mai",
+            "model": selected_model,
+            "api_version": _AZURE_MAI_API_VERSION,
+            "region": azure_mai_region(region),
+            "language": azure_mai_language_locales(language),
+            "word_timestamps": words,
+            "diarize": diarize,
+            "custom_vocabulary_sha256": hashlib.sha256(
+                json.dumps(azure_mai_phrase_list(custom_vocab), ensure_ascii=False).encode("utf-8")
+            ).hexdigest(),
+        },
+        transcribe=transcribe,
+        checkpoint=checkpoint,
+        timeout_secs=timeout_secs,
+    )
 
 
 def _capture_time_mp3_enabled() -> bool:
@@ -197,6 +270,7 @@ def build_azure_mai_definition(
     custom_vocab: str | None = None,
     transcribe_style: str | None = None,
     diarize: bool = False,
+    request_word_timestamps: bool = False,
 ) -> dict[str, Any]:
     selected_model = azure_mai_model(model)
     definition: dict[str, Any] = {
@@ -214,6 +288,7 @@ def build_azure_mai_definition(
         definition["phraseList"] = {"phrases": phrases}
     if is_v2 and diarize:
         definition["diarization"] = {"enabled": True}
+    if is_v2 and (diarize or request_word_timestamps):
         definition["enhancedMode"]["modelOptions"] = {"timestamps": "word"}
     selected_style = azure_mai_transcribe_style(transcribe_style, model=selected_model)
     if selected_style is not None:
@@ -438,6 +513,7 @@ async def transcribe_with_azure_mai(
     raw_transport: AzureMaiRawTransport | None = None,
     on_response_complete: Callable[[], None] | None = None,
     audio_preparation_implementation: str | None = None,
+    request_word_timestamps: bool = False,
 ) -> dict[str, Any]:
     region = validate_azure_mai_region(region)
     url = (
@@ -448,6 +524,7 @@ async def transcribe_with_azure_mai(
         language,
         model=model,
         custom_vocab=custom_vocab,
+        request_word_timestamps=request_word_timestamps,
         transcribe_style=transcribe_style,
         diarize=diarize,
     )

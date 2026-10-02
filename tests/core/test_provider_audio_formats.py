@@ -204,7 +204,8 @@ def test_legacy_azure_override_retains_exact_capability_and_mp3_control():
 
     assert capability.capability_id == "azure_mai:llm_speech_batch:mai-transcribe-1.5"
     assert capability.revision == "provider-audio-formats-v2"
-    assert capability.max_upload_bytes == 300_000_000
+    # Logical file limit, enforced as multiple bounded provider requests.
+    assert capability.max_upload_bytes == 2 * 1024 * 1024 * 1024
     assert selection.audio_format is AudioInputFormat.MP3
     assert selection.mode is AudioSelectionMode.GENERATED
 
@@ -229,8 +230,10 @@ def test_matrix_entries_carry_evidence_date_and_revision():
     for capability in PROVIDER_AUDIO_CAPABILITY_MATRIX:
         assert capability.capability_id
         assert capability.revision == CAPABILITY_REVISION
-        if capability.model_family in {"MAI-Transcribe-2", "microsoft/mai-transcribe-2"}:
-            expected_date = date(2026, 9, 4)
+        if capability.provider in {"azure_mai", "openrouter_stt"} or (
+            capability.provider in {"soniox", "soniox_async"} and capability.route == "async_transcription"
+        ):
+            expected_date = date(2026, 10, 2)
         elif capability.provider in {"meta_stt", "meta_stt_async"}:
             expected_date = date(2026, 9, 2)
         elif capability.provider == "speechmatics_async":

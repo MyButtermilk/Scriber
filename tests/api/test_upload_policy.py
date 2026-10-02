@@ -167,12 +167,12 @@ def test_limits_are_rendered_for_the_rejection_message(limit_bytes, expected):
 @pytest.mark.parametrize(
     ("provider", "expected_bytes", "expected_label"),
     [
-        ("soniox", 524_288_000, "500MB"),
-        ("soniox_async", 524_288_000, "500MB"),
+        ("soniox", 2 * 1024 * 1024 * 1024, "2GB"),
+        ("soniox_async", 2 * 1024 * 1024 * 1024, "2GB"),
         ("mistral", 512 * 1024 * 1024, "512MB"),
         ("assemblyai", 2_200_000_000, "2.2GB"),
         ("smallest", 25 * 1024 * 1024, "25MB"),
-        ("azure_mai", 300 * 1024 * 1024, "300MB"),
+        ("azure_mai", 2 * 1024 * 1024 * 1024, "2GB"),
         ("openrouter_stt", 2 * 1024 * 1024 * 1024, "2GB"),
         ("modulate_async", 100 * 1024 * 1024, "100MB"),
         ("openai", 2048 * 1024 * 1024, "2GB"),
