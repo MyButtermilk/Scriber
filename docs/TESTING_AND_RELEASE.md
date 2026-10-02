@@ -1448,11 +1448,44 @@ actionlint v1.7.12 invocation ignores only its known pre-`concurrency.queue`
 schema error; GitHub documents `queue: max`, and every other actionlint check
 remains active.
 
+Before creating a version tag, run `.github/workflows/qualify-release.yml` on
+`main` with the **full SHA of the final, version-bumped main commit**:
+
+```powershell
+$candidateSha = git rev-parse origin/main
+gh workflow run qualify-release.yml --repo MyButtermilk/Scriber --ref main -f "candidate_sha=$candidateSha"
+```
+
+Fetch `main` before resolving that SHA. Admission rejects a different dispatch
+snapshot or a main revision that has moved. The workflow calls the identical
+release quality suite: repository Ruff, frontend checks/tests/build, Rust
+fmt/clippy/tests, full Python pytest, real File-upload browser integration, and
+mypy. It builds no release installer, accesses no signing secrets, and publishes
+no release. Its final certification checks authenticated run/job identities and
+both SHA-pinned reusable workflows. Wait for the **entire qualification run** to
+complete successfully, verify its `head_sha`, then create the annotated version
+tag at that same commit. A failed qualification leaves the version tag unused;
+fix and merge the candidate or rerun a transient failure before tagging.
+
+Official tag releases require qualification created within 24 hours and completed
+before the tag release run's creation. PR checks use a synthetic merge commit and
+cannot qualify the later main SHA. Ordinary main checks and diagnostic installer
+dispatches also do not substitute for this explicit pre-tag qualification.
+`release_qualification.py` selects the newest matching qualification and pins its
+run ID and attempt. Missing/API-unavailable, pending, failed, expired, wrong-SHA,
+or incompatible provenance fails closed before product preparation. A later
+qualification cannot rescue an already-started tag release. The same pinned run,
+attempt, freshness, provenance, and all six successful jobs are rechecked before
+installer signing. An expired candidate needs a fresh qualification **before a
+new tag release**, not a post-tag retry. Existing release-only configuration,
+signing, installed-product, updater, and publication gates remain mandatory.
+
 `.github/workflows/release-windows.yml` is the Windows release build.
 
 It:
 
-- first selects canonical main quality evidence for the identical source SHA,
+- first requires the successful pre-tag qualification above, then independently
+  selects canonical main quality evidence for the identical source SHA,
   under 24 hours old, with both reusable workflows pinned to that SHA. Missing
   or unavailable provenance runs the complete release suite; a known failed
   matching run blocks release. On a cold double miss, both product producers

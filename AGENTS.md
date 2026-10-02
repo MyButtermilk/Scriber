@@ -521,7 +521,20 @@ Packaging and scripts:
   configure Tauri with SHA-256 plus an HTTPS RFC 3161 timestamp, and validate
   the desktop, backend, NSIS installer, and timestamp/publisher evidence.
   Never call an updater-signed-only installer Authenticode-signed.
-- `.github/workflows/release-windows.yml`: adaptive release DAG. Planning may
+- `.github/workflows/qualify-release.yml`: explicit pre-tag qualification on
+  `main`. Supply the full candidate SHA; admission requires it to equal both
+  `github.sha` and current canonical main. The same release-critical reusable
+  quality suite runs, including real-browser integration, without signing,
+  release products, publication, or release secrets. Certify all six jobs and
+  immutable workflow provenance, then wait for the entire run to succeed before
+  creating the version tag. PR merge-commit checks alone do not qualify a tag.
+- `.github/workflows/release-windows.yml`: adaptive release DAG. Official tag
+  planning requires completed successful pre-tag qualification for the identical
+  SHA, created within 24 hours and completed before the tag release run began.
+  Missing, unavailable, failed, pending, expired, or incompatible evidence blocks
+  planning; it never falls back to qualifying an already-created tag. Pin the
+  accepted qualification run/attempt and recheck it before installer signing.
+  The existing release quality barrier remains additional: planning may
   select canonical main quality evidence for the identical SHA, under 24 hours
   old, with immutable reusable-workflow provenance. Missing evidence starts
   the complete local suite; a known failed matching run blocks release.

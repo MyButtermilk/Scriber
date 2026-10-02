@@ -1,0 +1,88 @@
+name: Qualify Release Before Tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: "Full main commit SHA to qualify before creating its version tag"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qualify-release-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    name: Validate exact main candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14.7"
+      - name: Bind dispatch to the requested main SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: >-
+          python -m scripts.ci.release_qualification candidate
+          --repo "$GITHUB_REPOSITORY"
+          --event-name "$GITHUB_EVENT_NAME"
+          --ref "$GITHUB_REF"
+          --head-sha "$GITHUB_SHA"
+          --candidate-sha "$CANDIDATE_SHA"
+          --evidence build/test-results/release-candidate.json
+
+  quality-gates:
+    name: Exact-revision quality gates
+    needs: candidate
+    uses: ./.github/workflows/quality-gates.yml
+    permissions:
+      contents: read
+
+  qualification:
+    name: Certify pre-tag qualification
+    needs: [candidate, quality-gates]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14.7"
+      - name: Verify exact run, workflows, and all six quality jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python -m scripts.ci.release_qualification certify
+          --repo "$GITHUB_REPOSITORY"
+          --run-id "$GITHUB_RUN_ID"
+          --run-attempt "$GITHUB_RUN_ATTEMPT"
+          --head-sha "$GITHUB_SHA"
+          --evidence build/test-results/pre-tag-qualification.json
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pre-tag-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/test-results/pre-tag-qualification.json
+          if-no-files-found: error
+          retention-days: 2
