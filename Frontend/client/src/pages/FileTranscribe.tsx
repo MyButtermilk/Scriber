@@ -18,7 +18,7 @@ import { PageIntro } from "@/components/page-intro";
 import { TranscriptionHistoryToolbar } from "@/components/transcription-history-toolbar";
 import { TranscriptHistoryPanel } from "@/components/transcript-history-panel";
 import { TranscriptSummaryRetryButton } from "@/components/transcript-summary-retry-button";
-import { PodcastTranscriptRetryButton } from "@/components/podcast-transcript-retry-button";
+import { FileTranscriptRetryButton } from "@/components/file-transcript-retry-button";
 import { TranscriptStopButton } from "@/components/transcript-stop-button";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
 import { ErrorShake } from "@/components/ui/error-shake";
@@ -99,8 +99,8 @@ function localizedProcessingStep(
 type FileHistoryStatus = "processing" | "failed" | "summary_failed" | "stopped" | "ready";
 
 function fileHistoryStatus(item: TranscriptHistoryItem): FileHistoryStatus {
-  if (item.summaryStatus === "pending" || item.status === "processing") return "processing";
   if (item.status === "failed") return "failed";
+  if (item.summaryStatus === "pending" || item.status === "processing") return "processing";
   if (item.summaryStatus === "failed") return "summary_failed";
   if (item.status === "stopped") return "stopped";
   return "ready";
@@ -149,7 +149,7 @@ const FileCard = memo(function FileCard({
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 flex-1 items-center gap-4">
               <div
-                className={`file-history-icon flex h-10 w-10 items-center justify-center rounded-[12px] ${
+                className={`file-history-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] ${
                   historyStatus === "failed" || historyStatus === "summary_failed"
                     ? "bg-red-50 dark:bg-red-900/20 text-red-600"
                     : historyStatus === "processing"
@@ -222,7 +222,7 @@ const FileCard = memo(function FileCard({
                   {t("Stopped")}
                 </Badge>
               ) : null}
-              {historyStatus === "failed" && <PodcastTranscriptRetryButton transcriptId={item.id} />}
+              {historyStatus === "failed" && <FileTranscriptRetryButton transcriptId={item.id} />}
               <CopyActionButton
                 onClick={(e) => onCopy(e, item.id)}
                 disabled={isCopying}
@@ -244,9 +244,9 @@ const FileCard = memo(function FileCard({
         ) : (
           // Grid view
           <div className="flex flex-col h-full">
-            <div className="flex items-start justify-between mb-3">
+            <div className="flex items-start justify-between gap-3 mb-3">
               <div
-                className={`file-history-icon flex h-12 w-12 items-center justify-center rounded-[13px] ${
+                className={`file-history-icon flex h-12 w-12 shrink-0 items-center justify-center rounded-[13px] ${
                   historyStatus === "failed" || historyStatus === "summary_failed"
                     ? "bg-red-50 dark:bg-red-900/20 text-red-600"
                     : historyStatus === "processing"
@@ -268,17 +268,20 @@ const FileCard = memo(function FileCard({
                   <FileAudio className="w-6 h-6" />
                 )}
               </div>
-              <div className="flex items-center gap-1">
+              <div className="flex min-w-0 flex-1 items-center justify-end gap-1">
                 {historyStatus === "processing" ? (
                   <Badge
                     variant="outline"
-                    className="text-blue-600 border-blue-200 bg-blue-50 text-ui-micro flex items-center gap-1"
+                    className="min-w-0 max-w-full text-blue-600 border-blue-200 bg-blue-50 text-ui-micro flex items-center gap-1"
+                    title={item.summaryStatus === "pending" ? t("Summarizing…") : undefined}
                   >
                     <span
                       className="h-1.5 w-1.5 shrink-0 rounded-full bg-current motion-safe:animate-pulse"
                       aria-hidden="true"
                     />
-                    {item.summaryStatus === "pending" ? t("Summarizing…") : null}
+                    {item.summaryStatus === "pending" ? (
+                      <span className="min-w-0 truncate">{t("Summarizing")}</span>
+                    ) : null}
                   </Badge>
                 ) : historyStatus === "failed" ? (
                   <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-ui-micro">
@@ -289,6 +292,7 @@ const FileCard = memo(function FileCard({
                     transcriptId={item.id}
                     transcriptTitle={item.title}
                     onComplete={onSummaryRetryComplete}
+                    compact
                   />
                 ) : historyStatus === "stopped" ? (
                   <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-ui-micro">
@@ -315,7 +319,7 @@ const FileCard = memo(function FileCard({
               <span>{dateLabel}</span>
             </div>
             <div className="flex flex-wrap items-center justify-end mt-2 gap-1">
-              {historyStatus === "failed" && <PodcastTranscriptRetryButton transcriptId={item.id} />}
+              {historyStatus === "failed" && <FileTranscriptRetryButton transcriptId={item.id} compact />}
               <CopyActionButton
                 onClick={(e) => onCopy(e, item.id)}
                 disabled={isCopying}

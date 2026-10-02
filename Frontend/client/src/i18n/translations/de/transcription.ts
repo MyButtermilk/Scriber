@@ -1,6 +1,11 @@
 import type { TranslationCatalog } from "@/i18n/types";
 
 export const transcriptionTranslations = {
+  "A new file transcription attempt has been queued.": "Ein neuer Transkriptionsversuch für die Datei wurde gestartet.",
+  "Original audio or video file": "Ursprüngliche Audio- oder Videodatei",
+  "Choose file": "Datei auswählen",
+  "Choose the original audio or video file again to start a new attempt. Automatic summaries follow your settings.":
+    "Wähle die ursprüngliche Audio- oder Videodatei erneut aus, um einen neuen Versuch zu starten. Die automatische Zusammenfassung richtet sich nach deinen Einstellungen.",
   "Waiting before retrying transcription...": "Kurze Wartezeit vor dem nächsten Transkriptionsversuch…",
   "Microsoft MAI Transcribe via OpenRouter is temporarily rate limited (HTTP 429). Wait briefly or switch transcription provider.":
     "Microsoft MAI Transcribe über OpenRouter ist vorübergehend ausgelastet oder durch ein Ratenlimit begrenzt (HTTP 429). Warte kurz oder wechsle den Transkriptionsanbieter.",
