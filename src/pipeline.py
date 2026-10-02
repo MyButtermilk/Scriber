@@ -4415,6 +4415,7 @@ class ScriberPipeline:
                     prepared_audio.path,
                     content_type=prepared_audio.content_type,
                     capability_prepared=True,
+                    prepared_audio=prepared_audio,
                 )
                 self._provider_request_state = "result_received"
                 return
@@ -4446,6 +4447,7 @@ class ScriberPipeline:
                         prepared.path,
                         content_type=prepared.content_type,
                         capability_prepared=True,
+                        prepared_audio=prepared,
                     )
                     self._provider_request_state = "result_received"
         except Exception as e:
@@ -4462,6 +4464,7 @@ class ScriberPipeline:
         *,
         content_type: str,
         capability_prepared: bool,
+        prepared_audio: PreparedProviderAudio | None = None,
     ) -> None:
         """Run the existing provider request against already selected bytes."""
 
@@ -4799,6 +4802,7 @@ class ScriberPipeline:
                             on_progress=self.on_progress,
                             timeout_secs=batch_timeout_seconds,
                             checkpoint=self.transcription_checkpoint,
+                            prepared_audio=prepared_audio,
                         )
 
                 text = azure_mai_transcript_payload_to_text(payload)

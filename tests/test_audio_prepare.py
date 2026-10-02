@@ -71,6 +71,8 @@ async def test_small_float_wav_is_converted_after_upload_admission(float_wav_sou
         assert probe.codec_name != "pcm_f32le"
         assert probe.channels == 1
         assert probe.sample_rate == 16_000
+        assert prepared.duration_ms == probe.duration_ms
+        assert prepared.verified_mtime_ns == generated.stat().st_mtime_ns
     assert not generated.exists()
     assert source.read_bytes() == original
 
@@ -235,9 +237,11 @@ def test_selection_passes_through_exact_azure_mp3() -> None:
 async def test_mai_tagged_mp3_remux_preserves_audio_and_cleans_copy(monkeypatch, tmp_path: Path) -> None:
     source = tmp_path / "podcast.mp3"
     source.write_bytes(b"ID3metadata-audio")
-    tagged = replace(_probe(AudioInputFormat.MP3), has_id3_metadata=True)
+    tagged = replace(_probe(AudioInputFormat.MP3, byte_length=source.stat().st_size), has_id3_metadata=True)
     monkeypatch.setattr(
-        audio_prepare, "probe_audio_input_file", lambda path: tagged if path == source else _probe(AudioInputFormat.MP3)
+        audio_prepare,
+        "probe_audio_input_file",
+        lambda path: tagged if path == source else _probe(AudioInputFormat.MP3, byte_length=path.stat().st_size),
     )
     monkeypatch.setattr(audio_prepare, "require_media_tool", lambda _tool: "ffmpeg")
     commands = []
@@ -307,7 +311,7 @@ async def test_generated_preparation_is_cleaned(monkeypatch, tmp_path: Path) -> 
     def probe(path: Path):
         return _probe(
             AudioInputFormat.OGG_OPUS if Path(path) == source else AudioInputFormat.MP3,
-            byte_length=6,
+            byte_length=Path(path).stat().st_size,
         )
 
     monkeypatch.setattr(
@@ -350,7 +354,7 @@ async def test_generated_preparation_rejects_wrong_container_codec(
     def probe(path: Path):
         return _probe(
             AudioInputFormat.OGG_OPUS if Path(path) == source else AudioInputFormat.WAV_PCM16,
-            byte_length=6,
+            byte_length=Path(path).stat().st_size,
         )
 
     async def generate(_command: list[str], target: Path) -> None:
@@ -463,6 +467,7 @@ async def test_openrouter_preparation_rejects_oversize_output_and_cleans_only_ge
         "probe_audio_input_file",
         lambda path: _probe(
             AudioInputFormat.WEBM_OPUS if path == source else AudioInputFormat.MP3,
+            byte_length=path.stat().st_size,
         ),
     )
     monkeypatch.setattr(audio_prepare, "require_media_tool", lambda _tool: "ffmpeg")

@@ -31,6 +31,7 @@ from pipecat.services.stt_service import STTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
+from src.audio_prepare import PreparedProviderAudio
 from src.config import Config
 from src.core.provider_audio_formats import AZURE_MAI_MAX_AUDIO_BYTES, AZURE_MAI_MAX_AUDIO_DURATION_MS
 from src.core.provider_errors import ProviderTransportError, provider_transport_error, provider_user_error
@@ -143,8 +144,9 @@ async def transcribe_azure_mai_file_parts(
     timeout_secs: float = 900.0,
     raw_transport: AzureMaiRawTransport | None = None,
     checkpoint: Any = None,
+    prepared_audio: PreparedProviderAudio | None = None,
 ) -> dict[str, Any]:
-    """Apply this REST route's byte AND duration bound to prepared file MP3."""
+    """Bound MP3 parts and fitting frozen, verified WAV/FLAC requests."""
     from src.file_transcription_parts import transcribe_mp3_parts
     from src.openrouter_audio import OpenRouterAudioPart
 
@@ -194,6 +196,7 @@ async def transcribe_azure_mai_file_parts(
         transcribe=transcribe,
         checkpoint=checkpoint,
         timeout_secs=timeout_secs,
+        prepared_audio=prepared_audio,
     )
 
 

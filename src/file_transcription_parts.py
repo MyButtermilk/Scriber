@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from src.core.provider_errors import ProviderTransportError, provider_transport_error
 
 if TYPE_CHECKING:
+    from src.audio_prepare import PreparedProviderAudio
     from src.data.transcription_part_store import DurableTranscriptionCheckpoint
     from src.openrouter_audio import OpenRouterAudioPart
 
@@ -44,6 +45,7 @@ async def transcribe_mp3_parts(
     checkpoint: DurableTranscriptionCheckpoint | None = None,
     request_start_managed: bool = False,
     timeout_secs: float = 900.0,
+    prepared_audio: PreparedProviderAudio | None = None,
 ) -> dict[str, Any]:
     """Persist each paid result before advancing; never publish partial success.
 
@@ -63,6 +65,7 @@ async def transcribe_mp3_parts(
                 max_audio_bytes=max_audio_bytes,
                 max_duration_ms=max_duration_ms,
                 target_audio_bytes=target_audio_bytes,
+                prepared_audio=prepared_audio,
             )
         )
         if checkpoint:
@@ -77,6 +80,7 @@ async def transcribe_mp3_parts(
             max_audio_bytes=max_audio_bytes,
             max_duration_ms=max_duration_ms,
             manifest=manifest,
+            prepared_audio=prepared_audio,
         ) as parts:
             async for part in parts:
                 payload = await checkpoint.lookup(part.index) if checkpoint else None

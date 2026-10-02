@@ -1925,6 +1925,14 @@ Microsoft/OpenRouter result lost before local persistence cannot be recovered
 without a potentially chargeable new request. Automated fixtures validate these
 local contracts, not provider recognition quality or billing.
 
+Azure also preserves an already frozen, verified WAV/FLAC representation when
+it fits both request limits. Prepared audio carries the duration measured by
+its output probe, bound to the verified file size and modification time. A
+changed file fails before HTTP; older objects without that evidence require a
+local exact-format probe. Oversized frozen WAV/FLAC requests fail before HTTP
+rather than silently changing their recorded format. Automatic overlapping
+segmentation currently operates on the normal prepared MP3 path.
+
 Deleting a checkpointed Soniox transcript first moves known remote resource IDs
 and their frozen region into a credential-free cleanup outbox. Local deletion
 does not wait for the network. Bounded background and startup attempts delete

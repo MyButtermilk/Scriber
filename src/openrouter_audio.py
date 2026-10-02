@@ -12,7 +12,12 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from src.audio_prepare import ProbedAudioInput, ProviderAudioPreparationError, probe_audio_input_file
+from src.audio_prepare import (
+    PreparedProviderAudio,
+    ProbedAudioInput,
+    ProviderAudioPreparationError,
+    probe_audio_input_file,
+)
 from src.core.provider_audio_formats import OPENROUTER_STT_MAX_AUDIO_BYTES, AudioInputFormat
 from src.runtime.cancellation import await_with_delayed_cancellation, to_thread_cancellation_barrier
 from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr
@@ -288,10 +293,52 @@ def _window(start_ms: int, end_ms: int, duration_ms: int, overlap_ms: int) -> Au
     )
 
 
-def _check_probe(probe: ProbedAudioInput, *, max_duration_ms: int | None) -> None:
-    if probe.audio_format != AudioInputFormat.MP3 or probe.byte_length <= 0:
+async def _source_probe(source: Path, prepared_audio: PreparedProviderAudio | None) -> ProbedAudioInput:
+    # MP3 retains its packet-copy verification. Only an already verified exact
+    # WAV/FLAC representation can borrow preparation evidence for one request.
+    if prepared_audio is None or prepared_audio.selected_format == AudioInputFormat.MP3:
+        return await to_thread_cancellation_barrier(probe_audio_input_file, source)
+    source_stat = source.stat()
+    if (
+        prepared_audio.selected_format not in {AudioInputFormat.WAV_PCM16, AudioInputFormat.FLAC}
+        or prepared_audio.path.resolve() != source.resolve()
+        or prepared_audio.byte_length != source_stat.st_size
+        or (
+            prepared_audio.verified_mtime_ns is not None and prepared_audio.verified_mtime_ns != source_stat.st_mtime_ns
+        )
+    ):
+        raise ProviderAudioPreparationError("Prepared audio no longer matches its verified file.")
+    duration_ms = prepared_audio.duration_ms
+    if duration_ms is None or prepared_audio.verified_mtime_ns is None:
+        probe = await to_thread_cancellation_barrier(probe_audio_input_file, source)
+        if probe.audio_format != prepared_audio.selected_format or probe.byte_length != prepared_audio.byte_length:
+            raise ProviderAudioPreparationError("Prepared audio no longer matches its verified format or size.")
+        return probe
+    if type(duration_ms) is not int or duration_ms <= 0:
+        raise ProviderAudioPreparationError("Prepared audio requires a known positive recording duration.")
+    return ProbedAudioInput(
+        prepared_audio.selected_format,
+        prepared_audio.selected_format.container.value,
+        prepared_audio.selected_format.codec.value,
+        None,
+        None,
+        duration_ms,
+        prepared_audio.byte_length,
+    )
+
+
+def _check_probe(
+    probe: ProbedAudioInput,
+    *,
+    max_duration_ms: int | None,
+    prepared_audio: PreparedProviderAudio | None = None,
+) -> None:
+    verified_passthrough = prepared_audio is not None and probe.audio_format == prepared_audio.selected_format
+    if (probe.audio_format != AudioInputFormat.MP3 and not verified_passthrough) or probe.byte_length <= 0:
         raise ProviderAudioPreparationError("Audio parts require verified MP3 audio.")
-    if max_duration_ms is not None and not probe.duration_ms:
+    if (max_duration_ms is not None or probe.audio_format != AudioInputFormat.MP3) and (
+        type(probe.duration_ms) is not int or probe.duration_ms <= 0
+    ):
         raise ProviderAudioPreparationError("Could not determine the recording duration for automatic splitting.")
 
 
@@ -368,6 +415,7 @@ async def plan_mp3_audio_parts(
     max_audio_bytes: int,
     max_duration_ms: int | None = None,
     target_audio_bytes: int | None = None,
+    prepared_audio: PreparedProviderAudio | None = None,
 ) -> AudioPartsManifest:
     """Freeze all bounds after local size/duration checks, with one temp file.
 
@@ -381,8 +429,8 @@ async def plan_mp3_audio_parts(
         raise ValueError("target_audio_bytes must be positive")
     source = Path(source)
     stamp = _source_stamp(source)
-    probe = await to_thread_cancellation_barrier(probe_audio_input_file, source)
-    _check_probe(probe, max_duration_ms=max_duration_ms)
+    probe = await _source_probe(source, prepared_audio)
+    _check_probe(probe, max_duration_ms=max_duration_ms, prepared_audio=prepared_audio)
     if probe.byte_length != stamp[0]:
         raise ProviderAudioPreparationError("The audio source changed while preparing its parts.")
     duration_ms = probe.duration_ms or 0
@@ -392,6 +440,10 @@ async def plan_mp3_audio_parts(
             duration_ms, stamp[0], max_audio_bytes, max_duration_ms, parts, True, 0, timestamp_tolerance_ms=0
         )
     else:
+        if probe.audio_format != AudioInputFormat.MP3:
+            raise ProviderAudioPreparationError(
+                "Frozen prepared audio exceeds the provider request byte or duration limit; splitting requires MP3."
+            )
         if duration_ms <= 0:
             raise ProviderAudioPreparationError("Could not determine the recording duration for automatic splitting.")
         target_bytes = min(target_audio_bytes or max_audio_bytes, max(1, math.floor(max_audio_bytes * 0.96)))
@@ -427,11 +479,13 @@ async def plan_mp3_audio_parts(
     return manifest
 
 
-async def _parts(source: Path, manifest: AudioPartsManifest) -> AsyncIterator[AudioPart]:
+async def _parts(
+    source: Path, manifest: AudioPartsManifest, prepared_audio: PreparedProviderAudio | None = None
+) -> AsyncIterator[AudioPart]:
     manifest.validate()
     stamp = _source_stamp(source)
-    probe = await to_thread_cancellation_barrier(probe_audio_input_file, source)
-    _check_probe(probe, max_duration_ms=manifest.max_duration_ms)
+    probe = await _source_probe(source, prepared_audio)
+    _check_probe(probe, max_duration_ms=manifest.max_duration_ms, prepared_audio=prepared_audio)
     if stamp[0] != manifest.source_byte_length or (probe.duration_ms or 0) != manifest.duration_ms:
         raise ProviderAudioPreparationError("The audio source no longer matches its saved part manifest.")
     if manifest.passthrough:
@@ -441,6 +495,8 @@ async def _parts(source: Path, manifest: AudioPartsManifest) -> AsyncIterator[Au
             path=source, **asdict(manifest.parts[0]), timestamp_tolerance_ms=manifest.timestamp_tolerance_ms
         )
         return
+    if probe.audio_format != AudioInputFormat.MP3:
+        raise ProviderAudioPreparationError("Saved audio-part splitting requires verified MP3 audio.")
     ffmpeg = require_media_tool("ffmpeg")
     with tempfile.TemporaryDirectory(prefix="scriber-mp3-parts-") as directory:
         target = Path(directory) / "part.mp3"
@@ -470,6 +526,7 @@ async def mp3_audio_parts(
     max_duration_ms: int | None = None,
     manifest: AudioPartsManifest | None = None,
     target_audio_bytes: int | None = None,
+    prepared_audio: PreparedProviderAudio | None = None,
 ) -> AsyncIterator[AsyncIterator[AudioPart]]:
     """Yield verified planned parts, keeping at most one temporary derivative."""
     if manifest is None:
@@ -478,10 +535,11 @@ async def mp3_audio_parts(
             max_audio_bytes=max_audio_bytes,
             max_duration_ms=max_duration_ms,
             target_audio_bytes=target_audio_bytes,
+            prepared_audio=prepared_audio,
         )
     elif manifest.max_audio_bytes != max_audio_bytes or manifest.max_duration_ms != max_duration_ms:
         raise ProviderAudioPreparationError("Saved audio-part manifest uses different provider limits.")
-    iterator = _parts(Path(source), manifest)
+    iterator = _parts(Path(source), manifest, prepared_audio)
     try:
         yield iterator
     finally:
