@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import threading
 import time
 import weakref
@@ -69,7 +70,11 @@ from src.api.meeting_catalog_routes import (
     register_meeting_catalog_routes,
 )
 from src.api.meeting_delivery_routes import register_meeting_delivery_routes
-from src.api.meeting_import_routes import MeetingImportDeps, register_meeting_import_routes
+from src.api.meeting_import_routes import (
+    MeetingImportDeps,
+    cleanup_terminal_upload_staging,
+    register_meeting_import_routes,
+)
 from src.api.meeting_processing_routes import (
     MeetingProcessingOutcome,
     MeetingReprocessCommand,
@@ -2195,6 +2200,36 @@ async def _release_persistent_audio(controller: Any, claim: AudioAdmissionClaim 
     return await _audio_admission_owner(controller).release(claim)
 
 
+_MEETING_STOP_RESPONSE_TIMEOUT_SECONDS = 30.0
+
+
+async def _retry_meeting_stop_store_operation(controller: Any, operation: Callable[[], Awaitable[Any]]) -> Any:
+    """Retain stop ownership while SQLite's writer is temporarily unavailable.
+
+    The owning supervisor outlives the bounded HTTP wait. Only a confirmed
+    SQLite busy/locked result can be retried; uncertain native operations and
+    provider calls never pass through this boundary.
+    """
+    attempts = 0
+    while True:
+        if getattr(controller, "_shutting_down", False):
+            # Finish the in-flight SQLite call, then leave durable stopping
+            # ownership to startup recovery instead of holding shutdown open.
+            raise asyncio.CancelledError("Meeting stop settlement interrupted by backend shutdown")
+        try:
+            result, pending_cancel = await await_with_delayed_cancellation(operation())
+            if pending_cancel is not None:
+                raise pending_cancel
+            return result
+        except sqlite3.OperationalError as exc:
+            if getattr(exc, "sqlite_errorcode", 0) & 0xFF not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                raise
+            attempts += 1
+            if attempts == 1:
+                logger.warning("Meeting stop is waiting for the local database writer")
+            await asyncio.sleep(min(2.0, 0.25 * attempts))
+
+
 async def _foreign_persistent_audio_claim(controller: Any) -> AudioAdmissionClaim | None:
     return await _audio_admission_owner(controller).foreign_claim()
 
@@ -3671,6 +3706,7 @@ class ScriberWebController:
                 error_message="Scriber stopped before the upload was committed.",
             )
             shutil.rmtree(data_dir() / "meeting-imports" / import_job.id, ignore_errors=True)
+        cleanup_terminal_upload_staging(self._meeting_import_store, data_dir())
         if self._loop.is_running():
             for import_job in self._meeting_import_store.list_recoverable():
                 self.schedule_meeting_import(import_job.id)
@@ -16266,46 +16302,82 @@ class ScriberWebController:
                 payload={"message": "Meeting finalization could not be reserved."},
             )
 
-        deferred_cancellation: list[asyncio.CancelledError] = []
-        try:
-            async with _audio_admission_lock(self):
-                outcome = await ScriberWebController._settle_meeting_capture_command(
-                    self,
-                    meeting_id,
-                    command="audioMeetingStop",
-                    target_state="stopping",
-                    deferred_cancellation=deferred_cancellation,
-                )
-            if outcome.status >= 400:
-                if deferred_cancellation:
-                    raise deferred_cancellation[0]
-                return outcome
+        tasks = getattr(self, "_meeting_tasks", {})
+        reserved_task = tasks.get(meeting_id) if isinstance(tasks, dict) else None
 
-            async def settle_stop() -> dict[str, Any]:
-                finalizing = await asyncio.to_thread(self._meeting_store.transition, meeting_id, "finalizing")
+        async def settle_stop() -> MeetingCaptureOutcome:
+            try:
+                async with _audio_admission_lock(self):
+                    outcome = await ScriberWebController._settle_meeting_capture_command(
+                        self,
+                        meeting_id,
+                        command="audioMeetingStop",
+                        target_state="stopping",
+                    )
+                if outcome.status >= 400:
+                    return outcome
+                finalizing = await _retry_meeting_stop_store_operation(
+                    self, lambda: asyncio.to_thread(self._meeting_store.transition, meeting_id, "finalizing")
+                )
                 self._meeting_recorders.pop(meeting_id, None)
                 clear_level_state = getattr(self, "clear_meeting_audio_level_state", None)
                 if callable(clear_level_state):
                     clear_level_state(meeting_id)
                 start_gate.set()
                 await self.broadcast(meeting_state_event(finalizing))
-                return finalizing
-
-            finalizing, settlement_cancel = await await_with_delayed_cancellation(settle_stop())
-            pending_cancel = deferred_cancellation[0] if deferred_cancellation else settlement_cancel
-            if pending_cancel is not None:
-                raise pending_cancel
-            return MeetingCaptureOutcome(
-                status=202,
-                payload={**finalizing, "apiVersion": REST_API_VERSION},
-            )
-        finally:
-            if not start_gate.is_set():
-                tasks = getattr(self, "_meeting_tasks", {})
-                reserved_task = tasks.get(meeting_id) if isinstance(tasks, dict) else None
-                if reserved_task is not None:
+                return MeetingCaptureOutcome(status=202, payload={**finalizing, "apiVersion": REST_API_VERSION})
+            except Exception:
+                logger.exception("Meeting stop settlement failed; native ownership remains authoritative")
+                try:
+                    current = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+                    if current.get("state") == "stopping":
+                        failed = await _retry_meeting_stop_store_operation(
+                            self,
+                            lambda: asyncio.to_thread(
+                                self._meeting_store.transition,
+                                meeting_id,
+                                "finalization_failed",
+                                error_code="meeting_stop_settlement_failed",
+                                error_message="Meeting stop could not finish. Saved audio remains available for retry.",
+                            ),
+                        )
+                        await self.broadcast(meeting_state_event(failed))
+                except Exception:
+                    logger.exception("Meeting stop failure state unavailable; claim retained for recovery")
+                return MeetingCaptureOutcome(
+                    status=503,
+                    payload={"message": "Meeting stop could not finish. Saved audio remains available for retry."},
+                )
+            finally:
+                if not start_gate.is_set() and reserved_task is not None:
                     reserved_task.cancel()
                     await asyncio.gather(reserved_task, return_exceptions=True)
+
+        # The complete native/local/store settlement has an owner even after an
+        # HTTP timeout. Request cancellation waits for that same settlement.
+        async def supervised_settlement() -> MeetingCaptureOutcome:
+            return await _await_cleanup_barrier(settle_stop())
+
+        worker = self._detached_task_supervisor.spawn(supervised_settlement(), name=f"meeting-stop-{meeting_id[:8]}")
+        if worker is None:
+            if reserved_task is not None:
+                reserved_task.cancel()
+                await asyncio.gather(reserved_task, return_exceptions=True)
+            return MeetingCaptureOutcome(status=503, payload={"message": "Meeting stop could not be scheduled."})
+        try:
+            done, _ = await asyncio.wait({worker}, timeout=_MEETING_STOP_RESPONSE_TIMEOUT_SECONDS)
+        except asyncio.CancelledError as initial_cancel:
+            try:
+                _, repeated_cancel = await await_with_delayed_cancellation(worker)
+            except Exception:
+                raise initial_cancel from None
+            raise repeated_cancel or initial_cancel from None
+        if worker in done:
+            return worker.result()
+        return MeetingCaptureOutcome(
+            status=503,
+            payload={"message": "Meeting stop is waiting for local storage and will finish automatically."},
+        )
 
     async def resume_meeting_capture(self, meeting_id: str) -> MeetingCaptureOutcome:
         try:
@@ -17053,14 +17125,20 @@ class ScriberWebController:
                     capture_metadata["pauseStartedAtMs"] = max(offsets)
                     capture_metadata["pauseStartedAtUtc"] = datetime.now(UTC).isoformat()
                 try:
-                    updated, transition_cancel = await await_with_delayed_cancellation(
-                        asyncio.to_thread(
+
+                    async def persist_capture_end() -> dict[str, Any]:
+                        return await asyncio.to_thread(
                             self._meeting_store.transition,
                             meeting_id,
                             target_state,
                             capture_metadata=capture_metadata,
                             capture_ended_at=capture_ended_at,
                         )
+
+                    updated, transition_cancel = await await_with_delayed_cancellation(
+                        _retry_meeting_stop_store_operation(self, persist_capture_end)
+                        if command == "audioMeetingStop"
+                        else persist_capture_end()
                     )
                     pending_cancel = pending_cancel or transition_cancel
                 except (InvalidMeetingTransition, MeetingConflict) as exc:
@@ -17075,7 +17153,7 @@ class ScriberWebController:
                 )
             )
         if recorder_stop_failure is None and command == "audioMeetingStop":
-            await _release_persistent_audio(self, meeting_claim)
+            await _retry_meeting_stop_store_operation(self, lambda: _release_persistent_audio(self, meeting_claim))
             registry.pop(meeting_id, None)
             self._resume_idle_mic_prewarm_after_capture()
 
@@ -18467,6 +18545,10 @@ class ScriberWebController:
             )
             await mark_failed(public_message)
             return SummaryOutcome(kind="failed", message=public_message)
+        finally:
+            # The caller may be a persistent podcast worker. Ownership ends
+            # with this summary call, even when its asyncio task keeps running.
+            self._unregister_summary_task(transcript_id, summary_task)
 
     async def cancel_transcript(self, transcript_id: str) -> bool:
         """Cancel a running transcription task."""

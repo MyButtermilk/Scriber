@@ -90,7 +90,7 @@ class PodcastProcessor:
                     raise PodcastError("The linked transcript is unavailable. Retry this episode to create it again.")
                 if view.status == "completed":
                     break
-                if view.status in {"failed", "canceled", "cancelled"}:
+                if view.status in {"failed", "stopped", "canceled", "cancelled"}:
                     raise PodcastError(
                         "Podcast transcription failed. Open the transcript for details or retry the episode."
                     )

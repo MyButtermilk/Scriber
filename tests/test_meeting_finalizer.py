@@ -6,6 +6,7 @@ import json
 import re
 import threading
 import wave
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, patch
@@ -1729,6 +1730,7 @@ def test_full_reprocess_reuses_current_completed_canonical_artifact(tmp_path):
         get_artifact=lambda _artifact_id: artifact,
         get_attempt=lambda _attempt_id: attempt,
         get_route_snapshot=lambda _attempt_id: route_holder.get("route"),
+        get_stage_result=lambda _attempt_id: SimpleNamespace(evidence={"sourceAudio": {}}),
     )
     finalizer = MeetingFinalizer(
         SimpleNamespace(),
@@ -1749,10 +1751,10 @@ def test_full_reprocess_reuses_current_completed_canonical_artifact(tmp_path):
         request_options=dict(expected_route.request_options),
     )
 
-    assert finalizer._completed_artifact_for_current_reprocess(meeting) == ("already-paid-segment",)
+    assert finalizer._completed_artifact_for_current_finalization(meeting, {}) == ("already-paid-segment",)
 
     attempt.created_at = "2026-07-15T09:59:59+00:00"
-    assert finalizer._completed_artifact_for_current_reprocess(meeting) is None
+    assert finalizer._completed_artifact_for_current_finalization(meeting, {}) is None
 
 
 @pytest.mark.asyncio
@@ -1787,8 +1789,8 @@ async def test_full_reprocess_projects_committed_artifact_without_calling_provid
     monkeypatch.setattr(finalizer, "_ensure_transcript_parent", lambda _meeting: None)
     monkeypatch.setattr(
         finalizer,
-        "_completed_artifact_for_current_reprocess",
-        lambda _meeting: ("committed-segment",),
+        "_completed_artifact_for_current_finalization",
+        lambda _meeting, _tracks: ("committed-segment",),
     )
     begin = AsyncMock(side_effect=AssertionError("provider attempt must not start"))
     monkeypatch.setattr(finalizer, "_begin_artifact_attempt_async", begin)
@@ -1805,6 +1807,87 @@ async def test_full_reprocess_projects_committed_artifact_without_calling_provid
         ("committed-segment",),
         ANY,
     )
+
+
+@pytest.mark.asyncio
+async def test_first_finalization_retry_reuses_canonical_commit(monkeypatch, tmp_path):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "first-finalization-recovery.db")
+    monkeypatch.setattr("src.meeting_finalizer.supports_direct_file_upload", lambda _provider: False)
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    meeting = store.create(
+        MeetingCreate(title="Initial finalization", final_provider="soniox_async", auto_analyze=False)
+    )
+    store.transition(meeting["id"], "finalizing")
+    provider_calls = []
+
+    class Pipeline(FakePipeline):
+        async def transcribe_file(self, path):
+            provider_calls.append(path)
+            self.on_transcription("Already paid and durably committed.", True)
+
+    def make_finalizer():
+        finalizer = MeetingFinalizer(
+            store,
+            tmp_path / "audio",
+            lambda *, on_transcription, **kwargs: Pipeline("", on_transcription),
+            lambda *_args, **_kwargs: None,
+        )
+        tracks = _stub_two_track_preparation(finalizer, tmp_path)
+        tracks.pop("mic_clean")
+        return finalizer, tracks
+
+    first, tracks = make_finalizer()
+    real_replace = store.replace_segments
+
+    def interrupted_projection(*args, **kwargs):
+        assert first.artifact_store.get_head(meeting["id"]) is not None
+        raise OSError("process lost after canonical commit")
+
+    monkeypatch.setattr(store, "replace_segments", interrupted_projection)
+    try:
+        with pytest.raises(OSError, match="after canonical commit"):
+            await first.run(meeting["id"], AsyncMock())
+        head = first.artifact_store.get_head(meeting["id"])
+        artifact = first.artifact_store.get_artifact(head.artifact_id)
+        assert first.artifact_store.require_attempt(artifact.attempt_id).state == AttemptState.COMPLETED
+        assert store.detail(meeting["id"])["segments"] == []
+        first.artifact_store.close()
+
+        monkeypatch.setattr(store, "replace_segments", real_replace)
+        store.transition(meeting["id"], "finalization_failed")
+        store.transition(meeting["id"], "finalizing")
+        retry, tracks = make_finalizer()
+        current = store.get(meeting["id"])
+        expected = retry._completed_artifact_for_current_finalization(current, tracks)
+        assert expected is not None
+        changed = {**tracks, "microphone": tracks["system"]}
+        assert retry._completed_artifact_for_current_finalization(current, changed) is None
+        assert retry._completed_artifact_for_current_finalization({**current, "language": "fr"}, tracks) is None
+        assert (
+            retry._completed_artifact_for_current_finalization(
+                {
+                    **current,
+                    "captureMetadata": {
+                        "reprocessKind": "full_transcript",
+                        "reprocessRequestedAt": (datetime.now(UTC) + timedelta(seconds=1)).isoformat(),
+                    },
+                },
+                tracks,
+            )
+            is None
+        )
+        result = await retry.run(meeting["id"], AsyncMock())
+        assert result["state"] == "ready"
+        assert len(provider_calls) == 1
+        assert retry.artifact_store.get_head(meeting["id"]).artifact_id == head.artifact_id
+        assert store.detail(meeting["id"])["segments"][0]["text"] == "Already paid and durably committed."
+        retry.artifact_store.close()
+    finally:
+        first.artifact_store.close()
+        database._close_all_connections()
 
 
 @pytest.mark.asyncio

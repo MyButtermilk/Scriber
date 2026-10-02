@@ -378,8 +378,10 @@ class MeetingFinalizer:
         except ValueError:
             return False
 
-    def _completed_artifact_for_current_reprocess(self, meeting: dict[str, Any]) -> tuple[CanonicalSegment, ...] | None:
-        """Return a committed reprocess artifact whose Meeting projection may lag.
+    def _completed_artifact_for_current_finalization(
+        self, meeting: dict[str, Any], tracks: dict[str, PreparedMeetingTrack]
+    ) -> tuple[CanonicalSegment, ...] | None:
+        """Return the exact committed artifact whose Meeting projection may lag.
 
         Canonical artifact publication and the Meeting projection intentionally
         live in separate SQLite ownership boundaries.  If the process exits
@@ -389,9 +391,6 @@ class MeetingFinalizer:
         for a newer user request.
         """
 
-        metadata = meeting.get("captureMetadata")
-        if not isinstance(metadata, dict) or metadata.get("reprocessKind") != "full_transcript":
-            return None
         head = self.artifact_store.get_head(str(meeting["id"]))
         if head is None:
             return None
@@ -413,6 +412,19 @@ class MeetingFinalizer:
         expected = self._frozen_meeting_route(meeting).snapshot_draft()
         if not self._route_snapshot_matches(route, expected):
             return None
+        stage = self.artifact_store.get_stage_result(attempt.id)
+        source_audio = stage.evidence.get("sourceAudio") if stage is not None else None
+        if source_audio is not None:
+            if source_audio != {source: self._track_audio_evidence(track) for source, track in tracks.items()}:
+                return None
+        else:
+            # Older commits bind audio through their individual provider results.
+            # Require every current source, not just a matching subset of tracks.
+            results = self.artifact_store.list_track_stage_results(attempt.id)
+            if {item.source_track for item in results} != set(tracks) or any(
+                not self._track_result_matches_audio(item, tracks[item.source_track]) for item in results
+            ):
+                return None
         return artifact.segments
 
     async def _begin_artifact_attempt_async(
@@ -521,6 +533,7 @@ class MeetingFinalizer:
         duration_ms: int,
         track_results: list[Any],
         track_derivations: list[Any],
+        source_audio: dict[str, dict[str, Any]],
     ) -> tuple[CanonicalSegment, ...]:
         if attempt.state == AttemptState.TRANSCRIBING:
             combined_text = " ".join(unit.text for unit in units)
@@ -530,6 +543,7 @@ class MeetingFinalizer:
                 transcript_text=combined_text,
                 units=units,
                 evidence={
+                    "sourceAudio": source_audio,
                     "trackCount": len(track_results),
                     "normalizedIntervalCount": len(units),
                     "nativeSpeakerIntervals": sum(1 for unit in units if unit.speaker_origin == "provider_native"),
@@ -656,13 +670,20 @@ class MeetingFinalizer:
 
         await progress("Creating canonical transcript", 0.2)
         await asyncio.to_thread(self._ensure_transcript_parent, meeting)
-        committed_reprocess = await _durable_thread_call(self._completed_artifact_for_current_reprocess, meeting)
-        if committed_reprocess is not None:
+        transcription_tracks = {
+            "microphone": tracks.get("mic_clean") or tracks.get("microphone"),
+            "system": tracks.get("system"),
+        }
+        transcription_tracks = {key: value for key, value in transcription_tracks.items() if value}
+        committed_segments = await _durable_thread_call(
+            self._completed_artifact_for_current_finalization, meeting, transcription_tracks
+        )
+        if committed_segments is not None:
             await progress("Recovering committed transcript", 0.7)
             return await self._publish_committed_segments_and_analysis(
                 meeting,
                 tracks,
-                committed_reprocess,
+                committed_segments,
                 progress,
             )
         attempt, owner, recovery, execution_route = await self._begin_artifact_attempt_async(meeting)
@@ -675,11 +696,6 @@ class MeetingFinalizer:
         if not track_derivations:
             track_derivations = list(await _durable_thread_call(self.artifact_store.list_track_derivations, attempt.id))
         canonical_units: list[StageUnit] = []
-        transcription_tracks = {
-            "microphone": tracks.get("mic_clean") or tracks.get("microphone"),
-            "system": tracks.get("system"),
-        }
-        transcription_tracks = {key: value for key, value in transcription_tracks.items() if value}
         recovered_sources = {item.source_track for item in track_results}
         audio_identity_changed = (
             bool(recovered_stage is not None and not track_results)
@@ -952,6 +968,7 @@ class MeetingFinalizer:
             ),
             track_results=track_results,
             track_derivations=track_derivations,
+            source_audio={source: self._track_audio_evidence(track) for source, track in transcription_tracks.items()},
         )
         return await self._publish_committed_segments_and_analysis(
             meeting,

@@ -39,6 +39,19 @@ def test_audio_formats_keep_container_and_codec_exact():
         coerce_audio_input_format("webm")
 
 
+def test_float_wav_is_recognized_only_as_a_source_to_convert():
+    source = AudioInputFormat.WAV_PCM32_FLOAT
+    assert source.container == AudioContainer.WAV
+    assert source.codec == AudioCodec.PCM_F32LE
+    assert exact_audio_input_format(AudioContainer.WAV, AudioCodec.PCM_F32LE) == source
+    for capability in PROVIDER_AUDIO_CAPABILITY_MATRIX:
+        assert source not in capability.batch_formats
+        assert source not in capability.realtime_formats
+        assert source not in capability.direct_passthrough_formats
+        assert source != capability.preferred_lossy_format
+        assert source != capability.preferred_lossless_format
+
+
 def test_generic_ogg_and_webm_evidence_does_not_grant_opus():
     capability = resolve_batch_provider_audio_capabilities("mistral_async", "voxtral-mini-2602")
     assert AudioContainer.OGG in capability.batch_generic_containers

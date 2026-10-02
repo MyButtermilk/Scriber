@@ -191,6 +191,10 @@ Backend and runtime:
   only explicit retry may allocate a new attempt after failure. The first
   subscription queues its latest episode, subsequent new episodes queue while
   the app runs. Preserve the per-episode/cache limits and cancellation barriers.
+  File's `stopped` status is terminal unsuccessful work; explicit episode retry
+  allocates a fresh transcript identity. Summary registration ends in the
+  summary function's identity-checked `finally`, even when its caller is a
+  persistent podcast worker.
   `src/api/podcast_routes.py` owns the strict controller-free HTTP boundary and
   local collaborator port; never add scheduler logic or private paths to the UI.
 - `src/data/job_store.py`: persistent file/YouTube jobs.
@@ -1253,6 +1257,9 @@ Packaging and scripts:
 - File-backed direct STT probes both container and codec before selecting
   provider input. New batch encodes prefer mono 64-kbit/s MP3 when the exact
   route accepts it; convert lossless inputs instead of uploading large WAVs.
+  Recognize Float32 PCM WAV as decodable source audio, then normalize it to the
+  route's verified upload representation; recognition is not provider
+  pass-through capability. Verify the generated container and codec strictly.
   Preserve allowed lossy originals byte-for-byte, including MP3 and verified
   Opus/AAC, to avoid increasing size or adding another lossy encode. Azure MAI
   and OpenRouter retain their narrower MP3-only original policy. Meta Voice
@@ -1754,6 +1761,19 @@ Packaging and scripts:
   repeated-cancellation barrier. Stop reserves a closed finalizer task gate
   before touching native capture; only a durable `finalizing` commit may open
   that gate and release a pending request cancellation.
+  The controller supervisor owns the whole Stop settlement through SQLite
+  writer contention. HTTP waits at most 30 seconds before reporting pending
+  local recovery; request cancellation still waits for ownership settlement.
+  Backend shutdown stops subsequent local retries after the active SQLite call,
+  retaining the claim and durable phase for startup recovery.
+  Failed imports settle the durable error and uncommitted staging removal
+  within one cancellation barrier. Startup removes terminal upload leftovers
+  only when no committed original or Meeting workspace owns their directory.
+- Retry the initial Meeting finalization by projecting its completed canonical
+  head when route, reprocess generation, and source-audio identities match.
+  Canonical stage evidence binds every input track's PCM hash, samples,
+  duration, and timeline origin, including tracks without speech. A projection
+  failure must not repeat an already committed provider request.
 - Startup recovery must preserve workflow phase: only `starting`, `recording`,
   and `paused` become resumable `interrupted` capture. `stopping` and
   `finalizing` become `finalization_failed`, and `analyzing` becomes

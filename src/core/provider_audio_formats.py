@@ -105,6 +105,8 @@ class AudioInputFormat(StrEnum):
     WAV_PCM16 = "wav_pcm16"
     WAV_PCM24 = "wav_pcm24"
     WAV_PCM32 = "wav_pcm32"
+    # Recognized source for conversion; no provider upload capability is implied.
+    WAV_PCM32_FLOAT = "wav_pcm32_float"
     RAW_PCM16 = "raw_pcm16"
     RAW_PCM32_FLOAT = "raw_pcm32_float"
     MP3 = "mp3"
@@ -138,6 +140,7 @@ _FORMAT_PARTS: dict[AudioInputFormat, tuple[AudioContainer, AudioCodec]] = {
     AudioInputFormat.WAV_PCM16: (AudioContainer.WAV, AudioCodec.PCM_S16LE),
     AudioInputFormat.WAV_PCM24: (AudioContainer.WAV, AudioCodec.PCM_S24LE),
     AudioInputFormat.WAV_PCM32: (AudioContainer.WAV, AudioCodec.PCM_S32LE),
+    AudioInputFormat.WAV_PCM32_FLOAT: (AudioContainer.WAV, AudioCodec.PCM_F32LE),
     AudioInputFormat.RAW_PCM16: (AudioContainer.RAW, AudioCodec.PCM_S16LE),
     AudioInputFormat.RAW_PCM32_FLOAT: (AudioContainer.RAW, AudioCodec.PCM_F32LE),
     AudioInputFormat.MP3: (AudioContainer.MP3, AudioCodec.MP3),

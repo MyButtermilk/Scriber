@@ -206,6 +206,8 @@ def _format_from_probe_payload(
         return AudioInputFormat.WAV_PCM24, container, codec
     if codec in {"pcm_s32le", "pcm_s32be"} and "wav" in containers:
         return AudioInputFormat.WAV_PCM32, container, codec
+    if codec == "pcm_f32le" and "wav" in containers:
+        return AudioInputFormat.WAV_PCM32_FLOAT, container, codec
     if codec == "mp3" and "mp3" in containers:
         return AudioInputFormat.MP3, container, codec
     if codec == "flac" and "flac" in containers:
