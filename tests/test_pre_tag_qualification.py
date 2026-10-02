@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from scripts.ci import pre_tag_qualification as gate
-from scripts.ci.release_quality_source import RELEASE_WORKFLOW
+from scripts.ci.release_quality_source import RELEASE_WORKFLOW, SOURCE_WORKFLOW
 from scripts.ci.wait_release_quality_gates import REQUIRED_JOB_SUFFIXES, GateError
 
 SHA = "a" * 40
@@ -67,6 +67,7 @@ class GitHub:
         self.runs = [self.source]
         self.requests = []
         self.total = None
+        self.main_runs = []
 
     def api(self, endpoint, timeout):
         assert 0 < timeout <= 30
@@ -85,6 +86,11 @@ class GitHub:
                 "workflow_runs": deepcopy(self.runs),
                 "total_count": self.total if self.total is not None else len(self.runs),
             }
+        if "/workflows/hybrid-pr-checks.yml/runs?" in endpoint:
+            return {"workflow_runs": deepcopy(self.main_runs), "total_count": len(self.main_runs)}
+        for run in self.main_runs:
+            if endpoint.endswith(f"/runs/{run['id']}"):
+                return deepcopy(run)
         raise AssertionError(endpoint)
 
     def check(self, tmp_path, operation="select", **kwargs):
@@ -297,7 +303,11 @@ def test_tag_creation_occurs_only_after_qualification_and_uses_exact_sha(monkeyp
         assert not any("tag" in command or "push" in command for command in calls)
         assert kwargs["head_sha"] == SHA
         calls.append(["qualified"])
-        return {"status": "success" if accepted else "failure", "reason": "not_qualified"}
+        return {
+            "status": "success" if accepted else "failure",
+            "reason": "not_qualified",
+            "sourceCreatedAt": datetime.now(UTC).isoformat(),
+        }
 
     monkeypatch.setattr(gate, "qualification_evidence", qualification)
     monkeypatch.setattr(gate, "gh_json", lambda *args: {"ref": "refs/heads/main", "object": {"sha": SHA}})
@@ -337,7 +347,7 @@ def test_workflow_runs_shared_six_gates_without_signing_or_publication():
     assert "smoke_real_file_upload_browser.py" in shared
 
 
-@pytest.mark.parametrize("failure", ["main", "version", "remote", "live-main"])
+@pytest.mark.parametrize("failure", ["main", "version", "remote", "live-main", "expired"])
 def test_tag_helper_refuses_pre_tag_failures_without_creating_tag(monkeypatch, tmp_path, failure):
     calls = []
     monkeypatch.setattr(gate.subprocess, "run", lambda args, **kwargs: calls.append(args))
@@ -354,8 +364,19 @@ def test_tag_helper_refuses_pre_tag_failures_without_creating_tag(monkeypatch, t
         return '__version__ = "0.5.129"' if failure == "version" else '__version__ = "0.5.130"'
 
     monkeypatch.setattr(gate.subprocess, "check_output", output)
-    monkeypatch.setattr(gate, "qualification_evidence", lambda **kwargs: {"status": "success"})
-    monkeypatch.setattr(gate, "gh_json", lambda *args: {"ref": "refs/heads/main", "object": {"sha": "b" * 40}})
+    monkeypatch.setattr(
+        gate,
+        "qualification_evidence",
+        lambda **kwargs: {
+            "status": "success",
+            "sourceCreatedAt": (datetime.now(UTC) - timedelta(hours=25)).isoformat(),
+        },
+    )
+    monkeypatch.setattr(
+        gate,
+        "gh_json",
+        lambda *args: {"ref": "refs/heads/main", "object": {"sha": SHA if failure == "expired" else "b" * 40}},
+    )
     with pytest.raises(GateError):
         gate.create_qualified_tag(
             head_sha=SHA,
@@ -385,6 +406,25 @@ def test_verification_rejects_other_failed_qualification_before_tag(tmp_path):
         return failed if endpoint.endswith("/runs/201") else original(endpoint, timeout)
 
     assert github.check(tmp_path, "verify", api=api)["reason"] == "qualification_not_successful"
+
+
+@pytest.mark.parametrize("state", ["success", "failure", "in_progress"])
+def test_known_main_quality_is_checked_before_tag_even_after_qualification_passes(tmp_path, state):
+    github = GitHub()
+    main = deepcopy(github.source)
+    main.update(id=400, path=SOURCE_WORKFLOW, event="push", status="completed", conclusion=state)
+    if state == "in_progress":
+        main.update(status=state, conclusion=None)
+    github.main_runs = [main]
+    original = github.api
+
+    def api(endpoint, timeout):
+        if "/runs/400/jobs?" in endpoint:
+            return {"jobs": [{**job, "run_id": 400} for job in github.jobs], "total_count": len(github.jobs)}
+        return original(endpoint, timeout)
+
+    result = github.check(tmp_path, "verify", api=api)
+    assert result["status"] == ("success" if state == "success" else "failure")
 
 
 def test_tag_release_requires_qualification_at_plan_and_before_signing_and_preserves_barriers():

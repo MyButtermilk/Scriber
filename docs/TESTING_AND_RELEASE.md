@@ -1470,7 +1470,10 @@ Use the successful run's full `head_sha` and `run_attempt`. The tag helper
 checks canonical origin, current main, concrete app version, complete quality
 and contract jobs, all earlier attempts, immutable reusable-workflow provenance,
 and 24-hour freshness before creating an annotated tag at that exact SHA. It
-never force-pushes or replaces tags. If main advances, qualify the new commit
+also requires any fresh matching main CI run to have completed successfully,
+so a separate green qualification cannot hide a main failure the release would
+reject. If main CI is still running, wait before qualifying/tagging.
+It never force-pushes or replaces tags. If main advances, qualify the new commit
 before tagging. Failed attempts cannot be erased with a failed-job rerun.
 
 The release planner requires a successful qualification completed before the

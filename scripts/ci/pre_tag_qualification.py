@@ -18,16 +18,64 @@ from typing import Any
 from scripts.ci.release_quality_source import (
     REFERENCED_WORKFLOWS,
     REPOSITORY,
+    _check_prior_attempts,
     _repository_matches,
+    _source_matches,
     _timestamp,
     _write_evidence,
     validate_release_run,
+    validate_source_run,
 )
 from scripts.ci.wait_release_quality_gates import GateError, _evaluate_jobs, _list_jobs, gh_json
 
 WORKFLOW = ".github/workflows/release-qualification.yml"
 CONTRACT_JOB = "Verify pre-tag quality contract"
 API = Callable[[str, float], dict[str, Any]]
+
+
+def _require_clear_main_quality(request: Callable[[str], dict[str, Any]], *, head_sha: str, now: datetime) -> None:
+    # The existing release selector rejects known matching main failures. Check
+    # that same constraint before tag creation, even if a separate qualification
+    # has passed. Otherwise the helper could still consume an unusable tag.
+    for page in range(1, 11):
+        result = request(
+            f"repos/{REPOSITORY}/actions/workflows/hybrid-pr-checks.yml/runs"
+            f"?event=push&branch=main&head_sha={head_sha}&per_page=100&page={page}"
+        )
+        batch, total = result.get("workflow_runs"), result.get("total_count")
+        if not isinstance(batch, list) or len(batch) > 100 or type(total) is not int or not 0 <= total <= 1000:
+            raise GateError("invalid_main_quality_discovery")
+        for listed in batch:
+            if not isinstance(listed, dict):
+                raise GateError("invalid_main_quality_discovery")
+            if not _source_matches(listed, head_sha) or _timestamp(listed.get("created_at")) < now - timedelta(
+                hours=24
+            ):
+                continue
+            base = f"repos/{REPOSITORY}/actions/runs/{listed['id']}"
+            run = request(base)
+            validate_source_run(run, run_id=listed["id"], attempt=listed["run_attempt"], head_sha=head_sha, now=now)
+            if run.get("status") != "completed" or run.get("conclusion") != "success":
+                raise GateError("main_quality_not_completed")
+            _check_prior_attempts(run, head_sha=head_sha, request=request)
+            jobs, pending = _evaluate_jobs(
+                _list_jobs(request, base),
+                run_id=run["id"],
+                attempt=run["run_attempt"],
+                head_sha=head_sha,
+                job_prefix="Reusable quality gates",
+            )
+            if pending or any(job["conclusion"] != "success" for job in jobs):
+                raise GateError("main_quality_jobs_unsuccessful")
+            after = request(base)
+            validate_source_run(after, run_id=run["id"], attempt=run["run_attempt"], head_sha=head_sha, now=now)
+            if after != run:
+                raise GateError("main_quality_changed")
+        if len(batch) < 100:
+            if (page - 1) * 100 + len(batch) != total:
+                raise GateError("incomplete_main_quality_discovery")
+            return
+    raise GateError("main_quality_pagination_limit")
 
 
 def validate_qualification(
@@ -268,6 +316,19 @@ def qualification_evidence(
             validate_release_run(after, run_id=run_id, attempt=attempt, head_sha=head_sha)
             if after.get("created_at") != release.get("created_at"):
                 raise GateError("release_run_changed")
+        if operation in {"qualify", "verify"}:
+            _require_clear_main_quality(request, head_sha=head_sha, now=checked_at)
+            evidence.update(
+                _verify(
+                    request,
+                    run_id=source_run_id or run_id,
+                    attempt=source_attempt or attempt,
+                    head_sha=head_sha,
+                    now=now(),
+                    before=now(),
+                    qualifying=operation == "qualify",
+                )
+            )
         evidence.update(status="success", reason="same_sha_pre_tag_qualification", sourceWorkflow=WORKFLOW)
     except GateError as error:
         evidence["reason"] = str(error)
@@ -284,7 +345,11 @@ def create_qualified_tag(
     if not re.fullmatch(r"v\d+\.\d+\.\d+", tag) or not re.fullmatch(r"[0-9a-f]{40}", head_sha):
         raise GateError("invalid_release_tag")
     remote = subprocess.check_output(["git", "remote", "get-url", "--push", "origin"], text=True).strip()
-    if remote not in {f"https://github.com/{REPOSITORY}.git", f"git@github.com:{REPOSITORY}.git"}:
+    if remote not in {
+        f"{base}{suffix}"
+        for base in (f"https://github.com/{REPOSITORY}", f"git@github.com:{REPOSITORY}")
+        for suffix in ("", ".git")
+    }:
         raise GateError("tag_remote_repository_mismatch")
     subprocess.run(["git", "fetch", "origin", "main"], check=True)
     main_sha = subprocess.check_output(["git", "rev-parse", "FETCH_HEAD"], text=True).strip()
@@ -306,6 +371,8 @@ def create_qualified_tag(
     live_main = gh_json(f"repos/{REPOSITORY}/git/ref/heads/main", 30)
     if live_main.get("ref") != "refs/heads/main" or live_main.get("object", {}).get("sha") != head_sha:
         raise GateError("main_changed_before_tag")
+    if datetime.now(UTC) - _timestamp(result.get("sourceCreatedAt")) > timedelta(hours=24):
+        raise GateError("qualification_expired_before_tag")
     subprocess.run(
         [
             "git",
