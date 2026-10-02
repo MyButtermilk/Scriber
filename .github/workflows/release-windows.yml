@@ -66,6 +66,8 @@ jobs:
       reuse-quality: ${{ steps.quality-source.outputs.reuse-quality }}
       quality-source-run-id: ${{ steps.quality-source.outputs.quality-source-run-id }}
       quality-source-run-attempt: ${{ steps.quality-source.outputs.quality-source-run-attempt }}
+      qualification-run-id: ${{ steps.pre-tag-qualification.outputs.qualification-run-id }}
+      qualification-run-attempt: ${{ steps.pre-tag-qualification.outputs.qualification-run-attempt }}
     env:
       SCRIBER_OUTLOOK_CLIENT_ID: ${{ vars.SCRIBER_OUTLOOK_CLIENT_ID }}
     steps:
@@ -116,6 +118,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Quality evidence selection rejected this release revision."
           }
+
+      - name: Require completed pre-tag qualification
+        id: pre-tag-qualification
+        if: steps.official-release.outputs.official-release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python -m scripts.ci.pre_tag_qualification select
+          --repo "${{ github.repository }}"
+          --run-id "${{ github.run_id }}"
+          --run-attempt "${{ github.run_attempt }}"
+          --head-sha "${{ github.sha }}"
+          --evidence build/test-results/pre-tag-qualification.json
+          --github-output $GITHUB_OUTPUT
 
       - name: Validate Outlook release configuration
         if: steps.official-release.outputs.official-release == 'true'
@@ -1946,6 +1962,22 @@ jobs:
             throw "Required quality gates did not pass for this release revision."
           }
 
+      - name: Recheck pre-tag qualification before signing
+        if: needs.release-plan.outputs.official-release == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m scripts.ci.pre_tag_qualification release `
+            --repo "${{ github.repository }}" `
+            --run-id "${{ github.run_id }}" `
+            --run-attempt "${{ github.run_attempt }}" `
+            --head-sha "${{ github.sha }}" `
+            --source-run-id "${{ needs.release-plan.outputs.qualification-run-id }}" `
+            --source-run-attempt "${{ needs.release-plan.outputs.qualification-run-attempt }}" `
+            --evidence build\test-results\pre-tag-qualification.json
+          if ($LASTEXITCODE -ne 0) { throw "Pre-tag qualification is no longer valid." }
+
       - name: Build Windows installer
         shell: pwsh
         env:
@@ -2334,6 +2366,9 @@ jobs:
             Copy-Item -LiteralPath build\release-cache-summary.json -Destination release-artifacts\
           }
           Copy-Item -LiteralPath build\test-results\release-quality-gates.json -Destination release-artifacts\
+          if (Test-Path -LiteralPath build\test-results\pre-tag-qualification.json -PathType Leaf) {
+            Copy-Item -LiteralPath build\test-results\pre-tag-qualification.json -Destination release-artifacts\
+          }
           foreach ($report in @("release-cold-products-ready.json", "installer-smoke-environment-validation.json", "installer-python-selection.json")) {
             $reportPath = Join-Path build\test-results $report
             if (Test-Path -LiteralPath $reportPath -PathType Leaf) {

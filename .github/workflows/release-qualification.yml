@@ -1,0 +1,65 @@
+name: Pre-tag Release Qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-qualification-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  qualification-plan:
+    name: Authorize exact main qualification
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require canonical main dispatch
+        env:
+          QUALIFICATION_ALLOWED: ${{ github.repository == 'MyButtermilk/Scriber' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+        run: test "$QUALIFICATION_ALLOWED" = true
+
+  quality-gates:
+    name: Reusable quality gates
+    needs: qualification-plan
+    uses: ./.github/workflows/quality-gates.yml
+    permissions:
+      contents: read
+
+  qualification-contract:
+    name: Verify pre-tag quality contract
+    needs: quality-gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout exact qualified revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14.7"
+      - name: Verify current-run quality evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python -m scripts.ci.pre_tag_qualification qualify
+          --repo "${{ github.repository }}"
+          --run-id "${{ github.run_id }}"
+          --run-attempt "${{ github.run_attempt }}"
+          --head-sha "${{ github.sha }}"
+          --evidence build/test-results/pre-tag-qualification.json
+      - name: Upload qualification diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pre-tag-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/test-results/pre-tag-qualification.json
+          if-no-files-found: error
+          retention-days: 2
