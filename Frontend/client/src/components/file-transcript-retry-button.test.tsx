@@ -1,0 +1,138 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { LocaleProvider, LANGUAGE_STORAGE_KEY } from "@/i18n";
+import { FileTranscriptRetryButton } from "./file-transcript-retry-button";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
+import { startFileUploadBatch } from "@/lib/file-upload-store";
+
+const { navigate, toast } = vi.hoisted(() => ({ navigate: vi.fn(), toast: vi.fn() }));
+
+vi.mock("@/lib/fetch-with-timeout", () => ({ fetchWithTimeout: vi.fn() }));
+vi.mock("@/lib/backend", () => ({ apiUrl: (path: string) => path }));
+vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast }) }));
+vi.mock("@/lib/file-upload-store", () => ({ startFileUploadBatch: vi.fn() }));
+vi.mock("wouter", () => ({ useLocation: () => ["/file", navigate] }));
+
+function mount() {
+  return render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <LocaleProvider>
+        <div onClick={() => navigate("old-record")}>
+          <FileTranscriptRetryButton transcriptId={"a".repeat(32)} />
+        </div>
+      </LocaleProvider>
+    </QueryClientProvider>,
+  );
+}
+
+describe("File transcript retry", () => {
+  beforeEach(() => {
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, "en");
+    window.history.replaceState({}, "", "/file");
+    vi.mocked(fetchWithTimeout).mockReset();
+    vi.mocked(startFileUploadBatch).mockReset();
+  });
+  it("queues the exact linked episode once and disables repeated clicks", async () => {
+    const fetch = vi.mocked(fetchWithTimeout);
+    fetch.mockResolvedValueOnce(new Response(JSON.stringify({ episode: { id: "b".repeat(32), status: "failed" } })));
+    let finish!: (response: Response) => void;
+    fetch.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    mount();
+    const button = screen.getByRole("button", { name: "Retry transcription" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[1][0]).toBe(`/api/podcasts/episodes/${"b".repeat(32)}/queue`);
+    expect(fetch.mock.calls[1][1]?.method).toBe("POST");
+    finish(new Response("{}", { status: 202 }));
+    expect(await screen.findByRole("button", { name: "Queued" })).toBeDisabled();
+  });
+
+  it("opens file selection for an ordinary upload and admits one new attempt without opening the old card", async () => {
+    vi.mocked(fetchWithTimeout).mockResolvedValueOnce(new Response(JSON.stringify({ episode: null })));
+    vi.mocked(startFileUploadBatch).mockResolvedValue({
+      failures: [],
+      responses: [
+        { id: "new-file", title: "recording.mp4", type: "file", status: "processing", date: "", duration: "" },
+      ],
+    });
+    mount();
+    const button = screen.getByRole("button", { name: "Retry transcription" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    expect(await screen.findByRole("dialog")).toBeVisible();
+    expect(navigate).not.toHaveBeenCalled();
+    const file = new File(["fixture"], "recording.mp4", { type: "video/mp4" });
+    fireEvent.change(screen.getByLabelText("Original audio or video file"), { target: { files: [file] } });
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/transcript/new-file"));
+    expect(startFileUploadBatch).toHaveBeenCalledExactlyOnceWith([file], {
+      getServerProcessingText: expect.any(Function),
+    });
+    expect(fetchWithTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows the same file to be selected again after an upload failure", async () => {
+    vi.mocked(fetchWithTimeout).mockResolvedValueOnce(new Response(JSON.stringify({ episode: null })));
+    vi.mocked(startFileUploadBatch).mockResolvedValue({
+      failures: [{ fileName: "recording.mp4", error: "Upload failed" }],
+      responses: [],
+    });
+    mount();
+    const button = screen.getByRole("button", { name: "Retry transcription" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await screen.findByRole("dialog");
+    const file = new File(["fixture"], "recording.mp4");
+    const input = screen.getByLabelText("Original audio or video file");
+    fireEvent.change(input, { target: { files: [file] } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Choose file" })).toBeEnabled());
+    fireEvent.change(input, { target: { files: [file] } });
+    await waitFor(() => expect(startFileUploadBatch).toHaveBeenCalledTimes(2));
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("does not assume an uploaded file when the podcast lookup fails", async () => {
+    vi.mocked(fetchWithTimeout).mockRejectedValue(new Error("Network unavailable"));
+    mount();
+    const button = screen.getByRole("button", { name: "Retry transcription" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Retry failed" })));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(startFileUploadBatch).not.toHaveBeenCalled();
+    expect(button).toBeEnabled();
+  });
+
+  it("does not move the user back to a transcript after they leave during upload", async () => {
+    vi.mocked(fetchWithTimeout).mockResolvedValueOnce(new Response(JSON.stringify({ episode: null })));
+    let finish!: (result: Awaited<ReturnType<typeof startFileUploadBatch>>) => void;
+    vi.mocked(startFileUploadBatch).mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    mount();
+    const button = screen.getByRole("button", { name: "Retry transcription" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await screen.findByRole("dialog");
+    fireEvent.change(screen.getByLabelText("Original audio or video file"), {
+      target: { files: [new File(["fixture"], "recording.mp4")] },
+    });
+    window.history.pushState({}, "", "/settings");
+    finish({
+      failures: [],
+      responses: [
+        { id: "new-file", title: "recording.mp4", type: "file", status: "processing", date: "", duration: "" },
+      ],
+    });
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Retry started" })));
+    expect(navigate).not.toHaveBeenCalled();
+  });
+});

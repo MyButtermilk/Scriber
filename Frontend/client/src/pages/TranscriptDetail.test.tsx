@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Route, Router } from "wouter";
@@ -11,11 +11,20 @@ import { AppScrollContainerContext } from "@/contexts/AppScrollContainerContext"
 
 vi.mock("@/hooks/use-transcript-auto-refresh", () => ({ useTranscriptAutoRefresh: () => ({ isWsConnected: true }) }));
 vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }));
+vi.mock("@/lib/fetch-with-timeout", () => ({
+  fetchWithTimeout: vi.fn(async () => new Response(JSON.stringify({ episode: null }))),
+}));
 
 const rateLimitMessage =
   "Microsoft MAI Transcribe via OpenRouter is temporarily rate limited (HTTP 429). Wait briefly or switch transcription provider.";
 
-function mount(content = "", step = rateLimitMessage, summary = "", type: TranscriptDetailResponse["type"] = "mic") {
+function mount(
+  content = "",
+  step = rateLimitMessage,
+  summary = "",
+  type: TranscriptDetailResponse["type"] = "mic",
+  overrides: Partial<TranscriptDetailResponse> = {},
+) {
   const record: TranscriptDetailResponse = {
     id: "failed-mic",
     title: "Live Mic",
@@ -26,6 +35,7 @@ function mount(content = "", step = rateLimitMessage, summary = "", type: Transc
     content,
     step,
     summary,
+    ...overrides,
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => record } } });
   const location = memoryLocation({ path: "/transcript/failed-mic" });
@@ -47,6 +57,29 @@ function mount(content = "", step = rateLimitMessage, summary = "", type: Transc
 describe("failed transcript", () => {
   beforeEach(() => {
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, "en");
+  });
+
+  it("offers transcription retry beside the error for an ordinary uploaded file", async () => {
+    mount("[Error] Cannot connect to host openrouter.ai:443", "Failed", "", "file");
+    const button = await screen.findByRole("button", { name: "Retry transcription" });
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(button.closest(".space-y-2")).toHaveTextContent("Transcription failed");
+    fireEvent.click(button);
+    expect(await screen.findByRole("dialog")).toBeVisible();
+  });
+
+  it("offers summary retry even when an earlier successful summary remains", async () => {
+    mount("Transcript text.", "Failed", "An earlier summary.", "file", {
+      status: "completed",
+      summaryStatus: "failed",
+    });
+    expect(await screen.findByRole("button", { name: "Retry Summary" })).toBeEnabled();
+  });
+
+  it("does not show stale summary processing after the transcription failed", async () => {
+    mount("[Error] Connection failed", "Summarizing...", "", "file", { summaryStatus: "pending" });
+    await screen.findByRole("button", { name: "Retry transcription" });
+    expect(screen.queryByText("Summarizing...")).not.toBeInTheDocument();
   });
 
   it("shows the persisted failure separately from transcript text and actions", async () => {
