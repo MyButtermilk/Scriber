@@ -328,6 +328,12 @@ def qualification_evidence(
             validate_release_run(after, run_id=run_id, attempt=attempt, head_sha=head_sha)
             if after.get("created_at") != release.get("created_at"):
                 raise GateError("release_run_changed")
+        # A delayed main push run can appear while source/release identities
+        # are rechecked. Make main discovery the final state read, so absence
+        # in the first snapshot cannot authorize signing after it becomes visible.
+        _require_clear_main_quality(request, head_sha=head_sha, now=now())
+        if now() - _timestamp(evidence["sourceCreatedAt"]) > timedelta(hours=24):
+            raise GateError("qualification_expired_during_final_checks")
         evidence.update(status="success", reason="same_sha_pre_tag_qualification", sourceWorkflow=WORKFLOW)
     except GateError as error:
         evidence["reason"] = str(error)

@@ -433,6 +433,31 @@ def test_known_main_quality_is_checked_before_tag_and_signing_even_after_plannin
     assert result["status"] == ("success" if state == "success" else "failure")
 
 
+@pytest.mark.parametrize("state", ["failure", "in_progress", "failed-rerun"])
+def test_delayed_main_run_discovered_during_final_identity_reads_blocks_signing(tmp_path, state):
+    github = GitHub()
+    main = deepcopy(github.source)
+    main.update(id=400, path=SOURCE_WORKFLOW, event="push", conclusion=state)
+    if state == "in_progress":
+        main.update(status=state, conclusion=None)
+    if state == "failed-rerun":
+        main.update(conclusion="success", run_attempt=2)
+    original = github.api
+
+    def api(endpoint, timeout):
+        if endpoint == RELEASE_BASE and github.requests.count(RELEASE_BASE):
+            # The first main discovery was empty; the run becomes visible
+            # during the final release-identity read, before signing.
+            github.main_runs = [main]
+        if endpoint.endswith("/runs/400/attempts/1"):
+            return {**main, "run_attempt": 1, "conclusion": "failure"}
+        return original(endpoint, timeout)
+
+    result = github.check(tmp_path, "release", api=api)
+    assert result["status"] == "failure"
+    assert sum("/workflows/hybrid-pr-checks.yml/runs?" in endpoint for endpoint in github.requests) == 2
+
+
 def test_tag_release_requires_qualification_at_plan_and_before_signing_and_preserves_barriers():
     root = Path(__file__).resolve().parents[1]
     text = (root / ".github/workflows/release-windows.yml").read_text()
