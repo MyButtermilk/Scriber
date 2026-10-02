@@ -408,22 +408,28 @@ def test_verification_rejects_other_failed_qualification_before_tag(tmp_path):
     assert github.check(tmp_path, "verify", api=api)["reason"] == "qualification_not_successful"
 
 
-@pytest.mark.parametrize("state", ["success", "failure", "in_progress"])
-def test_known_main_quality_is_checked_before_tag_even_after_qualification_passes(tmp_path, state):
+@pytest.mark.parametrize("state", ["success", "failure", "in_progress", "failed-rerun"])
+@pytest.mark.parametrize("operation", ["verify", "release"])
+def test_known_main_quality_is_checked_before_tag_and_signing_even_after_planning_passes(tmp_path, state, operation):
     github = GitHub()
+    assert github.check(tmp_path)["status"] == "success"  # Planning saw no matching main run.
     main = deepcopy(github.source)
     main.update(id=400, path=SOURCE_WORKFLOW, event="push", status="completed", conclusion=state)
     if state == "in_progress":
         main.update(status=state, conclusion=None)
+    if state == "failed-rerun":
+        main.update(conclusion="success", run_attempt=2)
     github.main_runs = [main]
     original = github.api
 
     def api(endpoint, timeout):
+        if endpoint.endswith("/runs/400/attempts/1"):
+            return {**main, "run_attempt": 1, "conclusion": "failure"}
         if "/runs/400/jobs?" in endpoint:
             return {"jobs": [{**job, "run_id": 400} for job in github.jobs], "total_count": len(github.jobs)}
         return original(endpoint, timeout)
 
-    result = github.check(tmp_path, "verify", api=api)
+    result = github.check(tmp_path, operation, api=api)
     assert result["status"] == ("success" if state == "success" else "failure")
 
 

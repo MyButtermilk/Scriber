@@ -311,24 +311,23 @@ def qualification_evidence(
                     qualifying=operation == "qualify",
                 )
             )
+        _require_clear_main_quality(request, head_sha=head_sha, now=checked_at)
+        evidence.update(
+            _verify(
+                request,
+                run_id=evidence["sourceRunId"],
+                attempt=evidence["sourceRunAttempt"],
+                head_sha=head_sha,
+                now=now(),
+                before=before if release is not None else now(),
+                qualifying=operation == "qualify",
+            )
+        )
         if release is not None:
             after = request(f"repos/{repo}/actions/runs/{run_id}")
             validate_release_run(after, run_id=run_id, attempt=attempt, head_sha=head_sha)
             if after.get("created_at") != release.get("created_at"):
                 raise GateError("release_run_changed")
-        if operation in {"qualify", "verify"}:
-            _require_clear_main_quality(request, head_sha=head_sha, now=checked_at)
-            evidence.update(
-                _verify(
-                    request,
-                    run_id=source_run_id or run_id,
-                    attempt=source_attempt or attempt,
-                    head_sha=head_sha,
-                    now=now(),
-                    before=now(),
-                    qualifying=operation == "qualify",
-                )
-            )
         evidence.update(status="success", reason="same_sha_pre_tag_qualification", sourceWorkflow=WORKFLOW)
     except GateError as error:
         evidence["reason"] = str(error)
