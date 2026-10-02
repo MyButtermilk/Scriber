@@ -131,7 +131,7 @@ jobs:
           --run-attempt "${{ github.run_attempt }}"
           --head-sha "${{ github.sha }}"
           --evidence build/test-results/pre-tag-qualification.json
-          --github-output $GITHUB_OUTPUT
+          --github-output "$GITHUB_OUTPUT"
 
       - name: Validate Outlook release configuration
         if: steps.official-release.outputs.official-release == 'true'
