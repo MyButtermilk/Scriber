@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import threading
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -69,13 +70,27 @@ class Response:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fallback", [False, True])
-async def test_azure_success_survives_cancellation_in_response_exit_and_restart(source_audio, tmp_path, fallback):
+@pytest.mark.parametrize("boundary", ["response_exit", "result_commit"])
+async def test_azure_success_survives_cancellation_and_restart(source_audio, tmp_path, monkeypatch, fallback, boundary):
     db_path = tmp_path / "jobs.sqlite"
     store = JobStore(db_path)
     job = store.enqueue(transcript_id="azure-response-exit", job_type=JobType.FILE)
     assert store.mark_running(job.id)
     checkpoint = checkpoint_for(store, job.id, source_audio)
     exiting = asyncio.Event()
+    committing = asyncio.Event()
+    release_exit = asyncio.Event()
+    release_commit = threading.Event()
+    loop = asyncio.get_running_loop()
+    original_save = checkpoint._save_success
+
+    def blocked_save(index, payload):
+        loop.call_soon_threadsafe(committing.set)
+        assert release_commit.wait(5)
+        original_save(index, payload)
+
+    if boundary == "result_commit":
+        monkeypatch.setattr(checkpoint, "_save_success", blocked_save)
     provider_payload = {
         "combinedPhrases": [{"text": "Already paid transcript"}],
         AZURE_MAI_DIARIZATION_FALLBACK_KEY: "untrusted-provider-marker",
@@ -87,7 +102,7 @@ async def test_azure_success_survives_cancellation_in_response_exit_and_restart(
     class BlockedExit(Response):
         async def __aexit__(self, *_args):
             exiting.set()
-            await asyncio.Future()
+            await release_exit.wait()
 
     responses = [BlockedExit(200, json.dumps(provider_payload))]
     if fallback:
@@ -96,10 +111,16 @@ async def test_azure_success_survives_cancellation_in_response_exit_and_restart(
     session.post.side_effect = responses
     task = asyncio.create_task(transcribe_parts(source_audio, session, checkpoint, diarize=fallback))
     try:
-        await asyncio.wait_for(exiting.wait(), 5)
+        ready = committing if boundary == "result_commit" else exiting
+        await asyncio.wait_for(ready.wait(), 5)
+        if boundary == "result_commit":
+            assert not exiting.is_set(), "Cancel while the paid result is committing, before response cleanup"
         task.cancel()
+        release_commit.set()
+        release_exit.set()
         with pytest.raises(asyncio.CancelledError):
             await task
+        assert exiting.is_set()
         assert session.post.call_count == 1 + int(fallback)
         assert await checkpoint.lookup(1) == expected
         assert store.mark_canceled(job.id)
@@ -118,9 +139,12 @@ async def test_azure_success_survives_cancellation_in_response_exit_and_restart(
         assert result == {**expected, "_scriberChunkCount": 1}
         resumed_session.post.assert_not_called()
     finally:
+        # Release a response exit even if cancellation reaches it after a commit.
+        release_exit.set()
+        release_commit.set()
         if not task.done():
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        await asyncio.gather(task, return_exceptions=True)
         store.close()
 
 
