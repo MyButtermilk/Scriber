@@ -63,6 +63,16 @@ class _StubController:
     async def get_transcript(self, transcript_id: str) -> dict[str, Any] | None:
         return self.stored
 
+    async def recent_transcripts_for_tray(self) -> dict[str, Any]:
+        if self.list_error is not None:
+            raise self.list_error
+        return {"items": [self.stored] if self.stored else []}
+
+    async def transcript_for_tray_copy(self, transcript_id: str) -> dict[str, Any] | None:
+        if self.list_error is not None:
+            raise self.list_error
+        return self.stored
+
     async def transcript_view(self, transcript_id: str) -> _View | None:
         return self.view
 
@@ -140,6 +150,38 @@ async def test_detail_reports_a_missing_transcript():
     client = await _client(controller)
     try:
         assert (await client.get("/api/transcripts/t-1")).status == 404
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_tray_reads_use_the_durable_boundary_and_disable_caching():
+    controller = _StubController()
+    controller.stored = {"id": "t-1", "status": "completed", "content": "current text"}
+    client = await _client(controller)
+    try:
+        recent = await client.get("/api/transcripts/recent")
+        assert (await recent.json())["items"] == [controller.stored]
+        assert recent.headers["Cache-Control"] == "no-store"
+        copied = await client.get("/api/transcripts/t-1/copy")
+        assert await copied.json() == controller.stored
+        assert copied.headers["Cache-Control"] == "no-store"
+        controller.stored = None
+        assert (await client.get("/api/transcripts/t-1/copy")).status == 404
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["recent", "t-1/copy"])
+async def test_tray_storage_errors_are_not_reported_as_empty_history_or_leaked(path):
+    controller = _StubController()
+    controller.list_error = RuntimeError("private transcript and secret URL")
+    client = await _client(controller)
+    try:
+        response = await client.get(f"/api/transcripts/{path}")
+        assert response.status == 503
+        assert "private" not in await response.text()
     finally:
         await client.close()
 
@@ -320,6 +362,8 @@ def test_controller_adapter_matches_the_transcript_port(assert_protocol_contract
         methods={
             "list_transcripts",
             "get_transcript",
+            "recent_transcripts_for_tray",
+            "transcript_for_tray_copy",
             "transcript_view",
             "has_transcript_record",
             "delete_transcript_record",

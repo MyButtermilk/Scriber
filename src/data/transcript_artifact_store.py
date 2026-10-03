@@ -2333,6 +2333,95 @@ class TranscriptArtifactStore:
         row = conn.execute("SELECT * FROM canonical_transcript_artifacts WHERE id = ?", (artifact_id,)).fetchone()
         return self._artifact_from_row(conn, row) if row else None
 
+    def _tray_content(self, conn: sqlite3.Connection, transcript_id: str, *, preview: bool) -> str:
+        """Read the current head inside the caller's snapshot; never use a history cache."""
+        head = conn.execute(
+            "SELECT artifact_id FROM canonical_transcript_heads WHERE transcript_id = ?", (transcript_id,)
+        ).fetchone()
+        if head is not None:
+            artifact_row = conn.execute(
+                "SELECT * FROM canonical_transcript_artifacts WHERE id = ? AND transcript_id = ?",
+                (head["artifact_id"], transcript_id),
+            ).fetchone()
+            if artifact_row is None:
+                raise ArtifactNotFound("Current transcript artifact is unavailable")
+            if preview:
+                rows = conn.execute(
+                    "SELECT substr(CAST(text AS BLOB), 1, 2048) AS text FROM canonical_transcript_segments "
+                    "WHERE artifact_id = ? ORDER BY order_index LIMIT 16",
+                    (head["artifact_id"],),
+                ).fetchall()
+                return " ".join(bytes(row["text"] or b"").decode("utf-8", errors="ignore") for row in rows)
+            return self.render_legacy_content(self._artifact_from_row(conn, artifact_row).segments)
+        # Live Mic and pre-artifact history have no canonical head. Their durable
+        # content is authoritative; the stored preview/title may be obsolete.
+        # SQLite TEXT substr stops at embedded NUL; slice UTF-8 bytes so a
+        # control character cannot hide otherwise useful preview words.
+        column = "substr(CAST(content AS BLOB), 1, 2048)" if preview else "content"
+        row = conn.execute(f"SELECT {column} AS content FROM transcripts WHERE id = ?", (transcript_id,)).fetchone()
+        if preview:
+            return bytes(row["content"] or b"").decode("utf-8", errors="ignore") if row is not None else ""
+        return str(row["content"] or "") if row is not None else ""
+
+    def list_recent_for_tray(self, limit: int = 8) -> dict[str, Any]:
+        """Bounded completed-only metadata and plain previews from one durable snapshot."""
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN")
+            rows = conn.execute(
+                "SELECT id, type, date, duration, created_at FROM transcripts WHERE status = 'completed' "
+                "ORDER BY created_at DESC, id DESC LIMIT ?",
+                (max(1, min(8, limit)),),
+            ).fetchall()
+            items = []
+            for row in rows:
+                content = self._tray_content(conn, row["id"], preview=True)
+                normalized = self._normalize_tray_preview(content)
+                if not normalized:
+                    # A bounded prefix can be whitespace/control-only while
+                    # later content is usable. Only this unusual case needs a
+                    # full read; normal history never materializes long text.
+                    normalized = self._normalize_tray_preview(self._tray_content(conn, row["id"], preview=False))
+                preview = normalized if len(normalized) <= 72 else normalized[:71].rstrip() + "…"
+                items.append(
+                    {
+                        "id": row["id"],
+                        "type": row["type"],
+                        "status": "completed",
+                        "date": row["date"],
+                        "duration": row["duration"],
+                        "createdAt": row["created_at"],
+                        "preview": preview,
+                        "contentAvailable": bool(normalized),
+                    }
+                )
+            return {"items": items}
+        finally:
+            conn.rollback()
+
+    @staticmethod
+    def _normalize_tray_preview(content: str) -> str:
+        safe = "".join(
+            ch
+            for ch in unicodedata.normalize("NFKC", content)
+            if ch.isspace() or not unicodedata.category(ch).startswith("C")
+        )
+        return " ".join(safe.split())
+
+    def read_for_tray_copy(self, transcript_id: str) -> dict[str, Any] | None:
+        """Resolve a visible ID again at copy time, including deletion/final-state checks."""
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN")
+            row = conn.execute("SELECT status FROM transcripts WHERE id = ?", (transcript_id,)).fetchone()
+            if row is None:
+                return None
+            status = str(row["status"])
+            content = self._tray_content(conn, transcript_id, preview=False) if status == "completed" else ""
+            return {"id": transcript_id, "status": status, "content": content}
+        finally:
+            conn.rollback()
+
     def promote_completed_projection_duration(
         self,
         transcript_id: str,

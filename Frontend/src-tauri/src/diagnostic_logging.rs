@@ -1,7 +1,8 @@
 //! Runtime opt-out shared by shell diagnostics and managed-backend output.
 //!
 //! The gate covers the write itself. Once disabling returns, no admitted
-//! writer can append later; existing files are retained without truncation.
+//! writer can append later. Enabled writers rotate bounded files under the
+//! same gate; disabling alone retains existing files without truncation.
 
 use std::{
     env,
@@ -13,6 +14,8 @@ use std::{
 };
 
 pub(crate) const ENABLED_ENV: &str = "SCRIBER_DIAGNOSTIC_LOGGING_ENABLED";
+const MAX_LOG_BYTES: usize = 5 * 1024 * 1024;
+const LOG_ARCHIVE_COUNT: usize = 3;
 
 struct DiagnosticGate(Mutex<bool>);
 
@@ -36,22 +39,79 @@ impl DiagnosticGate {
     }
 
     fn append(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+        self.append_with_limit(path, bytes, MAX_LOG_BYTES)
+    }
+
+    fn append_with_limit(&self, path: &Path, bytes: &[u8], max_bytes: usize) -> io::Result<()> {
         let enabled = self
             .0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !*enabled {
+        if !*enabled || bytes.is_empty() {
             return Ok(());
         }
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?
-            .write_all(bytes)
+        for chunk in bytes.chunks(max_bytes) {
+            let current_size = match fs::metadata(path) {
+                Ok(metadata) => metadata.len(),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+                Err(error) => return Err(error),
+            };
+            if current_size > 0
+                && current_size.saturating_add(chunk.len() as u64) > max_bytes as u64
+            {
+                // No writer handle is held across rename: Windows readers may
+                // still deny it, in which case stop appending until a retry can
+                // rotate. Pipe draining must continue even on a logging error.
+                rotate_log(path)?;
+            }
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)?
+                .write_all(chunk)?;
+        }
+        Ok(())
     }
+}
+
+fn archive_path(path: &Path, index: usize) -> PathBuf {
+    let mut extension = std::ffi::OsString::from(index.to_string());
+    if let Some(original_extension) = path.extension() {
+        extension.push(".");
+        extension.push(original_extension);
+    }
+    // Keep the final suffix discoverable by debug logs and support bundles.
+    path.with_extension(extension)
+}
+
+fn rotate_log(path: &Path) -> io::Result<()> {
+    // Retain an oversized legacy file whole until normal archive eviction;
+    // migrating to bounded logs must not truncate its existing history.
+    let mut target = archive_path(path, 1);
+    let mut oldest_modified = None;
+    for index in 1..=LOG_ARCHIVE_COUNT {
+        let archive = archive_path(path, index);
+        let metadata = match fs::metadata(&archive) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return fs::rename(path, archive);
+            }
+            Err(error) => return Err(error),
+        };
+        let modified = metadata.modified()?;
+        if oldest_modified.map_or(true, |oldest| modified < oldest) {
+            oldest_modified = Some(modified);
+            target = archive;
+        }
+    }
+    // Reuse only the oldest slot, without shifting other archives. If a
+    // Windows reader blocks the active rename, retries reuse this vacant slot
+    // instead of repeatedly evicting the remaining history.
+    fs::remove_file(&target)?;
+    fs::rename(path, target)
 }
 
 fn gate() -> &'static DiagnosticGate {
@@ -123,7 +183,7 @@ fn drain_output(mut reader: impl Read, mut sink: impl FnMut(&[u8])) {
 
 #[cfg(test)]
 mod tests {
-    use super::{drain_output, startup_enabled, DiagnosticGate};
+    use super::{archive_path, drain_output, startup_enabled, DiagnosticGate, LOG_ARCHIVE_COUNT};
     use std::{fs, sync::Arc};
 
     #[test]
@@ -167,6 +227,136 @@ mod tests {
         gate.set_enabled(true);
         gate.append(&path, b" resumed").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"kept resumed");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rotation_keeps_active_paths_and_discoverable_archive_suffixes() {
+        let root =
+            std::env::temp_dir().join(format!("scriber-log-rotation-{}", uuid::Uuid::new_v4()));
+        let gate = DiagnosticGate::new(true);
+        for name in ["tauri-backend.log", "backend-crash-metadata.jsonl"] {
+            let path = root.join(name);
+            gate.append_with_limit(&path, b"1234", 4).unwrap();
+            assert!(!archive_path(&path, 1).exists());
+            gate.append_with_limit(&path, b"5", 4).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), b"5");
+            let archive = archive_path(&path, 1);
+            assert_eq!(archive.extension(), path.extension());
+            assert_eq!(fs::read(archive).unwrap(), b"1234");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rotation_reuses_the_oldest_archive_without_shifting_other_slots() {
+        let root =
+            std::env::temp_dir().join(format!("scriber-log-retention-{}", uuid::Uuid::new_v4()));
+        let path = root.join("tauri-shell.log");
+        let gate = DiagnosticGate::new(true);
+        gate.append_with_limit(&path, b"full", 4).unwrap();
+        for (index, seconds) in [(1, 300), (2, 100), (3, 200)] {
+            let archive = archive_path(&path, index);
+            fs::write(&archive, format!("old{index}")).unwrap();
+            let file = fs::OpenOptions::new().write(true).open(archive).unwrap();
+            file.set_times(
+                fs::FileTimes::new()
+                    .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds)),
+            )
+            .unwrap();
+        }
+        gate.append_with_limit(&path, b"new", 4).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert_eq!(fs::read(archive_path(&path, 1)).unwrap(), b"old1");
+        assert_eq!(fs::read(archive_path(&path, 2)).unwrap(), b"full");
+        assert_eq!(fs::read(archive_path(&path, 3)).unwrap(), b"old3");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), LOG_ARCHIVE_COUNT + 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn oversized_writes_are_bounded_but_legacy_logs_are_preserved_whole() {
+        let root =
+            std::env::temp_dir().join(format!("scriber-log-limits-{}", uuid::Uuid::new_v4()));
+        let path = root.join("tauri-backend.log");
+        let gate = DiagnosticGate::new(true);
+        gate.append_with_limit(&path, b"abcdefghijklm", 4).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"m");
+        assert_eq!(fs::read(archive_path(&path, 1)).unwrap(), b"abcd");
+        assert_eq!(fs::read(archive_path(&path, 2)).unwrap(), b"efgh");
+        assert_eq!(fs::read(archive_path(&path, 3)).unwrap(), b"ijkl");
+
+        let legacy = root.join("legacy.log");
+        fs::write(&legacy, b"oversized existing history").unwrap();
+        gate.set_enabled(false);
+        gate.append_with_limit(&legacy, b"ignored", 4).unwrap();
+        assert!(!archive_path(&legacy, 1).exists());
+        assert_eq!(fs::read(&legacy).unwrap(), b"oversized existing history");
+        gate.set_enabled(true);
+        gate.append_with_limit(&legacy, b"new", 4).unwrap();
+        assert_eq!(fs::read(&legacy).unwrap(), b"new");
+        assert_eq!(
+            fs::read(archive_path(&legacy, 1)).unwrap(),
+            b"oversized existing history"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_writers_keep_rotation_and_append_in_the_same_gate() {
+        let root =
+            std::env::temp_dir().join(format!("scriber-log-writers-{}", uuid::Uuid::new_v4()));
+        let path = root.join("tauri-backend.log");
+        let gate = Arc::new(DiagnosticGate::new(true));
+        let writers: Vec<_> = (0..8)
+            .map(|_| {
+                let gate = Arc::clone(&gate);
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..8 {
+                        gate.append_with_limit(&path, b"record\n", 7).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        assert_eq!(fs::read_dir(&root).unwrap().count(), LOG_ARCHIVE_COUNT + 1);
+        for entry in fs::read_dir(&root).unwrap() {
+            assert_eq!(fs::read(entry.unwrap().path()).unwrap(), b"record\n");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn blocked_rotation_does_not_grow_logs_or_repeatedly_evict_archives() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let root =
+            std::env::temp_dir().join(format!("scriber-log-locked-{}", uuid::Uuid::new_v4()));
+        let path = root.join("tauri-backend.log");
+        let gate = DiagnosticGate::new(true);
+        gate.append_with_limit(&path, b"full", 4).unwrap();
+        for index in 1..=LOG_ARCHIVE_COUNT {
+            fs::write(archive_path(&path, index), b"old").unwrap();
+        }
+        let reader = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&path)
+            .unwrap();
+        for _ in 0..4 {
+            assert!(gate.append_with_limit(&path, b"new", 4).is_err());
+        }
+        assert_eq!(fs::read(&path).unwrap(), b"full");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), LOG_ARCHIVE_COUNT);
+        drop(reader);
+        gate.append_with_limit(&path, b"new", 4).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), LOG_ARCHIVE_COUNT + 1);
         fs::remove_dir_all(root).unwrap();
     }
 

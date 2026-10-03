@@ -181,7 +181,7 @@ class FfmpegAudioFileInput(BaseInputTransport):
             raise
         except Exception as exc:
             self._error = str(exc)
-            logger.error(f"Audio file feed failed: {exc}")
+            logger.error("Audio file feed failed (error_type={})", type(exc).__name__)
         finally:
             self._done.set()
             try:

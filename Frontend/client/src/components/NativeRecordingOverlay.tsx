@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { isTauriRuntime, loadBackendBaseUrlFromTauri, setTrayRecordingState, wsUrl } from "@/lib/backend";
 import { requestLiveMicStop } from "@/lib/live-mic-control";
 import { createLiveMicSessionMessageGate } from "@/lib/runtime-message-state";
+import { createNativeOverlayStateGate } from "@/lib/native-overlay-state";
 import MicrophoneEnergyField from "@/components/MicrophoneEnergyField";
 import MicrophoneBlueFlame, { BLUE_FLAME_PILL_BACKGROUND } from "@/components/MicrophoneBlueFlame";
 import type { OverlayVisualizerStyle } from "@/lib/api-types";
@@ -25,6 +26,7 @@ import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 type OverlayMode = "hidden" | "initializing" | "recording" | "transcribing";
 
 type OverlayEventPayload = {
+  revision?: number;
   apiVersion?: string;
   renderer?: string;
   mode?: string;
@@ -407,9 +409,9 @@ export default function NativeRecordingOverlay() {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    let receivedNativeEvent = false;
+    const acceptNativeState = createNativeOverlayStateGate();
     void listen<OverlayEventPayload>("scriber-overlay-state", (event) => {
-      receivedNativeEvent = true;
+      if (disposed || !acceptNativeState(event.payload)) return;
       const wsRmsIsStale = performance.now() - lastWsRmsAtRef.current >= NATIVE_RMS_FALLBACK_AFTER_MS;
       if (wsRmsIsStale && Number.isFinite(event.payload.rms)) {
         rmsRef.current = Math.min(1, Math.max(0, Number(event.payload.rms)));
@@ -430,12 +432,11 @@ export default function NativeRecordingOverlay() {
         try {
           const { invoke } = await import("@tauri-apps/api/core");
           const snapshot = await invoke<OverlayEventPayload>("native_overlay_renderer_ready");
-          if (!disposed && Number.isFinite(snapshot.lastRms)) {
+          if (disposed || !acceptNativeState(snapshot)) return;
+          if (Number.isFinite(snapshot.lastRms)) {
             rmsRef.current = Math.min(1, Math.max(0, Number(snapshot.lastRms)));
           }
-          if (!disposed && !receivedNativeEvent) {
-            setMode(modeFromNativeOverlayState(snapshot));
-          }
+          setMode(modeFromNativeOverlayState(snapshot));
         } catch (error) {
           console.debug("Native overlay renderer handshake failed.", error);
         }

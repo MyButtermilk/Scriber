@@ -277,6 +277,21 @@ They reject ambiguous schemes/hosts/paths/query fields, keep raw title/channel
 metadata out of the secondary-process message, and prove that a tray-hidden
 primary instance receives both the queued request and restore signal.
 
+Popup and recent-transcript regressions span the native shell, renderer, and
+durable store. Run Rust library tests for preview ownership/revisions, native
+rotation, and clipboard payload validation; run `native-overlay-state.test.ts`
+and `TrayPanel.test.tsx` for renderer ordering, every-show refresh, obsolete
+responses, and visible-entry copy IDs. Python gates include
+`tests/data/test_transcript_artifact_store.py`,
+`tests/api/test_transcript_routes.py`, and `tests/test_file_job_diagnostics.py`.
+Logging changes also require the File/Podcast route and job tests plus
+`tests/runtime/test_debug_logs.py`, `tests/runtime/test_support_bundle.py`, and
+`tests/test_logging_opt_out.py`. Use temporary stores and mocked providers.
+These gates do not prove Explorer/WebView focus or clipboard behavior in an
+installed build. A live shell smoke must identify the tested binary and avoid
+forwarding its actions to an already-running installation through the
+single-instance mutex. Do not replace the user's clipboard merely to test it.
+
 Windows shell artwork uses one contrast-safe white-disc feather across the PE,
 runtime window, normal tray, update, and recording states. The first command
 extracts the original vector paths from the canonical favicon and renders every

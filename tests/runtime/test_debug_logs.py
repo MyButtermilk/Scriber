@@ -369,3 +369,134 @@ def test_provider_failure_details_reach_debug_console_without_raw_response(monke
     assert entry["context"]["errorCategory"] == "audio_invalid"
     assert entry["context"]["meta"] == metadata
     assert "private words" not in json.dumps(entry)
+
+
+@pytest.mark.parametrize("prefix", ["", "tr_"])
+def test_file_and_podcast_context_exposes_safe_correlation_and_lifecycle(prefix):
+    correlation_id = "0123456789abcdef" * 2
+    metadata = {
+        "from_status": "downloading",
+        "to_status": "transcribing",
+        "attempt": 2,
+        "downloaded_bytes": 4096,
+        "source_reused": True,
+        "explicit_retry": False,
+        "resume": True,
+        "download_only": False,
+        "http_status": 429,
+        "error_type": "ProviderTransportError",
+    }
+    context = debug_logs._public_log_context(
+        {
+            "trace_id": prefix + correlation_id,
+            "transcript_id": "private-transcript-id",
+            "meta": {
+                **metadata,
+                "episode_id": "private-episode-id",
+                "subscription_id": "private-subscription-id",
+                "filename": "private-audio.wav",
+                "feed_url": "https://private.example/feed",
+                "transcript": "private spoken content",
+                "response_body": "private provider reply",
+            },
+        }
+    )
+
+    assert context == {"correlationId": correlation_id, "meta": metadata}
+
+
+@pytest.mark.parametrize(
+    "trace_id",
+    [
+        "private-transcript-id",
+        "a" * 31,
+        "a" * 33,
+        "A" * 32,
+        "tr_private",
+        "Bearer abc",
+        "01234567-89ab-cdef-0123-456789abcdef",
+    ],
+)
+def test_debug_context_rejects_unvalidated_correlation_identifiers(trace_id):
+    assert debug_logs._public_log_context({"trace_id": trace_id}) is None
+
+
+def test_podcast_queue_and_file_execution_keep_uuid_links_across_correlation_change():
+    episode_id, subscription_id, job_id, transcript_id = (char * 32 for char in "abcd")
+    links = {"episode_id": episode_id, "subscription_id": subscription_id}
+    queued = debug_logs._public_log_context({"trace_id": episode_id, "meta": links})
+    running = debug_logs._public_log_context(
+        {"trace_id": transcript_id, "job_id": job_id, "transcript_id": transcript_id, "meta": links}
+    )
+
+    assert queued == {"correlationId": episode_id, "meta": links}
+    assert running == {
+        "correlationId": transcript_id,
+        "meta": {**links, "job_id": job_id, "transcript_id": transcript_id},
+    }
+
+
+@pytest.mark.parametrize(
+    "invalid_id",
+    [False, 42, "a" * 31, "A" * 32, "tr_" + "a" * 32, "private-name", ["a" * 32], {"status": "a" * 32}],
+)
+def test_workflow_links_reject_arbitrary_ids_and_containers(invalid_id):
+    identifiers = dict.fromkeys(("episode_id", "subscription_id", "job_id", "transcript_id"), invalid_id)
+    assert debug_logs._public_log_context({**identifiers, "meta": identifiers}) is None
+
+
+def test_console_prefers_recent_generations_and_clear_marks_every_candidate(monkeypatch, tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(debug_logs, "logs_dir", lambda: logs)
+    monkeypatch.setattr(debug_logs, "data_dir", lambda: tmp_path / "data")
+    monkeypatch.setattr(debug_logs, "repo_root", lambda: tmp_path / "repo")
+    monkeypatch.setattr(log_clear_state, "logs_dir", lambda: logs)
+    for index in range(debug_logs._MAX_FILES + 2):
+        path = logs / f"generation-{index:03d}.log"
+        path.write_text(f"entry-{index}\n", encoding="utf-8")
+        os.utime(path, (1_700_000_000 + index, 1_700_000_000 + index))
+
+    payload = debug_logs.collect_debug_logs(limit=100)
+    assert "generation-000.log" not in payload["sources"]
+    assert f"generation-{debug_logs._MAX_FILES + 1:03d}.log" in payload["sources"]
+    assert debug_logs.clear_debug_logs()["cleared"] == debug_logs._MAX_FILES + 2
+    offsets = log_clear_state.load_clear_offsets()
+    assert all(
+        log_clear_state.clear_offset_for_path(path, offsets) == path.stat().st_size for path in logs.glob("*.log")
+    )
+
+
+@pytest.mark.parametrize("archive_name", ["latest.1.log", "latest.2026-10-04_01-02-03_123456.log"])
+def test_clear_boundary_follows_rotated_generation_without_hiding_new_active(monkeypatch, tmp_path, archive_name):
+    monkeypatch.setattr(log_clear_state, "logs_dir", lambda: tmp_path)
+    active = tmp_path / "latest.log"
+    active.write_text("cleared generation\n", encoding="utf-8")
+    log_clear_state.record_clear_state([active])
+    with active.open("a", encoding="utf-8") as handle:
+        handle.write("after clear\n")
+    archived = active.rename(tmp_path / archive_name)
+    active.write_text("new generation with different bytes\n", encoding="utf-8")
+
+    offsets = log_clear_state.load_clear_offsets()
+    archived_offset = log_clear_state.clear_offset_for_path(archived, offsets)
+    assert debug_logs._read_tail(archived, start_offset=archived_offset)[0].splitlines() == ["after clear"]
+    assert log_clear_state.clear_offset_for_path(active, offsets) == 0
+    assert debug_logs._read_tail(active)[0].splitlines() == ["new generation with different bytes"]
+
+
+def test_clear_boundary_follows_numbered_archive_between_slots(monkeypatch, tmp_path):
+    monkeypatch.setattr(log_clear_state, "logs_dir", lambda: tmp_path)
+    active = tmp_path / "tauri-backend.log"
+    first_archive = tmp_path / "tauri-backend.1.log"
+    active.write_text("current generation\n", encoding="utf-8")
+    first_archive.write_text("older archived generation\n", encoding="utf-8")
+    log_clear_state.record_clear_state([active, first_archive])
+    second_archive = first_archive.rename(tmp_path / "tauri-backend.2.log")
+    offsets = log_clear_state.load_clear_offsets()
+
+    assert log_clear_state.clear_offset_for_path(second_archive, offsets) == second_archive.stat().st_size
+    # Matching bytes in a different family must not inherit another log's clear.
+    unrelated = tmp_path / "tauri-shell.2.log"
+    unrelated.write_bytes(second_archive.read_bytes())
+    assert log_clear_state.clear_offset_for_path(unrelated, offsets) == 0

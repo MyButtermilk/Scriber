@@ -839,6 +839,7 @@ export type RuntimeLogContextValue =
   string | number | boolean | null | RuntimeLogContextValue[] | { [key: string]: RuntimeLogContextValue };
 
 export interface RuntimeLogContext {
+  correlationId?: string;
   event?: string;
   workflow?: string;
   stage?: string;
@@ -909,6 +910,7 @@ export interface PostProcessingDiagnosticsResponse {
 
 export interface ApiMessageResponse {
   message?: string;
+  correlationId?: string;
 }
 
 export interface TranscriptionBoundaryWarning {
@@ -948,6 +950,17 @@ export interface TranscriptHistoryItem {
 }
 
 export type TranscriptDetailResponse = TranscriptHistoryItem;
+
+export interface TrayTranscriptItem {
+  id: string;
+  status: "completed";
+  type: TranscriptType;
+  date: string;
+  duration: string;
+  createdAt?: string;
+  preview: string;
+  contentAvailable: boolean;
+}
 
 export type FileTranscribeResponse = TranscriptHistoryItem;
 

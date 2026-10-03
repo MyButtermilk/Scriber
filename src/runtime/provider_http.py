@@ -492,7 +492,11 @@ class ProviderHttpTransport:
         try:
             marker(_bounded_label(name, limit=_MARKER_LIMIT), timestamp_ns=timestamp_ns)
         except TypeError:
-            marker(_bounded_label(name, limit=_MARKER_LIMIT))
+            try:
+                marker(_bounded_label(name, limit=_MARKER_LIMIT))
+            except Exception:
+                # Legacy callbacks are just as optional as timestamp-aware ones.
+                return
         except Exception:
             # Diagnostics must never perturb a provider request.
             return

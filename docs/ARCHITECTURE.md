@@ -1135,6 +1135,23 @@ native shell and Python, behind settings serialization and a cancellation
 barrier. The native owner closes its write gate and continues draining child
 pipes; Python removes its sinks and drains admitted optional metric writes.
 The preference changes neither transcript persistence nor durable job state.
+File and Podcast lifecycle events carry opaque correlation IDs through admission,
+queueing, provider work, retries, resume, cancellation, completion and cleanup.
+User-visible failures retain a copyable reference. Progress diagnostics are
+bounded milestones; raw filenames, feed URLs, provider response bodies and
+transcript text do not belong in these events. Provider errors retain safe
+status/cause metadata instead of arbitrary exception text.
+
+Python's two primary logs rotate at 5 MiB with three retained archives each;
+native backend, shell and crash logs use the same threshold and archive count.
+Those are nominal limits: a single oversized Python record may exceed the
+threshold, and existing oversized native logs are preserved once as an archive
+until normal eviction. Clear boundaries follow rotated file contents. Support
+bundles select recent bounded tails and decode structured logs through the
+public allowlist. Historical plain-text logs still rely on pattern redaction;
+that is not a guarantee that arbitrary old transcript text or third-party SDK
+messages can be recognized and removed.
+
 Frequent health polls use a narrow live status projection with no filesystem or
 feature-inventory work. Transcript and summary persistence synchronize FTS through
 the indexed parent ID and shared rowid, avoiding an unindexed FTS-content scan;

@@ -208,6 +208,9 @@ export default function Podcasts() {
                 className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs leading-relaxed text-foreground"
               >
                 {t(episode.error)}
+                <span className="mt-1 block font-mono text-muted-foreground">
+                  {t("Reference: {{id}}", { id: episode.transcriptId || episode.id })}
+                </span>
               </p>
             )}
             <div className="flex flex-wrap items-center gap-1 pt-1">

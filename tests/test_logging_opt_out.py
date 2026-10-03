@@ -90,3 +90,31 @@ def test_off_waits_for_admitted_diagnostic_write_and_rejects_later_writes(isolat
         pending_off.result(timeout=5)
     logging_setup.run_diagnostic_write(writes.append, "must-not-write")
     assert writes == ["committed"]
+
+
+def test_restart_preserves_previous_diagnostics_by_default(isolated_logging):
+    logging_setup.setup_logging(component="test", force=True, add_stderr=False)
+    logger.info("before-restart-marker")
+    logging_setup.setup_logging(component="test", force=True, add_stderr=False)
+    logger.info("after-restart-marker")
+
+    for filename in ("latest.log", "latest.structured.jsonl"):
+        contents = (isolated_logging / filename).read_text(encoding="utf-8")
+        assert "before-restart-marker" in contents
+        assert "after-restart-marker" in contents
+
+
+def test_python_diagnostic_files_rotate_with_bounded_retention(monkeypatch, isolated_logging):
+    monkeypatch.setattr(logging_setup, "_LOG_ROTATION_BYTES", 2048)
+    monkeypatch.setattr(logging_setup, "_LOG_RETENTION_FILES", 2)
+    logging_setup.setup_logging(component="test", force=True, add_stderr=False)
+    for number in range(40):
+        logger.info("rotation-marker-{:03d} {}", number, "x" * 128)
+
+    for extension in ("log", "jsonl"):
+        files = list(isolated_logging.glob(f"*.{extension}"))
+        assert 1 < len(files) <= 3
+        assert all(path.stat().st_size <= 2048 for path in files)
+        contents = "\n".join(path.read_text(encoding="utf-8") for path in files)
+        assert "rotation-marker-039" in contents
+        assert "rotation-marker-000" not in contents

@@ -1246,9 +1246,13 @@ def _validate_local_provider_ready(provider: str) -> None:
     _validate_provider_ready(provider)
 
 
+class _TranscriptionValidationError(ValueError):
+    """Application-authored media guidance, distinct from untrusted provider errors."""
+
+
 def _raise_empty_transcript(provider: str, workflow: str) -> None:
     label = _service_label(provider)
-    raise ValueError(
+    raise _TranscriptionValidationError(
         f"Audio could not be processed by {label}: provider returned no transcript text "
         f"for this {workflow}. Try a clearer or longer file, or switch provider."
     )
@@ -1547,7 +1551,7 @@ def _validate_provider_media_duration(
         return
     route_model = str(model or "").strip()
     model_suffix = f" ({route_model})" if route_model else ""
-    raise ValueError(
+    raise _TranscriptionValidationError(
         f"{_service_label(provider)}{model_suffix} accepts {workflow_label} audio up to "
         f"{limit_seconds // 60} minutes; this recording is "
         f"{_format_duration(duration_seconds)}. Choose a compatible transcription model."
@@ -1574,7 +1578,7 @@ def _probe_media_duration_seconds(file_path: Path) -> float | None:
             **hidden_subprocess_kwargs(),
         )
     except Exception as exc:
-        logger.debug(f"ffprobe failed for {file_path.name}: {exc}")
+        logger.debug("Media duration probe failed (error_type={})", type(exc).__name__)
         return None
 
     if proc.returncode != 0:
@@ -5330,7 +5334,7 @@ class ScriberWebController:
                 raise RuntimeError("Job store returned a different job identifier")
             return _BackgroundJobEnqueueResult(job_id, "committed")
         except Exception as exc:
-            logger.error(f"Failed to persist queued job for transcript {rec.id}: {exc}")
+            logger.error("Failed to persist queued job {} (error_type={})", rec.id, type(exc).__name__)
             try:
                 persisted = self._job_store.get(job_id)
             except Exception as read_exc:
@@ -5396,7 +5400,7 @@ class ScriberWebController:
         try:
             updated = self._job_store.mark_running(job_id)
         except Exception as exc:
-            logger.error(f"Failed to mark job running for transcript {transcript_id}: {exc}")
+            logger.error("Failed to mark job running {} (error_type={})", transcript_id, type(exc).__name__)
             raise TranscriptPersistenceError("Failed to start persisted transcription job") from exc
         if updated:
             return True
@@ -5521,6 +5525,15 @@ class ScriberWebController:
                 raise pending_cancel
             await self._save_transcript_to_db_async(rec, require_success=True)
         await self.resume_pending_jobs()
+        self._emit_workflow_event(
+            message="Checkpointed transcription resume accepted",
+            event="api.job.resume_accepted",
+            workflow=rec.type,
+            stage="resume",
+            record=rec,
+            outcome="queued",
+            meta={"attempt": job.attempts, "resume": True},
+        )
         await self._broadcast_history_updated(record=rec, reason="resumed")
         return True
 
@@ -6257,18 +6270,28 @@ class ScriberWebController:
             rec.reset_transcription_attempt()
             rec._persistence_failed = persistence_retry
             self._schedule_retry_scan(delay_seconds)
-            logger.warning(
-                "Scheduled local provider-result recovery for transcript {} in {:.1f}s",
-                rec.id,
-                delay_seconds,
+            self._emit_workflow_event(
+                message="Durable provider result scheduled for local recovery",
+                event="api.job.retry_scheduled",
+                workflow=rec.type,
+                stage="retry",
+                record=rec,
+                outcome="queued",
+                meta={"attempt": attempts, "delay_seconds": delay_seconds, "provider_replay": False},
             )
             return True
         if current_fence == PROVIDER_REQUEST_MAY_BE_COMMITTED or getattr(
             error, "provider_request_may_be_committed", False
         ):
-            logger.warning(
-                "Suppressing automatic retry for transcript {} because its provider request outcome may be committed",
-                rec.id,
+            self._emit_workflow_event(
+                message="Automatic retry suppressed: provider request outcome is unknown",
+                event="api.job.retry_suppressed",
+                workflow=rec.type,
+                stage="retry",
+                record=rec,
+                level="WARNING",
+                outcome="blocked",
+                meta={"attempt": attempts, "provider_replay": False},
             )
             return False
         category = classify_error_message(str(error))
@@ -6328,9 +6351,15 @@ class ScriberWebController:
         rec.reset_transcription_attempt()
         rec._persistence_failed = persistence_retry
         self._schedule_retry_scan(delay_seconds)
-        logger.warning(
-            f"Scheduled retry for transcript {rec.id} in {delay_seconds:.1f}s "
-            f"(attempt {attempts}/{self._job_max_attempts})"
+        self._emit_workflow_event(
+            message="Background transcription retry scheduled",
+            event="api.job.retry_scheduled",
+            workflow=rec.type,
+            stage="retry",
+            record=rec,
+            outcome="queued",
+            error_category=category.value,
+            meta={"attempt": attempts, "delay_seconds": delay_seconds, "provider_replay": True},
         )
         return True
 
@@ -6711,7 +6740,7 @@ class ScriberWebController:
             owned_upload_dir = file_dir != files_root and file_dir.parent == files_root
             if not owned_upload_dir:
                 if file_dir.exists():
-                    logger.debug("Preserving source outside the Scriber upload workspace: {}", file_dir)
+                    logger.debug("Preserving source outside the Scriber upload workspace")
                 return False
             if not file_dir.exists():
                 return False
@@ -6720,10 +6749,31 @@ class ScriberWebController:
             await remove_tree_if_exists(file_dir)
             if transcript_id:
                 self._mark_source_assets_purged(transcript_id, reason=f"file_{reason}_task_released")
-            logger.debug("Cleaned up uploaded file directory ({}): {}", reason, file_dir)
+            emit_event(
+                logger.bind(component="web_api"),
+                "Owned file source removed",
+                event="file.cleanup.completed",
+                workflow="file",
+                stage="cleanup",
+                outcome="success",
+                transcript_id=transcript_id or None,
+                trace_id=self._trace_id_for(transcript_id),
+                meta={"reason": reason},
+            )
             return True
         except Exception as exc:
-            logger.warning("Failed to cleanup uploaded file ({}): {}", reason, exc)
+            emit_event(
+                logger.bind(component="web_api"),
+                "Owned file source cleanup failed",
+                event="file.cleanup.failed",
+                workflow="file",
+                stage="cleanup",
+                outcome="failure",
+                level="WARNING",
+                transcript_id=transcript_id or None,
+                trace_id=self._trace_id_for(transcript_id),
+                meta={"reason": reason, "error_type": type(exc).__name__},
+            )
             return False
 
     async def _settle_terminal_background_job(
@@ -6801,6 +6851,15 @@ class ScriberWebController:
                 reason="cancel_persistence_failed",
             )
             raise CancellationPersistenceUnavailable("Cancellation could not acquire durable lifecycle ownership")
+        self._emit_workflow_event(
+            message="Background transcription canceled",
+            event="api.job.canceled",
+            workflow=rec.type,
+            stage="canceled",
+            record=rec,
+            outcome="cancelled",
+            meta={"to_status": "stopped"},
+        )
         await self._broadcast_history_updated(record=rec, reason="canceled")
 
     def _schedule_youtube_job(self, rec: TranscriptRecord, *, resumed: bool = False) -> bool:
@@ -6887,6 +6946,16 @@ class ScriberWebController:
                     workload="file",
                 )
                 provider = frozen_route.provider
+                self._emit_workflow_event(
+                    message="File job claimed",
+                    event="api.job.resumed" if resumed else "api.job.running",
+                    workflow="file",
+                    stage="running",
+                    record=rec,
+                    provider=provider,
+                    outcome="started",
+                    meta={"from_status": "queued", "to_status": "running", "resume": resumed},
+                )
             except asyncio.CancelledError:
                 if not self._shutting_down:
                     await self._finalize_canceled_background_job(rec)
@@ -6895,7 +6964,17 @@ class ScriberWebController:
                 if not await self._schedule_retry_if_allowed(rec, exc):
                     rec.status = "failed"
                     rec.step = "Failed"
-                    rec.append_final_text(f"[Error] {exc}")
+                    rec.append_final_text(f"[Error] {self._provider_user_error(exc, provider='').message}")
+                self._emit_workflow_event(
+                    message="File job admission failed",
+                    event="api.job.admission_failed",
+                    workflow="file",
+                    stage="admission",
+                    record=rec,
+                    level="ERROR",
+                    outcome="failure",
+                    meta={"error_type": type(exc).__name__, "to_status": rec.status},
+                )
                 rec.updated_at = datetime.now().isoformat()
                 await self._save_transcript_to_db_async(
                     rec,
@@ -11639,7 +11718,7 @@ class ScriberWebController:
 
                     adopt_durable_job()
                     self._emit_workflow_event(
-                        message=f"File job queued: {rec.title}",
+                        message="File job queued",
                         event="api.job.created",
                         workflow="file",
                         stage="job_created",
@@ -11784,15 +11863,40 @@ class ScriberWebController:
             if not is_final:
                 return
             rec.append_final_text(text)
-            logger.debug(
-                "File transcription received: {} chars, buffered segments: {}",
-                len(text),
-                len(rec._pending_content_segments),
-            )
+
+        progress_stages: set[str] = set()
 
         def on_progress(step: str) -> None:
             rec.step = step
             rec.updated_at = datetime.now().isoformat()
+            # Provider callbacks may contain dynamic text. Emit only bounded,
+            # recognized stage names once per attempt; never each poll/frame.
+            stage = next(
+                (
+                    value
+                    for prefix, value in (
+                        ("Preparing", "preparing"),
+                        ("Uploading", "uploading"),
+                        ("Processing", "provider_processing"),
+                        ("Retrieving", "retrieving"),
+                        ("Transcribing", "transcribing"),
+                        ("Completed", "provider_completed"),
+                    )
+                    if step.startswith(prefix)
+                ),
+                None,
+            )
+            if stage is not None and stage not in progress_stages:
+                progress_stages.add(stage)
+                self._emit_workflow_event(
+                    message="File transcription progress",
+                    event="file.progress",
+                    workflow="file",
+                    stage=stage,
+                    record=rec,
+                    provider=provider,
+                    outcome="progress",
+                )
             self._spawn_detached_threadsafe(
                 lambda: self._broadcast_history_updated(record=rec, reason="progress"),
                 name="file_transcription_progress_broadcast",
@@ -11800,6 +11904,7 @@ class ScriberWebController:
 
         pipeline: Any | None = None
         provider_request_fence_persisted = False
+        provider_started = time.monotonic()
         try:
             pipeline = await _create_scriber_pipeline_off_loop(
                 service_name=provider,
@@ -11831,12 +11936,49 @@ class ScriberWebController:
                     )
             else:
                 provider_call = pipeline.transcribe_file(str(provider_file_path))
-            await self._await_with_timeout(
-                provider_call,
-                timeout_seconds=transcribe_timeout,
-                timeout_label="File transcription",
+            provider_started = time.monotonic()
+            self._emit_workflow_event(
+                message="File provider request started",
+                event="file.provider.started",
+                workflow="file",
+                stage="provider",
+                record=rec,
+                provider=provider,
+                outcome="started",
+            )
+            with logger.contextualize(
+                trace_id=self._trace_id_for(rec.id),
+                transcript_id=rec.id,
+                job_id=self._job_ids_by_transcript.get(rec.id),
+                workflow="file",
+                provider=provider,
+            ):
+                await self._await_with_timeout(
+                    provider_call,
+                    timeout_seconds=transcribe_timeout,
+                    timeout_label="File transcription",
+                )
+            self._emit_workflow_event(
+                message="File provider response received",
+                event="file.provider.completed",
+                workflow="file",
+                stage="provider",
+                record=rec,
+                provider=provider,
+                outcome="success",
+                duration_ms=(time.monotonic() - provider_started) * 1000,
             )
         except asyncio.CancelledError:
+            self._emit_workflow_event(
+                message="File provider stage canceled",
+                event="file.provider.canceled",
+                workflow="file",
+                stage="provider",
+                record=rec,
+                provider=provider,
+                outcome="cancelled",
+                duration_ms=(time.monotonic() - provider_started) * 1000,
+            )
             await self._stop_transcript_artifact_lease_guard(
                 lease_guard_stop,
                 lease_guard_task,
@@ -11844,6 +11986,21 @@ class ScriberWebController:
             await self._terminate_artifact_attempt_before_result_async(attempt, owner=owner, canceled=True)
             raise
         except Exception as exc:
+            self._emit_workflow_event(
+                message="File provider stage failed",
+                event="file.provider.failed",
+                workflow="file",
+                stage="provider",
+                record=rec,
+                provider=provider,
+                outcome="failure",
+                level="WARNING",
+                duration_ms=(time.monotonic() - provider_started) * 1000,
+                meta={
+                    "error_type": type(exc).__name__,
+                    **(exc.diagnostic_metadata() if isinstance(exc, ProviderTransportError) else {}),
+                },
+            )
             await self._stop_transcript_artifact_lease_guard(
                 lease_guard_stop,
                 lease_guard_task,
@@ -12107,7 +12264,7 @@ class ScriberWebController:
                 finally:
                     self._unregister_summary_task(rec.id, auto_summary_task)
         except (ValueError, ImportError) as exc:
-            logger.warning("File transcription rejected: {}", exc)
+            logger.warning("File transcription rejected (error_type={})", type(exc).__name__)
             self._record_provider_failure(provider, exc)
             retry_error = _retry_error_after_provider_result(
                 provider,
@@ -12118,7 +12275,12 @@ class ScriberWebController:
                 return
             rec.status = "failed"
             rec.step = "Failed"
-            rec.append_final_text(f"[Error] {exc}")
+            message = (
+                str(exc)
+                if isinstance(exc, _TranscriptionValidationError)
+                else self._provider_user_error(exc, provider=provider).message
+            )
+            rec.append_final_text(f"[Error] {message}")
             self._emit_workflow_event(
                 message="File transcription failed",
                 event="api.job.failed",
@@ -12129,7 +12291,11 @@ class ScriberWebController:
                 provider=provider,
                 milestone=True,
                 outcome="failure",
-                error_category=classify_error_message(str(exc)).value,
+                error_category=(
+                    ErrorCategory.AUDIO_INVALID
+                    if isinstance(exc, _TranscriptionValidationError)
+                    else classify_error_message(str(exc))
+                ).value,
                 meta={"error_type": type(exc).__name__},
             )
         except TimeoutError as exc:
@@ -12143,7 +12309,7 @@ class ScriberWebController:
                 return
             rec.status = "failed"
             rec.step = "Failed"
-            rec.append_final_text(f"[Timeout] {exc}")
+            rec.append_final_text(f"[Timeout] {self._provider_user_error(exc, provider=provider).message}")
             self._emit_workflow_event(
                 message="File transcription timed out",
                 event="api.job.failed",
@@ -12167,7 +12333,7 @@ class ScriberWebController:
                 return
             rec.status = "failed"
             rec.step = "Failed to save transcript"
-            rec.append_final_text(f"[Storage error] {exc}")
+            rec.append_final_text("[Storage error] Failed to save transcript. Retry local completion.")
             self._emit_workflow_event(
                 message="File transcript persistence failed",
                 event="api.job.failed",
@@ -12181,7 +12347,7 @@ class ScriberWebController:
                 error_category=ErrorCategory.INTERNAL_BUG.value,
             )
         except Exception as exc:
-            logger.exception("File transcription failed")
+            logger.error("File transcription failed (error_type={})", type(exc).__name__)
             self._record_provider_failure(provider, exc)
             retry_error = _retry_error_after_provider_result(
                 provider,
@@ -12192,10 +12358,8 @@ class ScriberWebController:
                 return
             rec.status = "failed"
             rec.step = "Failed"
-            provider_error = (
-                self._provider_user_error(exc, provider=provider) if isinstance(exc, ProviderTransportError) else None
-            )
-            message = provider_error.message if provider_error else str(exc)
+            provider_error = self._provider_user_error(exc, provider=provider)
+            message = provider_error.message
             rec.append_final_text(f"[Error] {message}")
             self._emit_workflow_event(
                 message=f"File job failed: {message}" if provider_error else "File job failed",
@@ -18857,6 +19021,12 @@ class ScriberWebController:
         except Exception as e:
             logger.error(f"Error resolving microphone '{device_name}': {e}")
             return "default"
+
+    async def recent_transcripts_for_tray(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._transcript_artifacts.list_recent_for_tray)
+
+    async def transcript_for_tray_copy(self, transcript_id: str) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self._transcript_artifacts.read_for_tray_copy, transcript_id)
 
     async def list_transcripts(
         self,

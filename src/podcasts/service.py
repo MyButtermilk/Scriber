@@ -104,7 +104,10 @@ class PodcastService:
             )
         self._wake.set()
         self._event(
-            "subscribed", outcome="success", meta={"episodeCount": len(feed.episodes), "automatic": auto_process}
+            "subscribed",
+            outcome="success",
+            subscription_id=identifier,
+            meta={"episodeCount": len(feed.episodes), "automatic": auto_process},
         )
         return identifier
 
@@ -161,10 +164,23 @@ class PodcastService:
                 view = await self._processor.view(transcript_id)
                 if view is None or view.status in {"failed", "stopped", "canceled", "cancelled"}:
                     # Only this explicit user retry can allocate a new paid attempt.
+                    transcript_id = uuid4().hex
                     await to_thread_cancellation_barrier(
-                        self._store.update, identifier, status=episode["status"], transcript_id=uuid4().hex
+                        self._store.update, identifier, status=episode["status"], transcript_id=transcript_id
                     )
             result = await to_thread_cancellation_barrier(self._store.queue, identifier)
+        if result:
+            self._event(
+                "episode_queued",
+                outcome="queued",
+                episode_id=identifier,
+                transcript_id=transcript_id,
+                meta={
+                    "from_status": episode["status"],
+                    "to_status": "queued",
+                    "explicit_retry": episode["status"] == "failed",
+                },
+            )
         self._wake.set()
         return result
 
@@ -195,21 +211,42 @@ class PodcastService:
             await to_thread_cancellation_barrier(
                 self._store.update, identifier, status=episode["status"], downloaded_bytes=0
             )
+            self._event(
+                "download_removed", outcome="success", episode_id=identifier, transcript_id=episode["transcript_id"]
+            )
             return True
 
     @staticmethod
     def _event(
-        stage: str, *, outcome: str, duration_ms: float | None = None, meta: dict[str, Any] | None = None
+        stage: str,
+        *,
+        outcome: str,
+        duration_ms: float | None = None,
+        meta: dict[str, Any] | None = None,
+        episode_id: str | None = None,
+        subscription_id: str | None = None,
+        transcript_id: str | None = None,
+        error: BaseException | None = None,
     ) -> None:
         emit_event(
             logger.bind(component="podcasts"),
             f"Podcast {stage}",
             event=f"podcast.{stage}",
+            level="WARNING" if outcome == "failed" else "INFO",
             workflow="podcasts",
             stage=stage,
+            trace_id=transcript_id or episode_id or subscription_id,
+            transcript_id=transcript_id or None,
             outcome=outcome,
             duration_ms=duration_ms,
-            meta=meta,
+            error_category=type(error).__name__ if error else None,
+            meta={
+                **(meta or {}),
+                **({"episode_id": episode_id} if episode_id else {}),
+                **({"subscription_id": subscription_id} if subscription_id else {}),
+                **({"error_type": type(error).__name__} if error else {}),
+                **({"status": error.status} if isinstance(error, PodcastError) and error.status is not None else {}),
+            },
         )
 
     async def _refresh(self) -> None:
@@ -223,6 +260,7 @@ class PodcastService:
                 self._event(
                     "feed_refreshed",
                     outcome="success",
+                    subscription_id=subscription["id"],
                     duration_ms=(time.monotonic() - started) * 1000,
                     meta={"episodeCount": len(feed.episodes), "queuedCount": queued},
                 )
@@ -233,7 +271,13 @@ class PodcastService:
                     else "The podcast feed could not be refreshed. Try again later."
                 )
                 await to_thread_cancellation_barrier(self._store.refresh_failed, subscription["id"], message)
-                self._event("feed_refreshed", outcome="failed", meta={"errorType": type(exc).__name__})
+                self._event(
+                    "feed_refreshed",
+                    outcome="failed",
+                    subscription_id=subscription["id"],
+                    error=exc,
+                    duration_ms=(time.monotonic() - started) * 1000,
+                )
 
     def _cache_size(self) -> int:
         if not self._audio.exists():
@@ -248,10 +292,33 @@ class PodcastService:
             self._store.update, identifier, status="downloading", transcript_id=transcript_id
         )
         target = self._audio / f"{identifier}{episode['extension']}"
+        current_stage = "downloading"
+        stage_started = started
+        self._event(
+            "episode_started",
+            outcome="started",
+            episode_id=identifier,
+            transcript_id=transcript_id,
+            meta={
+                "from_status": episode["status"],
+                "to_status": current_stage,
+                "resume": bool(episode["transcript_id"]),
+                "download_only": bool(episode["download_only"]),
+            },
+        )
 
         async def stage(value: str) -> None:
+            nonlocal current_stage, stage_started
             await to_thread_cancellation_barrier(self._store.update, identifier, status=value)
-            self._event(value, outcome="started")
+            self._event(
+                value,
+                outcome="started",
+                episode_id=identifier,
+                transcript_id=transcript_id,
+                duration_ms=(time.monotonic() - stage_started) * 1000,
+                meta={"from_status": current_stage, "to_status": value},
+            )
+            current_stage, stage_started = value, time.monotonic()
 
         try:
             download_only = bool(episode["download_only"])
@@ -259,7 +326,8 @@ class PodcastService:
             plan = None
             if view is None and not download_only:
                 plan = self._processor.plan()
-            if not target.is_file():
+            source_reused = target.is_file()
+            if not source_reused:
                 # Serialize capacity checks with downloads, while provider work
                 # and summaries overlap. No two downloads spend the same space.
                 async with self._download_lock:
@@ -282,12 +350,35 @@ class PodcastService:
             await to_thread_cancellation_barrier(
                 self._store.update, identifier, status="downloading", downloaded_bytes=size
             )
+            self._event(
+                "download_completed",
+                outcome="success",
+                episode_id=identifier,
+                transcript_id=transcript_id,
+                duration_ms=(time.monotonic() - started) * 1000,
+                meta={"downloaded_bytes": size, "source_reused": source_reused},
+            )
             if not download_only:
                 await self._processor.process(target, episode["title"], transcript_id, plan, stage)
             await to_thread_cancellation_barrier(self._store.update, identifier, status="completed")
-            self._event("episode_completed", outcome="success", duration_ms=(time.monotonic() - started) * 1000)
+            self._event(
+                "episode_completed",
+                outcome="success",
+                duration_ms=(time.monotonic() - started) * 1000,
+                episode_id=identifier,
+                transcript_id=transcript_id,
+                meta={"from_status": current_stage, "to_status": "completed"},
+            )
         except asyncio.CancelledError:
             await to_thread_cancellation_barrier(self._store.update, identifier, status="queued")
+            self._event(
+                "episode_suspended",
+                outcome="cancelled",
+                episode_id=identifier,
+                transcript_id=transcript_id,
+                duration_ms=(time.monotonic() - started) * 1000,
+                meta={"from_status": current_stage, "to_status": "queued"},
+            )
             raise
         except Exception as exc:
             message = (
@@ -300,7 +391,10 @@ class PodcastService:
                 "episode_completed",
                 outcome="failed",
                 duration_ms=(time.monotonic() - started) * 1000,
-                meta={"errorType": type(exc).__name__},
+                episode_id=identifier,
+                transcript_id=transcript_id,
+                error=exc,
+                meta={"from_status": current_stage, "to_status": "failed"},
             )
 
     async def _run(self) -> None:

@@ -5,6 +5,22 @@ Last verified: 2026-09-08
 This document replaces old bug lists, code-review notes, and proposal journals.
 It tracks current status only.
 
+## Rare dictation popup dismissal and push-to-talk ordering
+
+The rare immediate dismissal reported for a hotkey-started dictation has not
+been reproduced. Source review found unconditional failure cleanup of an
+optimistic preview could hide a newer backend-owned overlay. Preview ownership
+checks and renderer lifecycle revisions now protect that path; bounded native
+transition/dispatch diagnostics support investigation of remaining occurrences.
+Source regressions do not establish an installed Windows end-to-end fix.
+
+Push-to-talk still dispatches press and release through independent HTTP
+workers. A release may reach the backend before the matching start is admitted.
+Serializing entire HTTP requests would delay cancellation during startup;
+resolving this requires generation-bound start admission and stop intent.
+The observed local user configuration uses toggle mode, so this is a separate
+open ordering risk, not evidence for the reported popup symptom.
+
 ## Azure MAI-2 native diarization availability
 
 On 2026-09-08, full-length native diarization requests for podcasts #93 (33:57)

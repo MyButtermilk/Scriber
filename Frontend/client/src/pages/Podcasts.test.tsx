@@ -66,6 +66,15 @@ function mount(subscriptions: PodcastSubscription[] = []) {
 }
 
 describe("Podcasts", () => {
+  it("shows the linked attempt reference beside an episode error", async () => {
+    const failed = episode({ status: "failed", transcriptId: "c".repeat(32), error: "Podcast processing failed." });
+    request.mockImplementation(async (_method: string, path: string) => ({
+      json: async () => (path.includes("/episodes?") ? { items: [failed], total: 1 } : { ok: true }),
+    }));
+    mount([subscription()]);
+    expect(await screen.findByText(`Reference: ${failed.transcriptId}`)).toBeVisible();
+  });
+
   it("offers an audio-only download after a completed episode's local copy is removed", async () => {
     const sub = subscription();
     const completed = episode({ status: "completed", transcriptId: "existing-transcript", downloadedBytes: 0 });

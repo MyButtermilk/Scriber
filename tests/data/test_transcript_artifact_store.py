@@ -205,6 +205,142 @@ def _ready_commit(store: TranscriptArtifactStore, *, transcript_id="transcript-1
     return _advance_to_committing(store, attempt)
 
 
+def _prepare_tray_history(store: TranscriptArtifactStore) -> None:
+    with sqlite3.connect(store._db_path) as conn:
+        conn.execute("ALTER TABLE transcripts ADD COLUMN type TEXT DEFAULT 'mic'")
+        conn.execute("ALTER TABLE transcripts ADD COLUMN date TEXT DEFAULT ''")
+        conn.execute("ALTER TABLE transcripts ADD COLUMN created_at TEXT DEFAULT ''")
+
+
+def test_tray_reads_current_canonical_head_instead_of_obsolete_projection(artifact_store):
+    _prepare_tray_history(artifact_store)
+    attempt = _ready_commit(artifact_store)
+    result = artifact_store.commit_canonical_artifact(
+        attempt.id,
+        expected_attempt_version=attempt.state_version,
+        expected_head_generation=0,
+        segments=_segments(),
+        duration="00:03",
+    )
+    with sqlite3.connect(artifact_store._db_path) as conn:
+        conn.execute("UPDATE transcripts SET content = 'obsolete', preview = 'obsolete' WHERE id = 'transcript-1'")
+    recent = artifact_store.list_recent_for_tray()["items"]
+    assert [item["id"] for item in recent] == ["transcript-1"]
+    assert recent[0]["preview"].startswith("Guten Morgen.")
+    assert "obsolete" not in repr(recent)
+    assert "content" not in recent[0]
+    copied = artifact_store.read_for_tray_copy("transcript-1")
+    assert copied["content"] == artifact_store.render_legacy_content(result.artifact.segments)
+
+
+def test_tray_filters_before_limit_and_normalizes_bounded_preview_without_titles(artifact_store):
+    _prepare_tray_history(artifact_store)
+    with sqlite3.connect(artifact_store._db_path) as conn:
+        conn.executemany(
+            "INSERT INTO transcripts (id, status, content, created_at) VALUES (?, ?, ?, ?)",
+            [(f"active-{index}", "processing", "partial", "2026-10-05") for index in range(30)],
+        )
+        conn.execute(
+            "UPDATE transcripts SET status = 'completed', title = 'Live-Mikrofonaufnahme', "
+            "content = ?, created_at = '2026-10-04' WHERE id = 'transcript-1'",
+            ("  Ｈallo\r\n\tWelt\u202e\x00 <b>&Text</b> " + "😀" * 100,),
+        )
+        conn.execute("UPDATE transcripts SET status = 'completed', content = '' WHERE id = 'transcript-2'")
+    items = artifact_store.list_recent_for_tray()["items"]
+    assert len(items) == 2
+    assert items[0]["preview"].startswith("Hallo Welt <b>&Text</b> ")
+    assert len(items[0]["preview"]) == 72
+    assert items[0]["preview"].endswith("…")
+    assert items[1]["preview"] == ""
+    assert items[1]["contentAvailable"] is False
+
+
+def test_tray_copy_rereads_updates_and_rejects_unfinished_or_deleted_rows(artifact_store):
+    _prepare_tray_history(artifact_store)
+    with sqlite3.connect(artifact_store._db_path) as conn:
+        conn.execute("UPDATE transcripts SET status = 'completed', content = 'old text' WHERE id = 'transcript-1'")
+    assert artifact_store.list_recent_for_tray()["items"][0]["preview"] == "old text"
+    with sqlite3.connect(artifact_store._db_path) as conn:
+        conn.execute("UPDATE transcripts SET content = '  current\ntext  ' WHERE id = 'transcript-1'")
+    assert artifact_store.read_for_tray_copy("transcript-1")["content"] == "  current\ntext  "
+    with sqlite3.connect(artifact_store._db_path) as conn:
+        conn.execute("UPDATE transcripts SET status = 'processing' WHERE id = 'transcript-1'")
+    assert artifact_store.read_for_tray_copy("transcript-1") == {
+        "id": "transcript-1",
+        "status": "processing",
+        "content": "",
+    }
+    with sqlite3.connect(artifact_store._db_path) as conn:
+        conn.execute("DELETE FROM transcripts WHERE id = 'transcript-1'")
+    assert artifact_store.read_for_tray_copy("transcript-1") is None
+
+
+def test_tray_storage_failure_propagates_instead_of_looking_like_empty_history(artifact_store, monkeypatch):
+    def unavailable():
+        raise sqlite3.OperationalError("private storage failure")
+
+    monkeypatch.setattr(artifact_store, "_connect", unavailable)
+    with pytest.raises(sqlite3.OperationalError):
+        artifact_store.list_recent_for_tray()
+    with pytest.raises(sqlite3.OperationalError):
+        artifact_store.read_for_tray_copy("transcript-1")
+
+
+def test_tray_does_not_treat_a_long_empty_prefix_as_an_empty_transcript(artifact_store):
+    _prepare_tray_history(artifact_store)
+    with sqlite3.connect(artifact_store._db_path) as conn:
+        conn.execute(
+            "UPDATE transcripts SET status = 'completed', content = ? WHERE id = 'transcript-1'",
+            ("\n\t " * 1600 + "Later text",),
+        )
+    item = artifact_store.list_recent_for_tray()["items"][0]
+    assert item["preview"] == "Later text"
+    assert item["contentAvailable"] is True
+
+
+def test_tray_current_head_must_belong_to_the_selected_transcript(artifact_store):
+    _prepare_tray_history(artifact_store)
+    attempt = _ready_commit(artifact_store)
+    result = artifact_store.commit_canonical_artifact(
+        attempt.id,
+        expected_attempt_version=attempt.state_version,
+        expected_head_generation=0,
+        segments=_segments(),
+        duration="00:03",
+    )
+    with sqlite3.connect(artifact_store._db_path) as conn:
+        conn.execute(
+            "UPDATE canonical_transcript_artifacts SET transcript_id = 'transcript-2' WHERE id = ?",
+            (result.artifact.id,),
+        )
+    from src.data.transcript_artifact_store import ArtifactNotFound
+
+    with pytest.raises(ArtifactNotFound):
+        artifact_store.list_recent_for_tray()
+    with pytest.raises(ArtifactNotFound):
+        artifact_store.read_for_tray_copy("transcript-1")
+
+
+def test_tray_read_snapshot_remains_consistent_when_a_writer_deletes_the_row(artifact_store, monkeypatch):
+    _prepare_tray_history(artifact_store)
+    with sqlite3.connect(artifact_store._db_path) as conn:
+        conn.execute("UPDATE transcripts SET status = 'completed', content = 'snapshot text' WHERE id = 'transcript-1'")
+    read_content = artifact_store._tray_content
+    deleted = False
+
+    def deleting_read(conn, transcript_id, *, preview):
+        nonlocal deleted
+        if not deleted:
+            deleted = True
+            with sqlite3.connect(artifact_store._db_path) as writer:
+                writer.execute("DELETE FROM transcripts WHERE id = ?", (transcript_id,))
+        return read_content(conn, transcript_id, preview=preview)
+
+    monkeypatch.setattr(artifact_store, "_tray_content", deleting_read)
+    assert artifact_store.list_recent_for_tray()["items"][0]["preview"] == "snapshot text"
+    assert artifact_store.read_for_tray_copy("transcript-1") is None
+
+
 def test_schema_migrations_are_additive_and_idempotent(tmp_path):
     db_path = tmp_path / "schema.db"
     _create_legacy_database(db_path, "t")

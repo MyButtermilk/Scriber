@@ -62,6 +62,11 @@ export function FileImportQueue({ items }: { items: FileUploadQueueItem[] }) {
                   >
                     {failed ? t(item.error) : t(item.statusText, item.statusValues)}
                   </p>
+                  {failed && item.correlationId && (
+                    <p className="select-text break-all font-mono text-xs text-muted-foreground">
+                      {t("Reference: {{id}}", { id: item.correlationId })}
+                    </p>
+                  )}
                 </div>
               </div>
             </li>

@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import json
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
 from aiohttp import FormData, web
 from aiohttp.test_utils import TestClient, TestServer
+from loguru import logger
 
 from src.api import file_transcription_routes
 from src.api.file_transcription_routes import (
@@ -21,6 +24,7 @@ from src.api.file_transcription_routes import (
     register_file_transcription_routes,
 )
 from src.api.upload_policy import FileUploadLimits, UploadLimit, file_upload_limits
+from src.core import logging_setup
 from src.data.job_store import JobStore
 from src.transcript_artifacts import FrozenTranscriptionRoute
 
@@ -65,6 +69,7 @@ class _Controller:
         self._root = root
         self._plan = plan or _plan()
         self.started: list[tuple[Path, str, FileUploadPlan]] = []
+        self.started_ids: list[str | None] = []
         self.resume_checkpointed_transcription = AsyncMock(return_value=True)
 
     @property
@@ -84,7 +89,8 @@ class _Controller:
         transcript_id: str | None = None,
     ) -> _PublicRecord:
         self.started.append((file_path, original_filename, plan))
-        return _PublicRecord()
+        self.started_ids.append(transcript_id)
+        return _PublicRecord(id=transcript_id or "file-record")
 
 
 async def _client(controller: _Controller) -> TestClient:
@@ -95,8 +101,37 @@ async def _client(controller: _Controller) -> TestClient:
     return client
 
 
+@pytest.fixture
+def captured_file_logs(monkeypatch):
+    monkeypatch.setattr(logging_setup, "_LOGGING_ENABLED", True)
+    messages: list[str] = []
+    sink = logger.add(
+        lambda message: messages.append(str(message)),
+        serialize=True,
+        filter=lambda record: (
+            record["extra"].get("workflow") == "file" or record["name"] == file_transcription_routes.__name__
+        ),
+    )
+    try:
+        yield messages
+    finally:
+        logger.remove(sink)
+
+
+def _assert_upload_events(messages: list[str], correlation_id: str) -> list[dict]:
+    events = [json.loads(message)["record"]["extra"] for message in messages]
+    assert events
+    assert UUID(hex=correlation_id).hex == correlation_id
+    assert {event["trace_id"] for event in events} == {correlation_id}
+    assert {event["transcript_id"] for event in events} == {correlation_id}
+    assert all(0 <= event["duration_ms"] <= 86_400_000 for event in events if "duration_ms" in event)
+    return events
+
+
 @pytest.mark.asyncio
-async def test_file_upload_reaches_durable_admission_through_the_domain_route(tmp_path: Path) -> None:
+async def test_file_upload_reaches_durable_admission_through_the_domain_route(
+    tmp_path: Path, captured_file_logs
+) -> None:
     controller = _Controller(tmp_path / "files")
     client = await _client(controller)
     try:
@@ -108,12 +143,22 @@ async def test_file_upload_reaches_durable_admission_through_the_domain_route(tm
         await client.close()
 
     assert response.status == 200
-    assert payload == {"id": "file-record", "status": "processing", "includeContent": True}
+    correlation_id = response.headers["X-Scriber-Correlation-Id"]
+    assert payload == {"id": correlation_id, "status": "processing", "includeContent": True}
+    assert controller.started_ids == [correlation_id]
     assert len(controller.started) == 1
     admitted_path, admitted_name, admitted_plan = controller.started[0]
     assert admitted_path.read_bytes() == b"RIFF-WAVE"
     assert admitted_name == "admitted.wav"
     assert admitted_plan is controller._plan
+    assert admitted_path.parent.name == correlation_id
+    events = _assert_upload_events(captured_file_logs, correlation_id)
+    assert events[-1]["event"] == "file.upload.completed"
+    assert events[-1]["outcome"] == "success"
+    assert {event["stage"] for event in events} >= {"admission", "streaming", "preparation", "handoff"}
+    assert "admitted.wav" not in "".join(captured_file_logs)
+    assert "RIFF-WAVE" not in "".join(captured_file_logs)
+    assert file_transcription_routes._UPLOAD_CORRELATION_ID.get() is None
 
 
 @pytest.mark.asyncio
@@ -189,7 +234,7 @@ async def test_large_video_is_admitted_by_its_extracted_audio(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_parallel_video_preparations_keep_separate_sources_and_jobs(monkeypatch, tmp_path):
+async def test_parallel_video_preparations_keep_separate_sources_and_jobs(monkeypatch, tmp_path, captured_file_logs):
     controller = _Controller(tmp_path / "files", plan=_plan(source_is_video=True))
     entered: list[Path] = []
     both_entered = asyncio.Event()
@@ -217,6 +262,16 @@ async def test_parallel_video_preparations_keep_separate_sources_and_jobs(monkey
         await client.close()
     assert len({path.parent for path, _, _ in controller.started}) == 2
     assert {path.read_bytes() for path, _, _ in controller.started} == {b"first", b"second"}
+    response_ids = {response.headers["X-Scriber-Correlation-Id"] for response in responses}
+    assert response_ids == set(controller.started_ids)
+    for correlation_id in response_ids:
+        messages = [
+            message
+            for message in captured_file_logs
+            if json.loads(message)["record"]["extra"].get("trace_id") == correlation_id
+        ]
+        events = _assert_upload_events(messages, correlation_id)
+        assert events[-1]["outcome"] == "success"
 
 
 def test_unbounded_video_evidence_roundtrips_and_legacy_bounds_are_preserved(monkeypatch):
@@ -249,7 +304,10 @@ async def test_full_disk_returns_actionable_error_and_cleans_partial_upload(monk
         form.add_field("file", b"audio", filename="audio.wav")
         response = await client.post("/api/file/transcribe", data=form)
         assert response.status == 507
-        assert await response.json() == {"message": "Not enough disk space to prepare this file."}
+        assert await response.json() == {
+            "message": "Not enough disk space to prepare this file.",
+            "correlationId": response.headers["X-Scriber-Correlation-Id"],
+        }
     finally:
         await client.close()
     assert controller.started == []
@@ -269,7 +327,10 @@ async def test_empty_upload_is_rejected_before_ownership_transfer(tmp_path: Path
         await client.close()
 
     assert response.status == 400
-    assert payload == {"message": "Uploaded file is empty"}
+    assert payload == {
+        "message": "Uploaded file is empty",
+        "correlationId": response.headers["X-Scriber-Correlation-Id"],
+    }
     assert controller.started == []
     assert list(controller.file_upload_root.iterdir()) == []
 
@@ -278,6 +339,7 @@ async def test_empty_upload_is_rejected_before_ownership_transfer(tmp_path: Path
 async def test_unexpected_start_failure_is_redacted_after_ownership_handoff(
     monkeypatch,
     tmp_path: Path,
+    captured_file_logs,
 ) -> None:
     controller = _Controller(tmp_path / "files")
     monkeypatch.setattr(
@@ -295,7 +357,14 @@ async def test_unexpected_start_failure_is_redacted_after_ownership_handoff(
         await client.close()
 
     assert response.status == 500
-    assert payload == {"message": "Failed to process file upload"}
+    correlation_id = response.headers["X-Scriber-Correlation-Id"]
+    assert payload == {"message": "Failed to process file upload", "correlationId": correlation_id}
+    assert controller.start_file_transcription.await_args.kwargs["transcript_id"] == correlation_id
+    events = _assert_upload_events(captured_file_logs, correlation_id)
+    assert events[-1]["outcome"] == "failure"
+    assert events[-1]["meta"] == {"status": 500, "phase": "handoff"}
+    assert "top-secret" not in "".join(captured_file_logs)
+    assert "private.wav" not in "".join(captured_file_logs)
     handed_off_path = controller.start_file_transcription.await_args.args[0]
     assert handed_off_path.is_file()
 
@@ -319,7 +388,7 @@ def test_file_upload_plan_round_trip_preserves_reviewed_labels() -> None:
 
 
 @pytest.mark.asyncio
-async def test_video_extraction_failure_is_redacted(monkeypatch, tmp_path: Path) -> None:
+async def test_video_extraction_failure_is_redacted(monkeypatch, tmp_path: Path, captured_file_logs) -> None:
     controller = _Controller(tmp_path / "files", plan=_plan(source_is_video=True))
     monkeypatch.setattr(
         file_transcription_routes,
@@ -336,11 +405,97 @@ async def test_video_extraction_failure_is_redacted(monkeypatch, tmp_path: Path)
         await client.close()
 
     assert response.status == 500
-    assert payload == {"message": "Failed to extract audio from video."}
+    correlation_id = response.headers["X-Scriber-Correlation-Id"]
+    assert payload == {"message": "Failed to extract audio from video.", "correlationId": correlation_id}
+    events = _assert_upload_events(captured_file_logs, correlation_id)
+    assert any(event["stage"] == "cleanup" and event["outcome"] == "success" for event in events)
+    assert events[-1]["error_category"] == "extraction_failed"
+    assert "top-secret" not in "".join(captured_file_logs)
+    assert "private.mp4" not in "".join(captured_file_logs)
 
 
 @pytest.mark.asyncio
-async def test_oversized_upload_stays_413_when_first_cleanup_attempt_fails(monkeypatch, tmp_path: Path) -> None:
+async def test_compression_fallback_keeps_upload_correlation_without_logging_source_or_exception(
+    monkeypatch, tmp_path: Path, captured_file_logs
+) -> None:
+    controller = _Controller(tmp_path / "files")
+    monkeypatch.setattr(file_transcription_routes, "UPLOAD_COMPRESSION_THRESHOLD_BYTES", 1)
+    monkeypatch.setattr(
+        file_transcription_routes,
+        "_transcode_media_to_webm_audio",
+        AsyncMock(side_effect=RuntimeError("private-source.wav token=compression-secret")),
+    )
+    client = await _client(controller)
+    try:
+        form = FormData()
+        form.add_field("file", b"private-audio-data", filename="private-source.wav", content_type="audio/wav")
+        response = await client.post("/api/file/transcribe", data=form)
+        assert response.status == 200
+    finally:
+        await client.close()
+
+    events = _assert_upload_events(captured_file_logs, response.headers["X-Scriber-Correlation-Id"])
+    assert any(event.get("error_category") == "compression_failed" for event in events)
+    assert events[-1]["outcome"] == "success"
+    assert "compression-secret" not in "".join(captured_file_logs)
+    assert "private-source.wav" not in "".join(captured_file_logs)
+    assert "private-audio-data" not in "".join(captured_file_logs)
+
+
+@pytest.mark.asyncio
+async def test_upload_cancellation_is_correlated_through_workspace_cleanup(tmp_path: Path, captured_file_logs) -> None:
+    controller = _Controller(tmp_path / "files")
+
+    async def fields():
+        yield SimpleNamespace(
+            name="file",
+            filename="private-source.wav",
+            read_chunk=AsyncMock(side_effect=asyncio.CancelledError),
+        )
+
+    request = SimpleNamespace(
+        content_type="multipart/form-data",
+        content_length=None,
+        multipart=AsyncMock(return_value=fields()),
+        app={file_transcription_routes.APP_FILE_TRANSCRIPTION_SERVICE: SimpleNamespace(controller=controller)},
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await file_transcription_routes.transcribe_file(request)
+
+    correlation_id = json.loads(captured_file_logs[0])["record"]["extra"]["trace_id"]
+    events = _assert_upload_events(captured_file_logs, correlation_id)
+    assert {event["stage"] for event in events} >= {"cancelled", "cleanup", "completed"}
+    assert events[-1]["outcome"] == "cancelled"
+    assert events[-1]["meta"]["status"] == 499
+    assert controller.started == []
+    assert list(controller.file_upload_root.iterdir()) == []
+    assert file_transcription_routes._UPLOAD_CORRELATION_ID.get() is None
+    assert "private-source.wav" not in "".join(captured_file_logs)
+
+
+@pytest.mark.asyncio
+async def test_upload_rejection_has_correlation_before_multipart_parsing(tmp_path: Path, captured_file_logs) -> None:
+    controller = _Controller(tmp_path / "files")
+    client = await _client(controller)
+    try:
+        response = await client.post("/api/file/transcribe", json={"filename": "private.wav"})
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 400
+    correlation_id = response.headers["X-Scriber-Correlation-Id"]
+    assert payload == {"message": "Expected multipart/form-data", "correlationId": correlation_id}
+    events = _assert_upload_events(captured_file_logs, correlation_id)
+    assert events[-1]["outcome"] == "rejected"
+    assert not controller.file_upload_root.exists()
+    assert "private.wav" not in "".join(captured_file_logs)
+
+
+@pytest.mark.asyncio
+async def test_oversized_upload_stays_413_when_first_cleanup_attempt_fails(
+    monkeypatch, tmp_path: Path, captured_file_logs
+) -> None:
     plan = FileUploadPlan(
         route=_route(),
         limits=FileUploadLimits(
@@ -357,7 +512,7 @@ async def test_oversized_upload_stays_413_when_first_cleanup_attempt_fails(monke
         nonlocal cleanup_calls
         cleanup_calls += 1
         if cleanup_calls == 1:
-            raise OSError("transient cleanup failure")
+            raise OSError("private-source.wav token=cleanup-secret")
         await real_remove(path)
 
     monkeypatch.setattr(file_transcription_routes, "remove_tree_if_exists", fail_first_cleanup)
@@ -371,8 +526,14 @@ async def test_oversized_upload_stays_413_when_first_cleanup_attempt_fails(monke
         await client.close()
 
     assert response.status == 413
-    assert payload == {"message": "File too large (max raw upload 4 bytes)."}
+    correlation_id = response.headers["X-Scriber-Correlation-Id"]
+    assert payload == {"message": "File too large (max raw upload 4 bytes).", "correlationId": correlation_id}
     assert cleanup_calls == 2
+    events = _assert_upload_events(captured_file_logs, correlation_id)
+    assert [event["outcome"] for event in events if event["stage"] == "cleanup"] == ["failure", "success"]
+    assert events[-1]["outcome"] == "rejected"
+    assert "cleanup-secret" not in "".join(captured_file_logs)
+    assert "private-source.wav" not in "".join(captured_file_logs)
 
 
 @pytest.mark.asyncio
@@ -524,49 +685,75 @@ class _ChunkUploadField:
 
 
 @pytest.mark.asyncio
-async def test_resume_file_uses_the_existing_transcript_identity(tmp_path: Path) -> None:
+async def test_resume_file_uses_the_existing_transcript_identity(tmp_path: Path, captured_file_logs) -> None:
     controller = _Controller(tmp_path)
+    transcript_id = "a" * 32
     client = await _client(controller)
     try:
-        response = await client.post("/api/transcripts/retained-file/resume-file")
+        response = await client.post(f"/api/transcripts/{transcript_id}/resume-file")
         assert response.status == 202
-        assert await response.json() == {"success": True, "id": "retained-file"}
+        assert await response.json() == {"success": True, "id": transcript_id}
+        assert response.headers["X-Scriber-Correlation-Id"] == transcript_id
     finally:
         await client.close()
-    controller.resume_checkpointed_transcription.assert_awaited_once_with("retained-file")
+    controller.resume_checkpointed_transcription.assert_awaited_once_with(transcript_id)
+    events = _assert_upload_events(captured_file_logs, transcript_id)
+    assert events[-1]["outcome"] == "success"
     assert controller.started == []
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", [False, ValueError("Private C:/source/changed.wav")])
-async def test_resume_file_rejects_ineligible_checkpoint_without_disclosing_source(tmp_path: Path, outcome) -> None:
+async def test_resume_file_rejects_ineligible_checkpoint_without_disclosing_source(
+    tmp_path: Path, outcome, captured_file_logs
+) -> None:
     controller = _Controller(tmp_path)
+    transcript_id = "a" * 32
     if isinstance(outcome, Exception):
         controller.resume_checkpointed_transcription.side_effect = outcome
     else:
         controller.resume_checkpointed_transcription.return_value = outcome
     client = await _client(controller)
     try:
-        response = await client.post("/api/transcripts/retained-file/resume-file")
+        response = await client.post(f"/api/transcripts/{transcript_id}/resume-file")
         assert response.status == 409
         assert await response.json() == {
-            "message": "This transcription cannot be safely resumed from its saved progress."
+            "message": "This transcription cannot be safely resumed from its saved progress.",
+            "correlationId": transcript_id,
         }
+        assert response.headers["X-Scriber-Correlation-Id"] == transcript_id
     finally:
         await client.close()
+    events = _assert_upload_events(captured_file_logs, transcript_id)
+    assert events[-1]["meta"] == {"status": 409}
+    assert events[-1]["outcome"] == "rejected"
+    assert "changed.wav" not in "".join(captured_file_logs)
 
 
 @pytest.mark.asyncio
-async def test_resume_file_hides_unexpected_failure_details(tmp_path: Path) -> None:
+@pytest.mark.parametrize("transcript_id", ["a" * 32, "private-source.wav"])
+async def test_resume_file_hides_unexpected_failure_details(tmp_path: Path, transcript_id, captured_file_logs) -> None:
     controller = _Controller(tmp_path)
-    controller.resume_checkpointed_transcription.side_effect = RuntimeError("private storage details")
+    controller.resume_checkpointed_transcription.side_effect = RuntimeError("private-source.wav token=resume-secret")
     client = await _client(controller)
     try:
-        response = await client.post("/api/transcripts/retained-file/resume-file")
+        response = await client.post(f"/api/transcripts/{transcript_id}/resume-file")
         assert response.status == 500
-        assert await response.json() == {"message": "Failed to resume transcription."}
+        correlation_id = response.headers["X-Scriber-Correlation-Id"]
+        assert await response.json() == {"message": "Failed to resume transcription.", "correlationId": correlation_id}
     finally:
         await client.close()
+    events = [json.loads(message)["record"]["extra"] for message in captured_file_logs]
+    assert UUID(hex=correlation_id).hex == correlation_id
+    assert events[-1]["trace_id"] == correlation_id
+    assert events[-1]["meta"] == {"status": 500}
+    if transcript_id == "a" * 32:
+        assert correlation_id == transcript_id
+        assert events[-1]["transcript_id"] == transcript_id
+    else:
+        assert "transcript_id" not in events[-1]
+    assert "private-source.wav" not in "".join(captured_file_logs)
+    assert "resume-secret" not in "".join(captured_file_logs)
 
 
 def test_multipart_content_length_allows_framing_overhead_at_file_limit():

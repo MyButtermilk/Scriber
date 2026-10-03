@@ -82,6 +82,10 @@ class TranscriptsControllerPort(Protocol):
 
     async def get_transcript(self, transcript_id: str) -> dict[str, Any] | None: ...
 
+    async def recent_transcripts_for_tray(self) -> dict[str, Any]: ...
+
+    async def transcript_for_tray_copy(self, transcript_id: str) -> dict[str, Any] | None: ...
+
     async def transcript_view(self, transcript_id: str) -> TranscriptView | None: ...
 
     def has_transcript_record(self, transcript_id: str) -> bool: ...
@@ -204,6 +208,26 @@ async def transcript_detail(request: web.Request) -> web.Response:
     return web.json_response(record)
 
 
+async def recent_transcripts_for_tray(request: web.Request) -> web.Response:
+    try:
+        result = await _controller(request).recent_transcripts_for_tray()
+    except Exception as exc:
+        logger.bind(event="tray_recent_failed", error_type=type(exc).__name__).error("Tray history read failed")
+        return web.json_response({"message": "Could not load recent transcripts."}, status=503)
+    return web.json_response(result, headers={"Cache-Control": "no-store"})
+
+
+async def transcript_for_tray_copy(request: web.Request) -> web.Response:
+    try:
+        result = await _controller(request).transcript_for_tray_copy(request.match_info["id"])
+    except Exception as exc:
+        logger.bind(event="tray_copy_read_failed", error_type=type(exc).__name__).error("Tray copy read failed")
+        return web.json_response({"message": "Could not copy transcript."}, status=503)
+    if result is None:
+        return web.json_response({"message": "Transcript not found"}, status=404)
+    return web.json_response(result, headers={"Cache-Control": "no-store"})
+
+
 async def delete_transcript(request: web.Request) -> web.Response:
     transcript_id = _transcript_id(request)
     if not transcript_id:
@@ -323,6 +347,8 @@ def register_transcript_routes(
     )
 
     app.router.add_get("/api/transcripts", list_transcripts)
+    app.router.add_get("/api/transcripts/recent", recent_transcripts_for_tray)
+    app.router.add_get("/api/transcripts/{id}/copy", transcript_for_tray_copy)
     app.router.add_get("/api/transcripts/{id}", transcript_detail)
     app.router.add_delete("/api/transcripts/{id}", delete_transcript)
     app.router.add_post("/api/transcripts/{id}/summarize", summarize_transcript)

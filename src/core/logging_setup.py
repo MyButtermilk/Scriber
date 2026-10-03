@@ -22,6 +22,10 @@ _LOGGING_ENABLED = True
 _LAST_COMPONENT = "app"
 _LAST_STDERR = True
 _DIAGNOSTIC_WRITE_LOCK = threading.RLock()
+# Each sink keeps its current file plus three uncompressed generations. Their
+# .log/.jsonl suffixes remain discoverable by the Debug Console/support bundle.
+_LOG_ROTATION_BYTES = 5 * 1024 * 1024
+_LOG_RETENTION_FILES = 3
 
 
 def diagnostic_logging_enabled() -> bool:
@@ -78,7 +82,7 @@ def setup_logging(
     component: str = "app",
     force: bool = False,
     add_stderr: bool = True,
-    append: bool = False,
+    append: bool = True,
     enabled: bool | None = None,
 ) -> dict[str, str]:
     with _DIAGNOSTIC_WRITE_LOCK:
@@ -168,6 +172,8 @@ def _setup_logging(
         enqueue=False,
         encoding="utf-8",
         mode="a" if append else "w",
+        rotation=_LOG_ROTATION_BYTES,
+        retention=_LOG_RETENTION_FILES,
         backtrace=False,
         diagnose=False,
         filter=lambda _record: _LOGGING_ENABLED,
@@ -180,6 +186,8 @@ def _setup_logging(
         enqueue=False,
         encoding="utf-8",
         mode="a" if append else "w",
+        rotation=_LOG_ROTATION_BYTES,
+        retention=_LOG_RETENTION_FILES,
         backtrace=False,
         diagnose=False,
         filter=lambda _record: _LOGGING_ENABLED,

@@ -15,6 +15,7 @@ from src.api.file_transcription_routes import FileUploadPlan
 from src.api.podcast_routes import register_podcast_routes
 from src.api.transcript_routes import SummaryOutcome, TranscriptView
 from src.api.upload_policy import FileUploadLimits, UploadLimit
+from src.podcasts import service as podcast_service
 from src.podcasts.feeds import (
     MAX_FEED_BYTES,
     FeedEpisode,
@@ -127,6 +128,86 @@ class FakeTransport:
 
     async def close(self) -> None:
         self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_podcast_lifecycle_logs_correlate_download_provider_and_summary_without_content(monkeypatch, tmp_path):
+    events = []
+    monkeypatch.setattr(
+        podcast_service, "emit_event", lambda _logger, message, **fields: events.append((message, fields))
+    )
+    controller = FakeController(tmp_path)
+    service = PodcastService(tmp_path / "podcasts", PodcastProcessor(controller), transport=FakeTransport())
+    subscription = await service.subscribe("https://example.com/feed?secret=PRIVATE_FEED_TOKEN")
+    episode = (await service.episodes(subscription))["items"][0]
+    await service._process(episode)
+    linked_id = controller.started[0]
+    episode_events = [fields for _, fields in events if fields.get("meta", {}).get("episode_id") == episode["id"]]
+    assert [event["event"] for event in episode_events] == [
+        "podcast.episode_started",
+        "podcast.download_completed",
+        "podcast.admitting",
+        "podcast.transcribing",
+        "podcast.summarizing",
+        "podcast.episode_completed",
+    ]
+    assert {event["trace_id"] for event in episode_events} == {linked_id}
+    assert {event["transcript_id"] for event in episode_events} == {linked_id}
+    assert episode_events[-1]["meta"]["to_status"] == "completed"
+    assert episode_events[-1]["duration_ms"] >= 0
+    assert "PRIVATE_FEED_TOKEN" not in repr(events)
+    assert episode["title"] not in repr(events)
+    assert episode["media_url"] not in repr(events)
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_podcast_cancel_and_resume_keep_log_correlation_and_reuse_download(monkeypatch, tmp_path):
+    events = []
+    monkeypatch.setattr(podcast_service, "emit_event", lambda _logger, _message, **fields: events.append(fields))
+    controller = FakeController(tmp_path)
+    processor = PodcastProcessor(controller)
+    service = PodcastService(tmp_path / "podcasts", processor, transport=FakeTransport())
+    subscription = await service.subscribe("https://example.com/feed")
+    episode = (await service.episodes(subscription))["items"][0]
+    original_process = processor.process
+    monkeypatch.setattr(processor, "process", AsyncMock(side_effect=asyncio.CancelledError()))
+    with pytest.raises(asyncio.CancelledError):
+        await service._process(episode)
+    suspended = next(event for event in events if event["event"] == "podcast.episode_suspended")
+    assert suspended["meta"]["to_status"] == "queued"
+    monkeypatch.setattr(processor, "process", original_process)
+    await service._process(service._store.episode(episode["id"]))
+    completed = next(event for event in events if event["event"] == "podcast.episode_completed")
+    assert suspended["transcript_id"] == completed["transcript_id"] == controller.started[0]
+    downloads = [event for event in events if event["event"] == "podcast.download_completed"]
+    assert [event["meta"]["source_reused"] for event in downloads] == [False, True]
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_podcast_failure_logs_safe_http_status_without_raw_exception(monkeypatch, tmp_path):
+    events = []
+    monkeypatch.setattr(podcast_service, "emit_event", lambda _logger, _message, **fields: events.append(fields))
+    transport = FakeTransport()
+    service = PodcastService(tmp_path / "podcasts", PodcastProcessor(FakeController(tmp_path)), transport=transport)
+    subscription = await service.subscribe("https://example.com/feed")
+    transport.download = AsyncMock(
+        side_effect=PodcastError("The podcast host is currently unavailable. Try again later.", status=503)
+    )
+    episode = (await service.episodes(subscription))["items"][0]
+    await service._process(episode)
+    failure = events[-1]
+    assert failure["outcome"] == "failed"
+    assert failure["level"] == "WARNING"
+    assert failure["meta"]["status"] == 503
+    assert failure["meta"]["from_status"] == "downloading"
+    transport.download = AsyncMock(side_effect=RuntimeError("Bearer PRIVATE_TOKEN https://host/?token=SECRET"))
+    await service._process(service._store.episode(episode["id"]))
+    assert "PRIVATE_TOKEN" not in repr(events)
+    assert "SECRET" not in repr(events)
+    assert "PRIVATE_TOKEN" not in service._store.episode(episode["id"])["error"]
+    await service.close()
 
 
 def test_rss_parses_sorts_and_deduplicates_without_exposing_html() -> None:
