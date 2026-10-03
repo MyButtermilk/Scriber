@@ -1,5 +1,7 @@
 import { useParams, Link, useLocation } from "wouter";
 import { TranscriptionDiarizationNotice } from "@/components/transcription-diarization-notice";
+import { TranscriptionBoundaryNotice } from "@/components/transcription-boundary-notice";
+import { FileTranscriptResumeButton } from "@/components/file-transcript-resume-button";
 import { ArrowLeft, Download, Copy, Check, Sparkles, FileText, Youtube, ExternalLink } from "lucide-react";
 import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { Button } from "@/components/ui/button";
@@ -854,7 +856,12 @@ export default function TranscriptDetail() {
                 onStop={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })}
               />
             )}
-            {transcript.status === "failed" && transcript.type === "file" && (
+            {transcript.type === "file" &&
+              transcript.resumeAvailable === true &&
+              (transcript.status === "failed" || transcript.status === "stopped") && (
+                <FileTranscriptResumeButton key={transcript.id} transcriptId={transcript.id} />
+              )}
+            {transcript.status === "failed" && transcript.type === "file" && transcript.resumeAvailable !== true && (
               <PodcastTranscriptRetryButton transcriptId={id!} />
             )}
             {showHeaderSummaryAction && (
@@ -943,6 +950,7 @@ export default function TranscriptDetail() {
           )}
 
           <TranscriptionDiarizationNotice code={transcript.diarizationFallback} />
+          <TranscriptionBoundaryNotice warnings={transcript.chunkBoundaryWarnings} />
           <div key={id} className="transcript-summary-layout">
             {showSummaryToc && (
               <SummaryTableOfContents

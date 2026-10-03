@@ -15,7 +15,13 @@ vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }));
 const rateLimitMessage =
   "Microsoft MAI Transcribe via OpenRouter is temporarily rate limited (HTTP 429). Wait briefly or switch transcription provider.";
 
-function mount(content = "", step = rateLimitMessage, summary = "", type: TranscriptDetailResponse["type"] = "mic") {
+function mount(
+  content = "",
+  step = rateLimitMessage,
+  summary = "",
+  type: TranscriptDetailResponse["type"] = "mic",
+  overrides: Partial<TranscriptDetailResponse> = {},
+) {
   const record: TranscriptDetailResponse = {
     id: "failed-mic",
     title: "Live Mic",
@@ -26,6 +32,7 @@ function mount(content = "", step = rateLimitMessage, summary = "", type: Transc
     content,
     step,
     summary,
+    ...overrides,
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => record } } });
   const location = memoryLocation({ path: "/transcript/failed-mic" });
@@ -83,5 +90,45 @@ describe("failed transcript", () => {
     expect(screen.queryByRole("button", { name: "Copy transcript" })).toBeNull();
     expect(screen.getByText("No transcript text captured.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Export" })).toBeDisabled();
+  });
+
+  it.each(["failed", "stopped"] as const)(
+    "offers resume for a %s file only when the backend confirms eligibility",
+    async (status) => {
+      mount("Retained speech.", "", "", "file", { status, resumeAvailable: true });
+      expect(await screen.findByRole("button", { name: "Resume transcription" })).toBeEnabled();
+    },
+  );
+
+  it.each([
+    { type: "file", status: "failed", resumeAvailable: false },
+    { type: "file", status: "stopped" },
+    { type: "file", status: "processing", resumeAvailable: true },
+    { type: "mic", status: "failed", resumeAvailable: true },
+  ] satisfies Partial<TranscriptDetailResponse>[])(
+    "does not offer resume without an eligible terminal file: %j",
+    async (overrides) => {
+      mount("Retained speech.", "", "", "file", overrides);
+      await screen.findByRole("heading", { name: "Live Mic" });
+      expect(screen.queryByRole("button", { name: "Resume transcription" })).toBeNull();
+    },
+  );
+
+  it("shows uncertain joins at their original recording times without inserting warnings into speech", async () => {
+    mount("Yes. Yes.", "", "", "file", {
+      status: "completed",
+      chunkBoundaryWarnings: [
+        {
+          code: "overlap_missing_word_timestamps",
+          leftPartIndex: 0,
+          rightPartIndex: 1,
+          startMs: 3_601_000,
+          endMs: 3_609_000,
+        },
+      ],
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent("1:00:01–1:00:09");
+    expect(screen.getByText("Yes. Yes.")).toBeInTheDocument();
+    expect(screen.getByText("2 words")).toBeInTheDocument();
   });
 });

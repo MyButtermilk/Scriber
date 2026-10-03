@@ -234,10 +234,19 @@ Microsoft MAI-Transcribe-2 can use either the separate direct Azure setup or
 the OpenRouter option. With OpenRouter, the same API key covers MAI
 transcription and Scriber's existing OpenRouter summaries and post-processing.
 File and YouTube imports that need conversion use compact mono 64-kbit/s MP3
-for OpenRouter. Scriber caps this route at 18 MB of prepared audio (about
-37 minutes at that bitrate) and checks the base64 JSON size before upload.
-For larger recordings, split the audio or choose another batch provider.
-An HTTP 413 rejection now explains the upload-size problem explicitly.
+for OpenRouter. Files that fit the provider's request limits stay intact.
+OpenRouter's multipart limit is 25 MB; the direct Microsoft REST endpoint
+requires less than 250 MB and less than two hours per request. Larger recordings
+use verified parts with short overlapping context, preferably cut at pauses.
+MAI-Transcribe-2 word timestamps help join matching speech on the original
+timeline. Uncertain boundaries remain visible for review; Scriber does not
+rewrite them with a language model. MAI-Transcribe-1.5 retains its separate
+text-only response contract.
+Successful File-job parts are saved before the next request. Eligible failed or
+stopped jobs can resume from their saved parts; a request whose remote outcome
+is unknown is blocked from automatic replay. See the
+[provider limits and recovery contract](docs/ARCHITECTURE.md#provider-boundary)
+for the exact boundaries and remaining limitations.
 The published limited-time model price is **$0.10 per audio hour through the
 end of 2026**.
 The Azure direct option is also recommended for Meeting final transcription:

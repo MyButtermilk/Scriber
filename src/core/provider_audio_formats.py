@@ -23,8 +23,16 @@ CAPABILITY_VERIFIED_AT = date(2026, 8, 26)
 # carry the original bytes directly, so no base64 allowance reduces this cap.
 # https://openrouter.ai/docs/guides/overview/multimodal/stt
 OPENROUTER_STT_MAX_AUDIO_BYTES = 25_000_000
+# Conservative MAI-2 model-card ceiling. OpenRouter does not document its own
+# audio-duration number; its 60-second processing timeout is a different bound.
+OPENROUTER_MAI2_MAX_AUDIO_DURATION_MS = 7_200_000
 # The logical file route splits long/large MP3s before individual HTTP calls.
 OPENROUTER_STT_MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024
+# The active Azure Speech REST 2025-10-15 route specifies <250 MB and <2h.
+# Use conservative decimal MB; the model card's 300 MB is not this REST limit.
+AZURE_MAI_MAX_AUDIO_BYTES = 250_000_000 - 1
+AZURE_MAI_MAX_AUDIO_DURATION_MS = 7_200_000 - 1
+AZURE_MAI_MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024
 # Retain the conservative serialized JSON budget for frozen WAV/FLAC jobs.
 OPENROUTER_STT_MAX_REQUEST_BYTES = 25_000_000
 SPEECHMATICS_BATCH_DEFAULT_BASE_URL = "https://asr.api.speechmatics.com/v2"
@@ -97,6 +105,8 @@ class AudioInputFormat(StrEnum):
     WAV_PCM16 = "wav_pcm16"
     WAV_PCM24 = "wav_pcm24"
     WAV_PCM32 = "wav_pcm32"
+    # Recognized source for conversion; no provider upload capability is implied.
+    WAV_PCM32_FLOAT = "wav_pcm32_float"
     RAW_PCM16 = "raw_pcm16"
     RAW_PCM32_FLOAT = "raw_pcm32_float"
     MP3 = "mp3"
@@ -130,6 +140,7 @@ _FORMAT_PARTS: dict[AudioInputFormat, tuple[AudioContainer, AudioCodec]] = {
     AudioInputFormat.WAV_PCM16: (AudioContainer.WAV, AudioCodec.PCM_S16LE),
     AudioInputFormat.WAV_PCM24: (AudioContainer.WAV, AudioCodec.PCM_S24LE),
     AudioInputFormat.WAV_PCM32: (AudioContainer.WAV, AudioCodec.PCM_S32LE),
+    AudioInputFormat.WAV_PCM32_FLOAT: (AudioContainer.WAV, AudioCodec.PCM_F32LE),
     AudioInputFormat.RAW_PCM16: (AudioContainer.RAW, AudioCodec.PCM_S16LE),
     AudioInputFormat.RAW_PCM32_FLOAT: (AudioContainer.RAW, AudioCodec.PCM_F32LE),
     AudioInputFormat.MP3: (AudioContainer.MP3, AudioCodec.MP3),
@@ -356,9 +367,12 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         batch_generic_containers=(AudioContainer.OGG, AudioContainer.WEBM),
         preferred_lossy_format=AudioInputFormat.WEBM_OPUS,
         preferred_lossless_format=AudioInputFormat.FLAC,
-        max_upload_bytes=500 * 1024 * 1024,
+        # Soniox documents 300 minutes, not a numerical per-file byte limit.
+        # The separate ingest policy still bounds local resource consumption.
+        max_upload_bytes=None,
         evidence_kind=CapabilityEvidenceKind.SCRIBER_INTEGRATION_TEST,
-        evidence_reference="src/pipeline.py Soniox async WebM/Opus route",
+        evidence_reference="https://soniox.com/docs/stt/async/limits-and-quotas",
+        verified_at=date(2026, 10, 2),
     ),
     _capability(
         "soniox_async",
@@ -370,9 +384,10 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         batch_generic_containers=(AudioContainer.OGG, AudioContainer.WEBM),
         preferred_lossy_format=AudioInputFormat.WEBM_OPUS,
         preferred_lossless_format=AudioInputFormat.FLAC,
-        max_upload_bytes=500 * 1024 * 1024,
+        max_upload_bytes=None,
         evidence_kind=CapabilityEvidenceKind.SCRIBER_INTEGRATION_TEST,
-        evidence_reference="src/pipeline.py Soniox async WebM/Opus route",
+        evidence_reference="https://soniox.com/docs/stt/async/limits-and-quotas",
+        verified_at=date(2026, 10, 2),
     ),
     _capability(
         "soniox",
@@ -547,9 +562,12 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         direct_passthrough_formats=(AudioInputFormat.MP3,),
         preferred_lossy_format=AudioInputFormat.MP3,
         preferred_lossless_format=AudioInputFormat.FLAC,
-        max_upload_bytes=300_000_000,
-        evidence_reference=("https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe"),
-        verified_at=date(2026, 9, 4),
+        # Logical file bound; the adapter enforces per-request bytes/duration.
+        max_upload_bytes=AZURE_MAI_MAX_SOURCE_BYTES,
+        evidence_reference=(
+            "https://learn.microsoft.com/en-us/rest/api/speechtotext/transcriptions/transcribe?view=rest-speechtotext-2025-10-15"
+        ),
+        verified_at=date(2026, 10, 2),
     ),
     # Preserve the shipped exact contract for supervising-process overrides
     # and persisted jobs. New default selections use MAI-Transcribe-2.
@@ -562,8 +580,11 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         direct_passthrough_formats=(AudioInputFormat.MP3,),
         preferred_lossy_format=AudioInputFormat.MP3,
         preferred_lossless_format=AudioInputFormat.FLAC,
-        max_upload_bytes=300_000_000,
-        evidence_reference=("https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe"),
+        max_upload_bytes=AZURE_MAI_MAX_SOURCE_BYTES,
+        evidence_reference=(
+            "https://learn.microsoft.com/en-us/rest/api/speechtotext/transcriptions/transcribe?view=rest-speechtotext-2025-10-15"
+        ),
+        verified_at=date(2026, 10, 2),
     ),
     _capability(
         "openrouter_stt",
@@ -576,9 +597,9 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         direct_passthrough_formats=(AudioInputFormat.MP3,),
         preferred_lossy_format=AudioInputFormat.MP3,
         preferred_lossless_format=AudioInputFormat.FLAC,
-        evidence_reference=("https://openrouter.ai/microsoft/mai-transcribe-2/providers"),
+        evidence_reference=("https://openrouter.ai/docs/guides/overview/multimodal/stt"),
         max_upload_bytes=OPENROUTER_STT_MAX_SOURCE_BYTES,
-        verified_at=date(2026, 9, 4),
+        verified_at=date(2026, 10, 2),
     ),
     # Frozen routes retain their original model and capability identity across
     # upgrades, including recovery of an already paid provider result.
@@ -593,6 +614,7 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         preferred_lossless_format=AudioInputFormat.FLAC,
         evidence_reference=("https://openrouter.ai/microsoft/mai-transcribe-1.5/providers"),
         max_upload_bytes=OPENROUTER_STT_MAX_SOURCE_BYTES,
+        verified_at=date(2026, 10, 2),
     ),
     _capability(
         "gemini_stt",

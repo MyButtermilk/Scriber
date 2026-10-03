@@ -911,8 +911,18 @@ export interface ApiMessageResponse {
   message?: string;
 }
 
+export interface TranscriptionBoundaryWarning {
+  code: "overlap_conflicting_words" | "overlap_missing_word_timestamps";
+  leftPartIndex: number;
+  rightPartIndex: number;
+  startMs: number;
+  endMs: number;
+}
+
 export interface TranscriptHistoryItem {
   diarizationFallback?: "diarization_unavailable" | null;
+  resumeAvailable?: boolean;
+  chunkBoundaryWarnings?: TranscriptionBoundaryWarning[];
   id: string;
   title: string;
   date: string;

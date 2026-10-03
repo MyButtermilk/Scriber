@@ -62,7 +62,7 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "starting": frozenset({"recording", "finalizing", "capture_failed", "interrupted", "discarded"}),
     "recording": frozenset({"paused", "stopping", "capture_failed", "interrupted", "discarded"}),
     "paused": frozenset({"recording", "stopping", "capture_failed", "interrupted", "discarded"}),
-    "stopping": frozenset({"finalizing", "capture_failed", "interrupted"}),
+    "stopping": frozenset({"finalizing", "finalization_failed", "capture_failed", "interrupted"}),
     "finalizing": frozenset({"analyzing", "ready", "finalization_failed", "interrupted"}),
     "analyzing": frozenset({"ready", "analysis_failed", "interrupted"}),
     "finalization_failed": frozenset({"finalizing", "discarded"}),

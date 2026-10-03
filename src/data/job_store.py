@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from loguru import logger
 
+from src.data.transcription_part_store import DurableTranscriptionCheckpoint, init_checkpoint_schema
 from src.runtime.paths import database_path
 
 
@@ -60,6 +61,11 @@ _EXECUTION_ROUTE_FIELDS = {
     "customVocabularySha256",
     "providerRegion",
     "providerEndpointSha256",
+    "responseShape",
+    "timestampMode",
+    "diarizationMode",
+    "parserId",
+    "parserVersion",
 }
 _EXECUTION_ROUTE_TEXT_LIMIT = 160
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -399,7 +405,109 @@ class JobStore:
                     "UPDATE jobs SET next_retry_at = ? WHERE id = ?",
                     retry_updates,
                 )
+            init_checkpoint_schema(conn)
             conn.commit()
+
+    def transcription_checkpoint(
+        self, job_id: str, *, source_digest: str, source_path: Path, execution_route: dict[str, Any]
+    ) -> DurableTranscriptionCheckpoint:
+        job = self.get(job_id)
+        if job is None or job.status != JobStatus.RUNNING:
+            raise RuntimeError("Transcription checkpoint requires a running job")
+        return DurableTranscriptionCheckpoint(
+            self._db_path,
+            job_id=job_id,
+            attempt=job.attempts,
+            source_digest=source_digest,
+            source_path=source_path,
+            execution_route=execution_route,
+        )
+
+    def has_transcription_checkpoint(self, job_id: str) -> bool:
+        with self._connect() as conn:
+            return (
+                conn.execute("SELECT 1 FROM transcription_checkpoints WHERE job_id = ?", (job_id,)).fetchone()
+                is not None
+            )
+
+    def checkpoint_source_path(self, job_id: str) -> Path | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT source_path FROM transcription_checkpoints WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            return Path(row["source_path"]) if row is not None else None
+
+    def checkpoint_resume_available(self, job_id: str) -> bool:
+        with self._connect() as conn:
+            return (
+                conn.execute(
+                    "SELECT 1 FROM jobs j JOIN transcription_checkpoints c ON c.job_id = j.id "
+                    "WHERE j.id = ? AND j.status IN ('failed', 'canceled') "
+                    "AND NOT EXISTS (SELECT 1 FROM transcription_parts p WHERE p.job_id = j.id "
+                    "AND p.state NOT IN ('unsent', 'rejected', 'succeeded', 'remote'))",
+                    (job_id,),
+                ).fetchone()
+                is not None
+            )
+
+    def list_soniox_cleanup(self, *, limit: int = 20) -> list[dict[str, str]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT c.job_id, c.region, c.resource_kind, c.resource_id FROM soniox_resource_cleanup c "
+                "ORDER BY (SELECT MAX(p.last_attempt_at) FROM soniox_resource_cleanup p WHERE p.job_id = c.job_id), "
+                "c.job_id, CASE c.resource_kind WHEN 'transcription' THEN 0 ELSE 1 END "
+                "LIMIT ?",
+                (max(1, min(100, int(limit))),),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def note_soniox_cleanup_attempt(self, *, job_id: str) -> None:
+        """Rotate failed jobs behind untouched cleanup while preserving their dependencies."""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE soniox_resource_cleanup SET last_attempt_at = strftime('%s', 'now') WHERE job_id = ?",
+                (job_id,),
+            )
+            conn.commit()
+
+    def complete_soniox_cleanup(self, *, job_id: str, resource_kind: str, resource_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM soniox_resource_cleanup WHERE job_id = ? AND resource_kind = ? AND resource_id = ?",
+                (job_id, resource_kind, resource_id),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0) == 1
+
+    def queue_checkpoint_resume(self, job_id: str, *, source_digest: str, expected_attempt: int) -> bool:
+        """Explicitly queue only missing/definitely rejected parts or known remote IDs."""
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT j.payload FROM jobs j JOIN transcription_checkpoints c ON c.job_id = j.id "
+                "WHERE j.id = ? AND j.attempts = ? AND j.status IN ('failed', 'canceled') "
+                "AND c.source_sha256 = ? "
+                "AND NOT EXISTS (SELECT 1 FROM transcription_parts p WHERE p.job_id = j.id "
+                "AND p.state NOT IN ('unsent', 'rejected', 'succeeded', 'remote'))",
+                (job_id, expected_attempt, source_digest),
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                return False
+            payload = json.loads(row["payload"])
+            payload["checkpointResumeRequested"] = True
+            conn.execute(
+                "UPDATE transcription_parts SET state = 'unsent', status = NULL "
+                "WHERE job_id = ? AND state = 'rejected'",
+                (job_id,),
+            )
+            conn.execute(
+                "UPDATE jobs SET status = 'queued', payload = ?, terminal_projection_pending = 0, "
+                "next_retry_at = '', last_error = '', updated_at = ? WHERE id = ?",
+                (json.dumps(payload, ensure_ascii=False, sort_keys=True), _now_iso(), job_id),
+            )
+            conn.commit()
+            return True
 
     def enqueue(
         self,

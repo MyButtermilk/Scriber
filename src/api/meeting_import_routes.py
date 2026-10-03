@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import shutil
 from collections.abc import Callable, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -423,32 +424,28 @@ async def upload_import(request: web.Request) -> web.Response:
             }:
                 return web.json_response(service.record_payload(record), status=202)
             return web.json_response({"message": redact_text(str(exc))[:240]}, status=409)
-        try:
-            await to_thread_cancellation_barrier(
-                deps.store.mark_failed,
-                import_id,
-                error_code=type(exc).__name__,
-                error_message=redact_text(str(exc))[:240],
-            )
-        except Exception as mark_exc:
-            logger.debug("Meeting import failure-state persistence failed: {}", type(mark_exc).__name__)
-        await _discard_staging(part_path, job_root)
+        await _settle_failed_upload(
+            deps,
+            import_id,
+            part_path,
+            job_root,
+            error_code=type(exc).__name__,
+            error_message=redact_text(str(exc))[:240],
+        )
         return web.json_response({"message": redact_text(str(exc))[:240]}, status=409)
     except Exception:
         logger.exception("Meeting import upload failed")
         if source_committed:
             record = await asyncio.to_thread(deps.store.require, import_id)
             return web.json_response(service.record_payload(record), status=202)
-        try:
-            await to_thread_cancellation_barrier(
-                deps.store.mark_failed,
-                import_id,
-                error_code="upload_interrupted",
-                error_message="The Meeting recording upload was interrupted.",
-            )
-        except Exception:
-            logger.exception("Interrupted Meeting upload state could not be persisted")
-        await _discard_staging(part_path, job_root)
+        await _settle_failed_upload(
+            deps,
+            import_id,
+            part_path,
+            job_root,
+            error_code="upload_interrupted",
+            error_message="The Meeting recording upload was interrupted.",
+        )
         return web.json_response({"message": "The Meeting recording upload was interrupted."}, status=500)
     finally:
         if current_task is not None and upload_tasks.get(import_id) is current_task:
@@ -461,6 +458,57 @@ async def _discard_staging(part_path: Path | None, job_root: Path | None) -> Non
         part_path.unlink(missing_ok=True)
     if job_root is not None:
         await remove_tree_if_exists(job_root)
+
+
+async def _settle_failed_upload(
+    deps: MeetingImportDeps,
+    import_id: str,
+    part_path: Path | None,
+    job_root: Path | None,
+    *,
+    error_code: str,
+    error_message: str,
+) -> None:
+    """Persist failure and remove uncommitted bytes before releasing ownership."""
+
+    async def settle() -> None:
+        try:
+            await asyncio.to_thread(
+                deps.store.mark_failed,
+                import_id,
+                error_code=error_code,
+                error_message=error_message,
+            )
+        except Exception:
+            logger.exception("Interrupted Meeting upload state could not be persisted")
+        finally:
+            await _discard_staging(part_path, job_root)
+
+    _, pending_cancel = await await_with_delayed_cancellation(settle())
+    if pending_cancel is not None:
+        raise pending_cancel
+
+
+def cleanup_terminal_upload_staging(store: MeetingImportStorePort, storage_root: Path) -> None:
+    """Recover a crash after terminal failure committed but before staging removal."""
+    imports_root = (storage_root / "meeting-imports").resolve()
+    if imports_root.parent != storage_root.resolve() or not imports_root.is_dir():
+        return
+    for candidate in imports_root.iterdir():
+        if not candidate.is_dir() or candidate.resolve().parent != imports_root:
+            continue
+        try:
+            record = store.require(candidate.name)
+            if (
+                record.status in {MeetingImportStatus.FAILED, MeetingImportStatus.CANCELED}
+                and not record.original_relative_path
+                and not record.meeting_id
+            ):
+                shutil.rmtree(candidate)
+        except MeetingImportNotFound:
+            continue
+        except Exception:
+            logger.exception("Terminal Meeting upload staging cleanup deferred")
 
 
 async def cancel_import(request: web.Request) -> web.Response:

@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import socket
+import sqlite3
 import threading
 import wave
 from datetime import UTC, datetime
@@ -765,6 +766,7 @@ async def _append_event(items, value):
 
 class FakeController:
     def __init__(self, store):
+        self._detached_task_supervisor = web_api.AsyncTaskSupervisor(owner="test meeting controller")
         self._meeting_store = store
         self._meeting_recorders = {}
         self._meeting_live_transcribers = {}
@@ -932,11 +934,19 @@ async def test_device_test_renews_and_retains_lease_when_native_stop_is_unconfir
 
 
 @pytest.mark.asyncio
-async def test_cancelled_device_test_waits_for_late_native_start_then_stops_before_release(monkeypatch):
+async def test_cancelled_device_test_waits_for_late_native_start_then_stops_before_release(
+    monkeypatch, tmp_path, request
+):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "late-device-start.db")
+    request.addfinalizer(database._close_all_connections)
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
     start_entered = threading.Event()
     finish_start = threading.Event()
     timeline: list[str] = []
-    controller = FakeController(MeetingStore())
+    controller = FakeController(store)
     claim = object()
     release_entered = asyncio.Event()
     finish_release = asyncio.Event()
@@ -996,12 +1006,20 @@ async def test_cancelled_device_test_waits_for_late_native_start_then_stops_befo
 
 
 @pytest.mark.asyncio
-async def test_device_test_loss_during_native_start_stops_capture_and_cannot_return_success(monkeypatch):
+async def test_device_test_loss_during_native_start_stops_capture_and_cannot_return_success(
+    monkeypatch, tmp_path, request
+):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "device-start-loss.db")
+    request.addfinalizer(database._close_all_connections)
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
     start_entered = threading.Event()
     finish_start = threading.Event()
     timeline: list[str] = []
     captured = {}
-    controller = FakeController(MeetingStore())
+    controller = FakeController(store)
     claim = object()
 
     async def claim_audio(_controller, **kwargs):
@@ -2308,6 +2326,137 @@ async def test_stop_keeps_native_capture_end_through_delayed_provider_cleanup(
         assert result["updatedAt"] == "2026-09-27T18:58:09Z"
         assert store.get(meeting["id"])["endedAt"] == result["endedAt"]
     finally:
+        database._close_all_connections()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_end", ["response", "cancel", "timeout", "shutdown", "uncertain"])
+async def test_real_release_database_lock_does_not_strand_stop(monkeypatch, tmp_path, request_end):
+    controller, store, meeting, recorder = _recording_meeting_control_controller(
+        monkeypatch,
+        tmp_path,
+        "real-stop-release-lock.db",
+    )
+    admission = web_api.AudioAdmissionStore(database._DB_PATH)
+    admission.initialize()
+    controller._audio_admission_store = admission
+    controller._audio_controller_id = "test-stop-controller"
+    controller._loop = asyncio.get_running_loop()
+    controller._meeting_tasks = {}
+    claim = await web_api._claim_persistent_audio(
+        controller,
+        owner_kind="meeting",
+        owner_id=meeting["id"],
+        heartbeat=False,
+    )
+    await web_api._audio_admission_owner(controller).mark_durable(claim)
+    finalizer_started = asyncio.Event()
+
+    async def run_finalizer(meeting_id):
+        assert store.get(meeting_id)["state"] == "finalizing"
+        assert controller._persistent_audio_claim is None
+        assert recorder.stop_count == 1
+        finalizer_started.set()
+
+    controller._run_meeting_finalization = run_finalizer
+    controller.schedule_meeting_finalization = lambda *args, **kwargs: (
+        web_api.ScriberWebController.schedule_meeting_finalization(controller, *args, **kwargs)
+    )
+    monkeypatch.setattr(
+        web_api, "call_shell_ipc", lambda *_args, **_kwargs: {"success": True, "payload": {"stopped": True}}
+    )
+    if request_end == "timeout":
+        monkeypatch.setattr(web_api, "_MEETING_STOP_RESPONSE_TIMEOUT_SECONDS", 0.08)
+    busy_observed = threading.Event()
+    blocker = sqlite3.connect(database._DB_PATH, check_same_thread=False)
+    real_release, real_connect = admission.release, admission._connect
+    release_calls = 0
+
+    def short_busy_timeout():
+        conn = real_connect()
+        conn.execute("PRAGMA busy_timeout=20")
+        return conn
+
+    def contended_release(target):
+        nonlocal release_calls
+        if release_calls == 0:
+            blocker.execute("BEGIN IMMEDIATE")
+        release_calls += 1
+        if release_calls > 1 and request_end == "uncertain":
+            raise OSError("lease release result is unknown")
+        try:
+            return real_release(target)
+        except sqlite3.OperationalError as exc:
+            assert exc.sqlite_errorcode == sqlite3.SQLITE_BUSY
+            busy_observed.set()
+            raise
+
+    monkeypatch.setattr(admission, "_connect", short_busy_timeout)
+    monkeypatch.setattr(admission, "release", contended_release)
+    request_task = asyncio.create_task(controller.stop_meeting_capture(meeting["id"]))
+    try:
+        assert await asyncio.to_thread(busy_observed.wait, 2)
+        assert store.get(meeting["id"])["state"] == "stopping"
+        assert controller._persistent_audio_claim is claim
+        assert meeting["id"] in controller._meeting_tasks
+        assert not finalizer_started.is_set()
+        if request_end == "cancel":
+            for _ in range(2):
+                request_task.cancel()
+                await asyncio.sleep(0)
+            assert not request_task.done()
+        elif request_end == "timeout":
+            outcome = await asyncio.wait_for(request_task, 2)
+            assert outcome.status == 503
+            assert controller._detached_task_supervisor.pending_count == 1
+            assert not controller._meeting_tasks[meeting["id"]].done()
+            duplicate = await controller.stop_meeting_capture(meeting["id"])
+            assert duplicate.status == 503
+        elif request_end == "shutdown":
+            controller._shutting_down = True
+            await controller._detached_task_supervisor.close(timeout_seconds=0.01, cancel=True)
+            # SQLite's writer remains locked beyond the close deadline. The
+            # owned retry must nevertheless retire before this lock is lifted.
+            assert await controller._detached_task_supervisor.drain(timeout_seconds=1, cancel=True) == 0
+            with pytest.raises(asyncio.CancelledError):
+                await request_task
+            assert not finalizer_started.is_set()
+            assert controller._persistent_audio_claim is claim
+            assert store.get(meeting["id"])["state"] == "stopping"
+            assert recorder.stop_count == 1
+            blocker.rollback()
+            assert store.recover_interrupted() == 1
+            assert store.get(meeting["id"])["state"] == "finalization_failed"
+            return
+        blocker.rollback()
+        if request_end == "uncertain":
+            assert (await asyncio.wait_for(request_task, 2)).status == 503
+            assert store.get(meeting["id"])["state"] == "finalization_failed"
+            assert controller._persistent_audio_claim is claim
+            assert (
+                web_api._meeting_capture_ownership_registry(controller)[meeting["id"]].native_capture_started is False
+            )
+            assert not finalizer_started.is_set()
+            assert recorder.stop_count == 1
+            return
+        if request_end == "cancel":
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(request_task, 2)
+        elif request_end == "response":
+            assert (await asyncio.wait_for(request_task, 2)).status == 202
+        await asyncio.wait_for(finalizer_started.wait(), 2)
+        assert release_calls >= 2
+        assert store.get(meeting["id"])["state"] == "finalizing"
+        assert admission.active() is None
+        assert recorder.stop_count == 1
+        assert controller._meeting_recorders == {}
+        assert web_api._meeting_capture_ownership_registry(controller) == {}
+    finally:
+        blocker.rollback()
+        blocker.close()
+        await controller._detached_task_supervisor.drain(timeout_seconds=3)
+        monkeypatch.setattr(admission, "release", real_release)
+        await web_api._audio_admission_owner(controller).close(task_drain_timeout_seconds=1)
         database._close_all_connections()
 
 

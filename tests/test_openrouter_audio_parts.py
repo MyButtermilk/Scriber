@@ -56,7 +56,9 @@ async def test_long_mp3_is_split_and_merged_in_order(monkeypatch, mp3_recording)
         on_progress=progress.append,
     )
     assert result["text"] == "Part 1.\n\nPart 2.\n\nPart 3."
-    assert 12.8 <= result["usage"]["seconds"] <= 13.5
+    # The shared edge audio is intentionally sent twice; usage is the actual
+    # provider work, while transcript times remain on the original 13s clock.
+    assert 13.5 < result["usage"]["seconds"] < 20
     assert len(uploaded) == 3
     assert mp3_recording.is_file()
     assert all(not Path(path).exists() for path in paths)
@@ -166,3 +168,72 @@ async def test_direct_pipeline_emits_one_complete_transcript_after_all_parts(mon
     assert len(calls) == 3
     assert emitted == [("Part 1.\n\nPart 2.\n\nPart 3.", True)]
     assert pipeline.last_structured_transcript_payload["_scriberChunkCount"] == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [429, 503, "cancel"])
+async def test_restart_reuses_paid_parts_and_only_resumes_known_rejection(
+    monkeypatch, mp3_recording, tmp_path, failure
+):
+    from src import openrouter_audio
+    from src.core.provider_errors import ProviderTransportError, provider_transport_error
+    from src.data.job_store import JobStore
+    from src.data.transcription_part_store import source_sha256
+
+    monkeypatch.setattr(openrouter_audio, "OPENROUTER_STT_MAX_AUDIO_BYTES", 60_000)
+    monkeypatch.setattr(openrouter_audio, "OPENROUTER_PART_TARGET_BYTES", 48_000)
+    database = tmp_path / "parts.sqlite"
+    store = JobStore(database)
+    job = store.enqueue(transcript_id="durable-parts", job_type="file")
+    assert store.mark_running(job.id)
+    digest = source_sha256(mp3_recording)
+    route = {"provider": "openrouter_stt", "model": "microsoft/mai-transcribe-2", "language": "de"}
+    checkpoint = store.transcription_checkpoint(
+        job.id, source_digest=digest, source_path=mp3_recording, execution_route=route
+    )
+    uploaded = []
+
+    async def transcribe(**kwargs):
+        if kwargs.get("before_request") is not None:
+            await kwargs["before_request"]()
+        uploaded.append(kwargs["audio_source"].read())
+        if len(uploaded) == 2:
+            if failure == "cancel":
+                raise asyncio.CancelledError
+            raise provider_transport_error("openrouter_stt", "transcription", status=failure)
+        return {"text": f"Recognized request {len(uploaded)}."}
+
+    monkeypatch.setattr(cloud_async_stt, "transcribe_with_openrouter_audio_transcription", transcribe)
+    with pytest.raises(asyncio.CancelledError if failure == "cancel" else ProviderTransportError):
+        await cloud_async_stt.transcribe_openrouter_file(
+            session=object(),
+            api_key="inert",
+            path=mp3_recording,
+            content_type="audio/mpeg",
+            language="de",
+            checkpoint=checkpoint,
+        )
+    assert store.mark_failed(job.id, last_error="test provider failure")
+    restarted = JobStore(database)
+    assert restarted.checkpoint_resume_available(job.id) is (failure == 429)
+    accepted = restarted.queue_checkpoint_resume(job.id, source_digest=digest, expected_attempt=1)
+    assert accepted is (failure == 429)
+    if not accepted:
+        assert len(uploaded) == 2
+        return
+    assert restarted.mark_running(job.id)
+    resumed = restarted.transcription_checkpoint(
+        job.id, source_digest=digest, source_path=mp3_recording, execution_route=route
+    )
+    result = await cloud_async_stt.transcribe_openrouter_file(
+        session=object(),
+        api_key="inert",
+        path=mp3_recording,
+        content_type="audio/mpeg",
+        language="de",
+        checkpoint=resumed,
+    )
+    assert len(uploaded) == 4
+    assert uploaded[1] == uploaded[2]
+    assert result["text"] == "Recognized request 1.\n\nRecognized request 3.\n\nRecognized request 4."
+    assert result["_scriberChunkCount"] == 3

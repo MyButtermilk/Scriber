@@ -3,9 +3,10 @@ from datetime import datetime
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 from aiohttp.test_utils import TestClient, TestServer
 
-from src import summarization, web_api
+from src import database, summarization, web_api
 from src.data.job_store import JobStore
 from src.web_api import ScriberWebController, TranscriptRecord
 
@@ -29,6 +30,113 @@ def _failed_summary_record() -> TranscriptRecord:
         created_at=now,
         updated_at=now,
     )
+
+
+@pytest_asyncio.fixture
+async def summary_controller(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")
+    controller = ScriberWebController(asyncio.get_running_loop())
+    try:
+        yield controller
+    finally:
+        await controller.drain_background_tasks_for_shutdown(timeout_seconds=1)
+        controller.shutdown()
+        controller.close_persistence_stores()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("in_history", [True, False], ids=["live", "detached"])
+@pytest.mark.parametrize("result", ["completed", "rejected", "failed", "cancelled"])
+async def test_summary_releases_registration_when_call_finishes_in_living_owner(
+    summary_controller, monkeypatch, in_history, result
+):
+    controller = summary_controller
+    record = _failed_summary_record()
+    await controller._save_transcript_to_db_async(record, require_success=True)
+    if in_history:
+        controller._add_to_history(record)
+    provider_started = asyncio.Event()
+    summary_finished = asyncio.Event()
+    release_owner = asyncio.Event()
+    outcomes = []
+
+    async def summarize(*_args, **_kwargs):
+        provider_started.set()
+        if result == "rejected":
+            raise ValueError("Choose another summary model")
+        if result == "failed":
+            raise RuntimeError("private provider failure")
+        if result == "cancelled":
+            await asyncio.Event().wait()
+        return "A replacement summary"
+
+    async def owner():
+        try:
+            outcome = await controller.summarize_transcript(record.id)
+            outcomes.append(outcome.kind)
+        except asyncio.CancelledError:
+            outcomes.append("cancelled")
+        summary_finished.set()
+        await release_owner.wait()
+
+    monkeypatch.setattr(summarization, "summarize_text", summarize)
+    task = asyncio.create_task(owner())
+    try:
+        await asyncio.wait_for(provider_started.wait(), 10)
+        if result == "cancelled":
+            task.cancel()
+        await asyncio.wait_for(summary_finished.wait(), 10)
+        assert outcomes == [result]
+        assert not task.done()
+        assert record.id not in controller._summary_tasks
+        persisted = database.get_transcript(record.id)
+        assert persisted["status"] == "completed"
+        assert persisted["summaryStatus"] == ("completed" if result == "completed" else "failed")
+        if result == "cancelled":
+            assert persisted["summaryError"] == "Summary canceled"
+    finally:
+        release_owner.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled", [False, True], ids=["completed", "cancelled"])
+async def test_old_summary_cleanup_preserves_replacement_task(summary_controller, monkeypatch, cancelled):
+    controller = summary_controller
+    record = _failed_summary_record()
+    controller._add_to_history(record)
+    await controller._save_transcript_to_db_async(record, require_success=True)
+    provider_started = asyncio.Event()
+    release_provider = asyncio.Event()
+
+    async def summarize(*_args, **_kwargs):
+        provider_started.set()
+        await release_provider.wait()
+        return "Summary"
+
+    monkeypatch.setattr(summarization, "summarize_text", summarize)
+    owner = asyncio.create_task(controller.summarize_transcript(record.id))
+    replacement = asyncio.create_task(asyncio.Event().wait())
+    try:
+        await asyncio.wait_for(provider_started.wait(), 10)
+        assert controller._summary_tasks[record.id] is owner
+        controller._summary_tasks[record.id] = replacement
+        if cancelled:
+            owner.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await owner
+        else:
+            release_provider.set()
+            assert (await owner).kind == "completed"
+        assert controller._summary_tasks[record.id] is replacement
+        assert not replacement.done()
+    finally:
+        owner.cancel()
+        replacement.cancel()
+        await asyncio.gather(owner, replacement, return_exceptions=True)
 
 
 @pytest.mark.asyncio

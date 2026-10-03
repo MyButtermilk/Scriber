@@ -12,7 +12,7 @@ import json
 import os
 import random
 import tempfile
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -218,6 +218,7 @@ def _build_openrouter_stt_mp3_body(
     model: str,
     language: str,
     boundary: str,
+    request_word_timestamps: bool = False,
 ) -> BinaryIO:
     """Spool a bounded multipart request without decoding/re-encoding MP3.
 
@@ -226,7 +227,10 @@ def _build_openrouter_stt_mp3_body(
     """
     body = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024, mode="w+b")  # noqa: SIM115
     try:
-        fields = {"model": model, "response_format": "json", "temperature": "0"}
+        words = request_word_timestamps and model == OPENROUTER_MAI_TRANSCRIBE_MODEL
+        fields = {"model": model, "response_format": "verbose_json" if words else "json", "temperature": "0"}
+        if words:
+            fields["timestamp_granularities[]"] = "word"
         if language:
             fields["language"] = language
         for name, value in fields.items():
@@ -894,6 +898,10 @@ async def transcribe_with_openrouter_audio_transcription(
     language: Language | str | None,
     on_progress: Callable[[str], None] | None = None,
     timeout_secs: float = 900.0,
+    request_word_timestamps: bool = False,
+    before_request: Callable[[], Awaitable[None]] | None = None,
+    on_rejection: Callable[[int], None] | None = None,
+    on_success: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Transcribe verified audio through OpenRouter's dedicated STT endpoint."""
 
@@ -935,6 +943,7 @@ async def transcribe_with_openrouter_audio_transcription(
                     model=selected_model,
                     language=language_code,
                     boundary=boundary,
+                    request_word_timestamps=request_word_timestamps,
                 )
             else:
                 preparation = asyncio.to_thread(
@@ -955,6 +964,10 @@ async def transcribe_with_openrouter_audio_transcription(
                 body.seek(0)
                 _report_progress(on_progress, "Uploading audio...")
                 _report_progress(on_progress, "Processing transcription...")
+                if before_request is not None:
+                    # Local multipart spooling is still safely resumable. Place
+                    # the durable acceptance fence immediately before HTTP.
+                    await before_request()
                 async with session.post(
                     OPENROUTER_STT_URL,
                     data=body,
@@ -968,10 +981,15 @@ async def transcribe_with_openrouter_audio_transcription(
                 ) as response:
                     raw = await read_response_text_limited(response, 64 * 1024 * 1024)
                     if response.status < 400:
-                        if not raw:
-                            return {}
-                        parsed = parse_provider_json_response("openrouter_stt", "transcription_response", raw)
-                        return parsed if isinstance(parsed, dict) else {"text": raw}
+                        parsed = (
+                            parse_provider_json_response("openrouter_stt", "transcription_response", raw) if raw else {}
+                        )
+                        payload = parsed if isinstance(parsed, dict) else {"text": raw}
+                        if on_success is not None:
+                            # Own the paid result before either the response's
+                            # async exit or the request-body cleanup can cancel.
+                            await on_success(payload)
+                        return payload
                     error = provider_transport_error(
                         "openrouter_stt",
                         "transcription",
@@ -979,6 +997,8 @@ async def transcribe_with_openrouter_audio_transcription(
                         response_body=raw,
                         request_bytes=request_bytes,
                     )
+                    if on_rejection is not None:
+                        on_rejection(response.status)
                     if (
                         response.status != 429
                         or error.reason == "insufficient_credits"
@@ -1015,9 +1035,15 @@ async def transcribe_openrouter_file(
     model: str = OPENROUTER_MAI_TRANSCRIBE_MODEL,
     on_progress: Callable[[str], None] | None = None,
     timeout_secs: float = 900.0,
+    request_word_timestamps: bool | None = None,
+    checkpoint: Any = None,
 ) -> dict[str, Any]:
-    """Transcribe an entire prepared file, splitting MP3 and merging final text."""
-    from src.openrouter_audio import openrouter_audio_parts
+    """Keep in-budget MP3 intact; checkpoint and reconcile necessary overlaps."""
+    from src import openrouter_audio
+    from src.core.provider_audio_formats import OPENROUTER_MAI2_MAX_AUDIO_DURATION_MS
+    from src.file_transcription_parts import transcribe_mp3_parts, validate_part_result
+
+    words = request_word_timestamps is not False and model == OPENROUTER_MAI_TRANSCRIBE_MODEL
 
     if openrouter_audio_format(path.name, content_type) != "mp3":
         # Preserve exact WAV/FLAC requests already frozen in legacy jobs.
@@ -1034,21 +1060,35 @@ async def transcribe_openrouter_file(
                 timeout_secs=timeout_secs,
             )
 
-    texts: list[str] = []
-    usage: dict[str, float] = {}
-    completed = 0
-    async with asyncio.timeout(timeout_secs), openrouter_audio_parts(path) as parts:
-        async for part in parts:
+    async def transcribe(part: openrouter_audio.OpenRouterAudioPart) -> dict[str, Any]:
+        def progress(message: str) -> None:
+            _report_progress(
+                on_progress,
+                f"Transcribing part {part.index} of {part.count}..." if part.count > 1 else message,
+            )
 
-            def progress(_message: str, *, index: int = part.index, count: int = part.count) -> None:
-                if count > 1:
-                    _report_progress(on_progress, f"Transcribing part {index} of {count}...")
-                else:
-                    _report_progress(on_progress, _message)
+        progress("Preparing audio...")
+        request_fenced = False
+        last_rejection: int | None = None
 
-            progress("Preparing audio...")
-            with part.path.open("rb") as source:
-                payload = await transcribe_with_openrouter_audio_transcription(
+        async def before_request() -> None:
+            nonlocal request_fenced, last_rejection
+            if not request_fenced:
+                await checkpoint.mark_started(part.index)
+                request_fenced = True
+            last_rejection = None
+
+        def on_rejection(status: int) -> None:
+            nonlocal last_rejection
+            last_rejection = status
+
+        async def on_success(payload: dict[str, Any]) -> None:
+            validate_part_result("openrouter_stt", payload)
+            await checkpoint.save_success(part.index, payload)
+
+        with part.path.open("rb") as source:
+            try:
+                return await transcribe_with_openrouter_audio_transcription(
                     session=session,
                     api_key=api_key,
                     audio_source=source,
@@ -1058,17 +1098,36 @@ async def transcribe_openrouter_file(
                     language=language,
                     on_progress=progress,
                     timeout_secs=timeout_secs,
+                    request_word_timestamps=words,
+                    before_request=before_request if checkpoint else None,
+                    on_rejection=on_rejection if checkpoint else None,
+                    on_success=on_success if checkpoint else None,
                 )
-            completed += 1
-            text = openai_transcript_payload_to_text(payload, prefer_speaker_labels=False)
-            if text:
-                texts.append(text)
-            part_usage = payload.get("usage")
-            if isinstance(part_usage, dict):
-                for key, value in part_usage.items():
-                    if isinstance(value, (int, float)) and not isinstance(value, bool):
-                        usage[key] = usage.get(key, 0) + value
-    return {"text": "\n\n".join(texts), "usage": usage, "_scriberChunkCount": completed}
+            except BaseException as exc:
+                if checkpoint and last_rejection == 429 and not isinstance(exc, ProviderTransportError):
+                    # Cancellation during known-rejected 429 backoff or local
+                    # body rebuilding must not turn an unsent retry ambiguous.
+                    await checkpoint.mark_rejected(part.index, last_rejection)
+                raise
+
+    return await transcribe_mp3_parts(
+        source=path,
+        provider="openrouter_stt",
+        max_audio_bytes=openrouter_audio.OPENROUTER_STT_MAX_AUDIO_BYTES,
+        max_duration_ms=OPENROUTER_MAI2_MAX_AUDIO_DURATION_MS if model == OPENROUTER_MAI_TRANSCRIBE_MODEL else None,
+        target_audio_bytes=openrouter_audio.OPENROUTER_PART_TARGET_BYTES,
+        request_shape={
+            "provider": "openrouter_stt",
+            "model": model,
+            "language": provider_language_code(language),
+            "response_format": "verbose_json" if words else "json",
+            "timestamp_granularity": "word" if words else None,
+        },
+        transcribe=transcribe,
+        checkpoint=checkpoint,
+        request_start_managed=True,
+        timeout_secs=timeout_secs,
+    )
 
 
 def speechmatics_transcript_payload_to_text(
@@ -1598,6 +1657,7 @@ class OpenRouterSTTProcessor(_BufferedAsyncProcessor):
                     model=self._model,
                     language=self._language,
                     on_progress=self._on_progress,
+                    request_word_timestamps=False,
                 )
 
             if self._session is not None:

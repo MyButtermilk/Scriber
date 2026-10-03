@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.core.provider_audio_formats import OPENROUTER_STT_MAX_SOURCE_BYTES
+from src.core.provider_audio_formats import AZURE_MAI_MAX_SOURCE_BYTES, OPENROUTER_STT_MAX_SOURCE_BYTES
 from src.core.provider_capabilities import supports_direct_file_upload
 
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f\ud800-\udfff]')
@@ -48,14 +48,15 @@ _DEFAULT_UPLOAD_MAX_MB = 200
 _DEFAULT_AUDIO_INGEST_MAX_BYTES = 2048 * 1024 * 1024
 
 _PROVIDER_AUDIO_UPLOAD_LIMITS: dict[str, tuple[int, str]] = {
-    "soniox": (524_288_000, "500MB"),
-    "soniox_async": (524_288_000, "500MB"),
+    # Application admission bounds, not undocumented provider per-file limits.
+    "soniox": (_DEFAULT_AUDIO_INGEST_MAX_BYTES, "2GB"),
+    "soniox_async": (_DEFAULT_AUDIO_INGEST_MAX_BYTES, "2GB"),
     "gemini_stt": (100 * 1024 * 1024, "100MB"),
     "mistral": (512 * 1024 * 1024, "512MB"),
     "mistral_async": (512 * 1024 * 1024, "512MB"),
     "smallest": (25 * 1024 * 1024, "25MB"),
     "smallest_async": (25 * 1024 * 1024, "25MB"),
-    "azure_mai": (300 * 1024 * 1024, "300MB"),
+    "azure_mai": (AZURE_MAI_MAX_SOURCE_BYTES, "2GB"),
     "assemblyai": (2_200_000_000, "2.2GB"),
     "deepgram_async": (2_000_000_000, "2GB"),
     "openai_async": (25 * 1024 * 1024, "25MB"),

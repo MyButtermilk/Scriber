@@ -437,6 +437,78 @@ async def test_repeated_cancellation_cannot_abandon_failure_settlement_or_stagin
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("body_failure", [None, OSError("disconnected")])
+async def test_cancel_during_failed_size_settlement_does_not_abandon_staging(harness, monkeypatch, body_failure):
+    record = harness.create_record(expected_bytes=3)
+    committed, release = threading.Event(), threading.Event()
+    real_mark_failed = harness.store.mark_failed
+
+    def blocked_failure(*args, **kwargs):
+        result = real_mark_failed(*args, **kwargs)
+        committed.set()
+        assert release.wait(5)
+        return result
+
+    monkeypatch.setattr(harness.store, "mark_failed", blocked_failure)
+
+    async def chunks(_size):
+        yield b"ab"
+        if body_failure is not None:
+            raise body_failure
+        yield b"cd"
+
+    app = web.Application()
+    register_meeting_import_routes(app, deps=harness.deps, record_payload=_payload, inbox_payload=_inbox)
+    request = SimpleNamespace(app=app, match_info={"importId": record.id}, content=SimpleNamespace(iter_chunked=chunks))
+    task = asyncio.create_task(meeting_import_routes.upload_import(request))
+    staging = harness.storage_root / "meeting-imports" / record.id
+    try:
+        assert await asyncio.to_thread(committed.wait, 2)
+        assert harness.store.require(record.id).status == MeetingImportStatus.FAILED
+        assert (staging / "source.part").read_bytes() == b"ab"
+        for _ in range(2):
+            task.cancel()
+            await asyncio.sleep(0)
+        assert not task.done()
+        assert harness.upload_tasks[record.id] is task
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert not staging.exists()
+    assert harness.upload_tasks == {}
+
+
+def test_startup_removes_terminal_uncommitted_uploads_and_preserves_accepted_sources(harness):
+    failed = harness.create_record()
+    canceled = harness.create_record()
+    accepted = harness.create_record()
+    receiving = harness.create_record()
+    for record in (failed, canceled, accepted, receiving):
+        harness.store.begin_receiving(record.id)
+        staging = harness.storage_root / "meeting-imports" / record.id
+        staging.mkdir(parents=True)
+        (staging / "source.part").write_bytes(b"private audio")
+    harness.store.mark_failed(failed.id, error_code="size", error_message="Too large")
+    harness.store.request_cancel(canceled.id)
+    harness.store.mark_canceled(canceled.id)
+    harness.store.mark_received(
+        accepted.id,
+        relative_path=f"meeting-imports/{accepted.id}/source.wav",
+        byte_count=8,
+        sha256="a" * 64,
+    )
+    harness.store.mark_failed(accepted.id, error_code="processing", error_message="Failed after upload")
+
+    meeting_import_routes.cleanup_terminal_upload_staging(harness.store, harness.storage_root)
+
+    for record in (failed, canceled):
+        assert not (harness.storage_root / "meeting-imports" / record.id).exists()
+    for record in (accepted, receiving):
+        assert (harness.storage_root / "meeting-imports" / record.id / "source.part").exists()
+
+
+@pytest.mark.asyncio
 async def test_an_accepted_upload_survives_a_scheduling_failure(harness):
     """The source is committed; the bookkeeping is repaired by startup recovery."""
     record = harness.create_record(expected_bytes=4)
