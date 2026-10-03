@@ -901,6 +901,7 @@ async def transcribe_with_openrouter_audio_transcription(
     request_word_timestamps: bool = False,
     before_request: Callable[[], Awaitable[None]] | None = None,
     on_rejection: Callable[[int], None] | None = None,
+    on_success: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Transcribe verified audio through OpenRouter's dedicated STT endpoint."""
 
@@ -980,10 +981,15 @@ async def transcribe_with_openrouter_audio_transcription(
                 ) as response:
                     raw = await read_response_text_limited(response, 64 * 1024 * 1024)
                     if response.status < 400:
-                        if not raw:
-                            return {}
-                        parsed = parse_provider_json_response("openrouter_stt", "transcription_response", raw)
-                        return parsed if isinstance(parsed, dict) else {"text": raw}
+                        parsed = (
+                            parse_provider_json_response("openrouter_stt", "transcription_response", raw) if raw else {}
+                        )
+                        payload = parsed if isinstance(parsed, dict) else {"text": raw}
+                        if on_success is not None:
+                            # Own the paid result before either the response's
+                            # async exit or the request-body cleanup can cancel.
+                            await on_success(payload)
+                        return payload
                     error = provider_transport_error(
                         "openrouter_stt",
                         "transcription",
@@ -1035,7 +1041,7 @@ async def transcribe_openrouter_file(
     """Keep in-budget MP3 intact; checkpoint and reconcile necessary overlaps."""
     from src import openrouter_audio
     from src.core.provider_audio_formats import OPENROUTER_MAI2_MAX_AUDIO_DURATION_MS
-    from src.file_transcription_parts import transcribe_mp3_parts
+    from src.file_transcription_parts import transcribe_mp3_parts, validate_part_result
 
     words = request_word_timestamps is not False and model == OPENROUTER_MAI_TRANSCRIBE_MODEL
 
@@ -1076,6 +1082,10 @@ async def transcribe_openrouter_file(
             nonlocal last_rejection
             last_rejection = status
 
+        async def on_success(payload: dict[str, Any]) -> None:
+            validate_part_result("openrouter_stt", payload)
+            await checkpoint.save_success(part.index, payload)
+
         with part.path.open("rb") as source:
             try:
                 return await transcribe_with_openrouter_audio_transcription(
@@ -1091,6 +1101,7 @@ async def transcribe_openrouter_file(
                     request_word_timestamps=words,
                     before_request=before_request if checkpoint else None,
                     on_rejection=on_rejection if checkpoint else None,
+                    on_success=on_success if checkpoint else None,
                 )
             except BaseException as exc:
                 if checkpoint and last_rejection == 429 and not isinstance(exc, ProviderTransportError):

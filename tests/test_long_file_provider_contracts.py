@@ -10,7 +10,7 @@ from src.core.provider_audio_formats import (
     OPENROUTER_STT_MAX_AUDIO_BYTES,
     resolve_batch_provider_audio_capabilities,
 )
-from src.file_transcription_parts import _validate_result
+from src.file_transcription_parts import validate_part_result
 from src.provider_transcript import normalize_provider_words
 from src.transcript_artifacts import freeze_provider_route, stage_units_from_provider
 
@@ -105,7 +105,7 @@ def test_uncertain_boundary_survives_canonical_stage_without_spoken_error_text()
 
 @pytest.mark.parametrize("provider,payload", [("openrouter_stt", {"text": ""}), ("azure_mai", {"phrases": []})])
 def test_explicit_silent_success_is_valid(provider, payload):
-    _validate_result(provider, payload)
+    validate_part_result(provider, payload)
 
 
 @pytest.mark.parametrize("provider", ["openrouter_stt", "azure_mai"])
@@ -113,7 +113,7 @@ def test_missing_transcript_is_not_silently_cached_as_silence(provider):
     from src.core.provider_errors import ProviderTransportError
 
     with pytest.raises(ProviderTransportError):
-        _validate_result(provider, {"usage": {"seconds": 30}})
+        validate_part_result(provider, {"usage": {"seconds": 30}})
 
 
 @pytest.mark.asyncio

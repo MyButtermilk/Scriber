@@ -1294,8 +1294,9 @@ Packaging and scripts:
   transcript speech. Scope provider speaker IDs to each request until overlap
   evidence supports a mapping.
 - File-job part checkpoints bind the exact source hash, frozen route, request
-  shape, and manifest. Commit each received result before starting the next
-  part. Explicit resume reuses paid results and must refuse ambiguous in-flight
+  shape, and manifest. Validate and commit each received result before
+  cancellable response/request cleanup or starting the next part. Explicit
+  resume reuses paid results and must refuse ambiguous in-flight
   requests; never clear a no-replay fence merely because a partial result
   exists. Retain owned source audio while resume requires it, and delete the
   checkpoints with transcript deletion. Soniox can resume known remote IDs

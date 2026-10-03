@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from src.openrouter_audio import OpenRouterAudioPart
 
 
-def _validate_result(provider: str, payload: Any) -> None:
+def validate_part_result(provider: str, payload: Any) -> None:
     """An explicitly empty transcript is silence; a missing result is not."""
     valid = isinstance(payload, dict) and isinstance(payload.get("text"), str)
     if provider == "azure_mai" and isinstance(payload, dict):
@@ -89,7 +89,7 @@ async def transcribe_mp3_parts(
                         await checkpoint.mark_started(part.index)
                     try:
                         payload = await transcribe(part)
-                        _validate_result(provider, payload)
+                        validate_part_result(provider, payload)
                     except ProviderTransportError as exc:
                         # A 5xx may hide completed upstream work; only explicit
                         # request rejection can make this part safely resumable.
@@ -99,7 +99,7 @@ async def transcribe_mp3_parts(
                     if checkpoint:
                         await checkpoint.save_success(part.index, payload)
                 else:
-                    _validate_result(provider, payload)
+                    validate_part_result(provider, payload)
                 if part.count == 1:
                     return {**payload, "_scriberChunkCount": 1}
                 transcripts.append(

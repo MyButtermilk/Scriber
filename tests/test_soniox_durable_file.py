@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 import pytest
@@ -131,3 +132,65 @@ async def test_soniox_duration_limit_rejects_before_remote_request(soniox_job):
     with pytest.raises(ValueError, match="300 minutes"):
         await pipeline._transcribe_file_direct_prepared(source, content_type="audio/mpeg", capability_prepared=True)
     assert session.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["upload", "create", "transcript"])
+async def test_soniox_response_exit_cancel_keeps_received_resource_or_result(soniox_job, boundary):
+    store, job, source, make_pipeline = soniox_job
+    entered = asyncio.Event()
+
+    class InterruptedResponse(Response):
+        async def __aexit__(self, *_args):
+            entered.set()
+            await asyncio.Future()
+
+    class InterruptedSession(SonioxSession):
+        def post(self, url, **kwargs):
+            reply = super().post(url, **kwargs)
+            if (boundary == "upload" and url.endswith("/files")) or (
+                boundary == "create" and url.endswith("/transcriptions")
+            ):
+                return InterruptedResponse(reply.payload)
+            return reply
+
+        def get(self, url, **kwargs):
+            reply = super().get(url, **kwargs)
+            if boundary == "transcript" and url.endswith("/transcript"):
+                return InterruptedResponse(reply.payload)
+            return reply
+
+    session = InterruptedSession()
+    first = make_pipeline(session)
+    task = asyncio.create_task(
+        first._transcribe_file_direct_prepared(source, content_type="audio/mpeg", capability_prepared=True)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        checkpoint = first.transcription_checkpoint
+        assert await checkpoint.remote_id(0) == "file-known"
+        if boundary != "upload":
+            assert await checkpoint.remote_id(1) == "transcription-known"
+        if boundary == "transcript":
+            assert await checkpoint.lookup(1) == {"text": "durable transcript", "tokens": []}
+        assert store.mark_canceled(job.id)
+        store.close()
+        assert store.checkpoint_resume_available(job.id)
+        assert store.queue_checkpoint_resume(job.id, source_digest=source_sha256(source), expected_attempt=1)
+        assert store.mark_running(job.id)
+        resumed_session = SonioxSession()
+        resumed = make_pipeline(resumed_session)
+        await resumed._transcribe_file_direct_prepared(source, content_type="audio/mpeg", capability_prepared=True)
+        assert resumed.last_structured_transcript_payload["text"] == "durable transcript"
+        paid_requests = [url for method, url in resumed_session.requests if method == "POST"]
+        assert len(paid_requests) == (1 if boundary == "upload" else 0)
+        assert all(url.endswith("/transcriptions") for url in paid_requests)
+        if boundary == "transcript":
+            assert all(method == "DELETE" for method, _url in resumed_session.requests)
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
