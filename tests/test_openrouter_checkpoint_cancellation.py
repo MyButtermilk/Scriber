@@ -212,6 +212,7 @@ async def test_received_success_survives_cleanup_cancel_and_resume_without_rebil
     checkpoint = make_checkpoint()
     payload = {"text": "already paid", "words": [{"word": "already paid", "start": 0.1, "end": 0.8}]}
     entered = asyncio.Event()
+    release_exit = asyncio.Event()
     release = threading.Event()
     loop = asyncio.get_running_loop()
     cancel_phase = True
@@ -248,7 +249,7 @@ async def test_received_success_survives_cleanup_cancel_and_resume_without_rebil
         async def __aexit__(self, *_args):
             if cancel_phase and boundary == "response_exit":
                 entered.set()
-                await asyncio.Future()
+                await release_exit.wait()
             return False
 
         async def text(self):
@@ -297,6 +298,8 @@ async def test_received_success_survives_cleanup_cancel_and_resume_without_rebil
         if part_count == 2:
             assert "remaining part" in resumed["text"]
     finally:
+        # A canceled commit may enter __aexit__ only after teardown has begun.
+        release_exit.set()
         release.set()
         if not task.done():
             task.cancel()

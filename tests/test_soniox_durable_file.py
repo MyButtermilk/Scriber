@@ -139,11 +139,12 @@ async def test_soniox_duration_limit_rejects_before_remote_request(soniox_job):
 async def test_soniox_response_exit_cancel_keeps_received_resource_or_result(soniox_job, boundary):
     store, job, source, make_pipeline = soniox_job
     entered = asyncio.Event()
+    release_exit = asyncio.Event()
 
     class InterruptedResponse(Response):
         async def __aexit__(self, *_args):
             entered.set()
-            await asyncio.Future()
+            await release_exit.wait()
 
     class InterruptedSession(SonioxSession):
         def post(self, url, **kwargs):
@@ -191,6 +192,8 @@ async def test_soniox_response_exit_cancel_keeps_received_resource_or_result(son
         if boundary == "transcript":
             assert all(method == "DELETE" for method, _url in resumed_session.requests)
     finally:
+        # The durable ID/result commit can defer entry into this cleanup.
+        release_exit.set()
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
