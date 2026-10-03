@@ -210,6 +210,10 @@ Backend and runtime:
   returns the pending `CancelledError` beside the result so a caller can
   record the ownership it just acquired before unwinding. Call these directly
   rather than through aliases in `web_api.py`.
+  Controller maintenance SQLite workers use this barrier; shutdown joins the
+  maintenance task before persistence-store close even after the general drain
+  timeout or repeated cancellation. Synchronous shutdown retains its task
+  reference until that join can finish.
 - `src/runtime/task_supervisor.py`: event-loop-local ownership for intentionally
   concurrent asyncio work. It retains tasks, observes every result, reports
   failures through the loop handler, reserves thread-safe submissions before

@@ -3766,14 +3766,16 @@ class ScriberWebController:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                await asyncio.to_thread(self._outlook_calendar.record_sync_error, type(exc).__name__)
+                await to_thread_cancellation_barrier(self._outlook_calendar.record_sync_error, type(exc).__name__)
                 calendar_backoff_seconds = min(6 * 60 * 60, calendar_backoff_seconds * 2)
                 logger.debug("Outlook background delta sync deferred: {}", type(exc).__name__)
             await asyncio.sleep(calendar_backoff_seconds)
 
     async def _resume_pending_meeting_pcm_purges(self) -> None:
         try:
-            meeting_ids = await asyncio.to_thread(self._meeting_store.meetings_with_pending_audio_chunk_purges)
+            meeting_ids = await to_thread_cancellation_barrier(
+                self._meeting_store.meetings_with_pending_audio_chunk_purges
+            )
             if not meeting_ids:
                 return
             from src.summarization import generate_text_with_model
@@ -3798,7 +3800,7 @@ class ScriberWebController:
     async def _resume_pending_transcript_source_purges(self) -> None:
         """Finish File/YouTube source deletion after an interrupted two-phase purge."""
         try:
-            assets = await asyncio.to_thread(
+            assets = await to_thread_cancellation_barrier(
                 self._transcript_artifacts.list_source_assets_by_state,
                 SourceAssetState.PURGE_PENDING,
                 purpose="processing_only",
@@ -3831,7 +3833,7 @@ class ScriberWebController:
                         except OSError:
                             break
                         parent = parent.parent
-                    await asyncio.to_thread(
+                    await to_thread_cancellation_barrier(
                         self._transcript_artifacts.mark_source_asset_purged,
                         asset.id,
                         expected_version=asset.state_version,
@@ -3851,7 +3853,7 @@ class ScriberWebController:
     async def _prune_discarded_meeting_workspaces(self) -> None:
         """Finish a discard interrupted between its DB tombstone and deletion."""
         try:
-            meeting_ids = await asyncio.to_thread(self._meeting_store.discarded_meeting_ids)
+            meeting_ids = await to_thread_cancellation_barrier(self._meeting_store.discarded_meeting_ids)
             for meeting_id in meeting_ids:
                 if not re.fullmatch(r"[0-9a-f]{32}", meeting_id):
                     logger.error("Refusing to prune a Meeting with an invalid storage ID")
@@ -3896,7 +3898,7 @@ class ScriberWebController:
 
     async def _prune_expired_meeting_audio(self) -> None:
         try:
-            meeting_ids = await asyncio.to_thread(self._meeting_store.expired_audio_meetings)
+            meeting_ids = await to_thread_cancellation_barrier(self._meeting_store.expired_audio_meetings)
             root = (data_dir() / "meetings").resolve()
             for meeting_id in meeting_ids:
                 target = (root / meeting_id).resolve()
@@ -3906,7 +3908,9 @@ class ScriberWebController:
                 if target.is_dir():
                     await asyncio.to_thread(shutil.rmtree, target)
                 purged_at = datetime.now(UTC).isoformat()
-                await asyncio.to_thread(self._meeting_store.mark_audio_purged, meeting_id, purged_at=purged_at)
+                await to_thread_cancellation_barrier(
+                    self._meeting_store.mark_audio_purged, meeting_id, purged_at=purged_at
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -17498,6 +17502,7 @@ class ScriberWebController:
                 name="provider_replay_shutdown_cleanup",
             )
         current = asyncio.current_task()
+        maintenance_task = self._meeting_retention_task
         tasks = {
             task
             for task in (
@@ -17547,18 +17552,30 @@ class ScriberWebController:
             wait_tasks.add(background_stop_task)
         wait_tasks.update(task for task in self._live_mic_finalizer_tasks if task is not current and not task.done())
         pending: set[asyncio.Task] = set()
-        if wait_tasks:
-            done, pending = await asyncio.wait(
-                wait_tasks,
-                timeout=max(0.0, float(timeout_seconds)),
-            )
-            if done:
-                await asyncio.gather(*done, return_exceptions=True)
-            if pending:
-                logger.warning(
-                    "Timed out waiting for {} background task(s) during shutdown",
-                    len(pending),
+        try:
+            if wait_tasks:
+                done, pending = await asyncio.wait(
+                    wait_tasks,
+                    timeout=max(0.0, float(timeout_seconds)),
                 )
+                if done:
+                    await asyncio.gather(*done, return_exceptions=True)
+                if pending:
+                    logger.warning(
+                        "Timed out waiting for {} background task(s) during shutdown",
+                        len(pending),
+                    )
+        finally:
+            # Cancelling a maintenance coroutine cannot stop its SQLite thread.
+            # Its barriers retain that worker, and this join must outlive the
+            # generic drain timeout before callers may close persistence stores.
+            if maintenance_task is not None and maintenance_task is not current:
+                _, maintenance_join_cancel = await await_with_delayed_cancellation(
+                    asyncio.gather(maintenance_task, return_exceptions=True)
+                )
+                pending.discard(maintenance_task)
+                if maintenance_join_cancel is not None:
+                    raise maintenance_join_cancel
 
         # Finalizers outlive a timed-out caller drain. Retain and observe them
         # without the cancellation used for generic background work below.
@@ -17779,7 +17796,8 @@ class ScriberWebController:
             self._meeting_detection_task = None
         if self._meeting_retention_task is not None:
             self._meeting_retention_task.cancel()
-            self._meeting_retention_task = None
+            if self._meeting_retention_task.done():
+                self._meeting_retention_task = None
         # Cancel pending debounce timers so they don't fire on a tearing-down loop.
         self._cancel_settings_persist_timer()
         if self._history_broadcast_handle is not None:
