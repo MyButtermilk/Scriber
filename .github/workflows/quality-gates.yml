@@ -60,6 +60,8 @@ jobs:
       - name: Test frontend
         working-directory: Frontend
         run: npm test
+      - name: Test YouTube browser extension
+        run: node --test browser-extension/chrome/tests/*.test.cjs
       - name: Build frontend
         working-directory: Frontend
         run: npm run build

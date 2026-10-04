@@ -20,9 +20,21 @@
   );
   titleElement.textContent = title || "YouTube-Video";
   statusElement.textContent =
-    "Scriber muss installiert sein. Beim ersten Start fragt Chrome nach Bestätigung.";
+    "Sie können Ihre YouTube-Anmeldung einmal für Scriber freigeben. Danach wird sie automatisch verwendet und nur vorübergehend lokal gehalten.";
   startButton.disabled = false;
-  startButton.addEventListener("click", () => {
+  startButton.addEventListener("click", async () => {
+    startButton.disabled = true;
+    const connected = await chrome.permissions
+      .request({
+        permissions: ["cookies"],
+        origins: ["https://*.youtube.com/*", "http://127.0.0.1:8765/*"],
+      })
+      .catch(() => false);
+    if (connected) {
+      void chrome.runtime
+        .sendMessage({ type: "youtube-session", videoId })
+        .catch(() => {});
+    }
     const deepLink = bridge.buildDeepLink({ videoId, title });
     if (!deepLink) {
       return;

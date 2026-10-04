@@ -2,6 +2,34 @@
 
 Last verified: 2026-09-18
 
+YouTube sign-in recovery works without an add-on: `src.youtube_login` owns an
+explicitly requested, temporary Chrome/Edge instance with a fresh profile and a
+private context disposed on debugger disconnect. Never attach to existing
+profiles, inspect login fields, or read cookies for any URL except YouTube.
+Join launch/cleanup across cancellation; close only that owned instance. A
+session revision prevents late sign-in from overriding a newer clear/import.
+The Chrome extension remains an optional shortcut with YouTube-only cookie
+permission. Each video handoff offers a one-use RAM capability; the
+authenticated app accepts the matching video before the extension uploads.
+Keep this narrow extension-origin loopback lane separate from general API
+CORS/token authentication. Never put cookies or capabilities into deep links,
+logs, job persistence, files, or status responses. Filter domains before
+transmission and again in `src.youtube_session`; private HTTPS extractor jars
+expire after two hours. Manual cookies.txt import is an advanced fallback.
+The recovery UI links to the official Store ID `ilbdnbhdihacgkaedacmndeabbiondob`;
+users confirm installation in Chrome. Store 0.1.0 lacks the new cookie handoff;
+publish and validate extension 0.2.1 before promising that shortcut in a release.
+Cookie permission must never gate the in-page video deep link. Session uploads
+accept only the official Store extension origin, require a non-empty account
+cookie, and compare the revision captured at app acceptance; manual import and
+disconnect revoke pending offers. Visitor cookies must not replace a sign-in or
+invalidate a private login. Bind automatic retries to both attempt and transcript
+identity. Queue observed video handoffs through acceptance and job creation.
+Distinguish browser/protocol timeouts from the five-minute sign-in timeout.
+`backend_runtime.yt_dlp_compat` corrects the pinned TV identity and disables
+unneeded EJS player-cache output without relaxing the hardened wrapper bounds.
+A loaded jar is not proof of accepted authentication; test real downloads.
+
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
 conflict, then update the docs in the same task.

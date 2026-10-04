@@ -193,9 +193,50 @@ YouTube:
    frozen package fails closed. yt-dlp owns current YouTube player-client
    selection; Scriber does not force stale client names. Every downloaded file
    must pass ffprobe audio/structure validation before it can reach a provider.
-5. Persistent job metadata tracks the caption preference, download, media
+5. `src.youtube_login` provides opt-in sign-in without a browser extension.
+   GET/POST/DELETE `/api/youtube/session/login` use the existing authenticated
+   HTTP lane; merely checking status never opens a browser. The manager starts
+   only a discovered Chrome/Edge executable with its own fresh temporary profile
+   and loopback debugger. The sign-in target lives in an isolated private
+   context with `disposeOnDetach`, never in the default or a user's profile.
+   It requests cookies for `https://www.youtube.com/` only; credentials/login
+   fields and unrelated browser tabs are never inspected. Cancellation, timeout
+   and shutdown join owned-process cleanup. Cookies stay in memory; the empty
+   default profile is removed best-effort after closure. Session revisions
+   prevent a late window from replacing a newer import or disconnect. A UI-owned
+   attempt ID and transcript identity resume the failed video once, while an
+   unmounted or repurposed view never does. Browser/protocol timeouts are distinct
+   from the five-minute user sign-in deadline.
+   The recovery control also links to the official Chrome Store listing and
+   leaves installation confirmation to Chrome.
+6. The optional browser extension can transfer the YouTube session automatically after
+   its optional cookie/YouTube/local-Scriber permissions are explicitly granted
+   in the toolbar popup. A short-lived, one-use offer is bound to the extension
+   official Store extension origin and video. Only the authenticated app's browser-import handler can
+   accept it; the extension then posts cookies to the narrow loopback upload
+   lane before extraction starts. Capabilities/cookies never enter deep links.
+   Upload also compares the session revision captured at acceptance, so a late
+   handoff cannot overwrite a newer import, sign-in or clear. Manual import and
+   clear revoke pending offers and wake their waiters. Both extension and backend
+   filter foreign domains and require a non-empty account cookie; anonymous
+   visitor cookies never replace a session. Missing optional permissions never
+   block a video deep link. The frontend queues observed video handoffs through
+   session acceptance and job creation. Manual Netscape import
+   remains under advanced settings. `src.youtube_session` validates a bounded
+   YouTube-only HTTPS cookie set and holds it in memory for at most two hours
+   or until backend exit. Each caption/audio extractor gets a private copy.
+   GET/POST/DELETE `/api/youtube/session` use the existing HTTP security lane,
+   return only loaded status, and never persist credentials. Loaded status does
+   not prove that YouTube accepts the session. Clear/expiry affect future
+   extractors; an already-running download retains its private jar. The source
+   subprocess fallback fails closed when a session is loaded. Browser-wide
+   cookie extraction and cookie files on disk are not used. The pinned
+   compatibility adapter fixes the incomplete TV client identity from upstream
+   PR 17723 and asks EJS only for challenge results, keeping the existing 4 MiB
+   wrapper output limit and all capability restrictions intact.
+6. Persistent job metadata tracks the caption preference, download, media
    preparation, transcription, summary, retry, resume, cancel, and completion.
-6. Transcript and summary are saved as a `youtube` transcript. A pending summary
+7. Transcript and summary are saved as a `youtube` transcript. A pending summary
    remains a processing state in Recent videos even after transcript persistence.
 
 File:

@@ -15,6 +15,17 @@ const INVALID_ARGUMENT_TOKENS = ["errno 22", "invalid argument"];
 const PREFIX_PATTERN = /^\[(error|timeout|download error|storage error)\]\s*/i;
 const STATUS_PREFIX_PATTERN = /^\d{3}:\s*/;
 
+export function requiresYouTubeSignIn(message: string): boolean {
+  const normalized = message.toLowerCase().replaceAll("’", "'");
+  return (
+    normalized.includes("sign in to confirm you're not a bot") ||
+    normalized.includes("sign in to confirm your age") ||
+    normalized.includes("youtube requires sign-in.") ||
+    normalized.includes("the page needs to be reloaded") ||
+    normalized.includes("youtube rejected playback extraction.")
+  );
+}
+
 function stripLowLevelPrefixes(rawMessage: string): string {
   const trimmed = (rawMessage || "").trim();
   if (!trimmed) return "";
@@ -27,6 +38,20 @@ export function friendlyRequestMessage(rawMessage: string, fallback = "Request f
   if (!message) return translateNow(fallback);
 
   const normalized = message.toLowerCase();
+
+  if (
+    normalized.includes("the page needs to be reloaded") ||
+    normalized.includes("youtube rejected playback extraction.")
+  ) {
+    return translateNow(
+      "YouTube rejected playback extraction. Connect a fresh YouTube sign-in below to try again.",
+    );
+  }
+  if (requiresYouTubeSignIn(message)) {
+    return translateNow(
+      "YouTube requires sign-in. Connect your YouTube account below to continue.",
+    );
+  }
 
   if (NETWORK_ERROR_TOKENS.some((token) => normalized.includes(token))) {
     return translateNow("Cannot connect to the Scriber backend. Please start the backend service and try again.");

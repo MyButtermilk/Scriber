@@ -19,6 +19,8 @@ import { apiUrl, isTauriRuntime } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import ReactMarkdown from "react-markdown";
 import { QueryErrorState } from "@/components/ui/query-error-state";
+import { YouTubeSessionSettings } from "@/components/settings/YouTubeSessionSettings";
+import { requiresYouTubeSignIn } from "@/lib/request-errors";
 import { SummaryTableOfContents, TranscriptSummaryDocument } from "@/components/transcript-summary-document";
 import { TranscriptStopButton } from "@/components/transcript-stop-button";
 import { FileTranscriptRetryButton } from "@/components/file-transcript-retry-button";
@@ -931,6 +933,13 @@ export default function TranscriptDetail() {
                     : undefined
                 }
               />
+              {isFailedYoutubeTranscript && requiresYouTubeSignIn(rawFailureMessage) && (
+                <YouTubeSessionSettings
+                  key={transcript.id}
+                  recoveryKey={transcript.id}
+                  onConnected={retryYoutubeTranscription}
+                />
+              )}
               {transcript.type === "file" && transcript.resumeAvailable !== true && (
                 <FileTranscriptRetryButton key={transcript.id} transcriptId={id!} resumeAvailable={false} />
               )}

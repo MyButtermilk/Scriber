@@ -6,12 +6,42 @@ import types
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiohttp import WSServerHandshakeError
+from aiohttp import WSServerHandshakeError, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from src import web_api
 from src.api import youtube_routes
+from src.api.youtube_browser_session import browser_session_middleware
 from src.web_api import APP_SHUTDOWN_EVENT, ScriberWebController
+
+
+@pytest.mark.asyncio
+async def test_youtube_session_credentials_require_the_existing_origin_and_token_lane(monkeypatch, tmp_path):
+    from src.youtube_session import YouTubeSession
+
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "session-test-token")
+    monkeypatch.setattr(youtube_routes, "youtube_session", YouTubeSession())
+    app = web.Application(middlewares=[web_api.cors_middleware, web_api.session_token_middleware])
+    youtube_routes.register_youtube_routes(app, controller=types.SimpleNamespace())
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        denied_origin = await client.post(
+            "/api/youtube/session", headers={"Origin": "https://evil.example"}, json={"cookies": "unused"}
+        )
+        assert denied_origin.status == 403
+        denied_token = await client.get("/api/youtube/session", headers={"Origin": "http://tauri.localhost"})
+        assert denied_token.status == 401
+        for method in ("get", "post", "delete"):
+            call = getattr(client, method)
+            assert (await call("/api/youtube/session/login", headers={"Origin": "https://evil.example"})).status == 403
+            assert (
+                await call("/api/youtube/session/login", headers={"Origin": "http://tauri.localhost"})
+            ).status == 401
+        assert youtube_routes.youtube_session.status() == {"connected": False}
+    finally:
+        await client.close()
 
 
 def test_safe_youtube_thumbnail_url_allows_only_youtube_thumbnail_hosts():
@@ -261,7 +291,8 @@ async def test_unexpected_api_failures_are_json_and_keep_cors_headers(
         side_effect=RuntimeError("C:\\private\\secret runtime detail")
     )
     app = web_api.create_app(ctl)
-    assert tuple(app.middlewares)[0] is web_api.cors_middleware
+    # The extension lane passes all ordinary API requests through unchanged.
+    assert tuple(app.middlewares)[:2] == (browser_session_middleware, web_api.cors_middleware)
     client = TestClient(TestServer(app))
     await client.start_server()
     try:

@@ -12,6 +12,7 @@ with the handler, since nothing else used them.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import urljoin, urlparse
@@ -20,6 +21,7 @@ from aiohttp import ClientSession, ClientTimeout, web
 from loguru import logger
 
 from src.api.app_keys import APP_HTTP_SESSION
+from src.api.youtube_browser_session import APP_BROWSER_SESSION, BrowserSessionHandoff, accept_browser_session
 from src.config import Config
 from src.youtube_api import (
     UNSUPPORTED_YOUTUBE_URL_MESSAGE,
@@ -29,6 +31,10 @@ from src.youtube_api import (
     is_youtube_url_like,
     search_youtube_videos,
 )
+from src.youtube_login import YouTubeLogin
+from src.youtube_session import MAX_COOKIE_BYTES, youtube_session
+
+APP_YOUTUBE_LOGIN = web.AppKey("youtube_login", YouTubeLogin)
 
 THUMBNAIL_ALLOWED_HOSTS = {"i.ytimg.com", "img.youtube.com"}
 THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024
@@ -322,12 +328,68 @@ async def transcribe(request: web.Request) -> web.Response:
     return web.json_response(rec.to_public(include_content=True))
 
 
+async def session_status(request: web.Request) -> web.Response:
+    return web.json_response(youtube_session.status(), headers={"Cache-Control": "no-store"})
+
+
+async def session_connect(request: web.Request) -> web.Response:
+    try:
+        body = await read_limited_response_body(request.content, 2 * MAX_COOKIE_BYTES)
+        payload = json.loads(body)
+        if not isinstance(payload, dict) or not isinstance(payload.get("cookies"), str):
+            raise ValueError
+        await request.app[APP_YOUTUBE_LOGIN].cancel()
+        youtube_session.connect(payload["cookies"])
+        request.app[APP_BROWSER_SESSION].clear()
+    except ValueError:
+        return web.json_response(
+            {"message": "The YouTube sign-in file is invalid or contains no usable YouTube session."},
+            status=400,
+            headers={"Cache-Control": "no-store"},
+        )
+    return web.json_response(youtube_session.status(), headers={"Cache-Control": "no-store"})
+
+
+async def session_disconnect(request: web.Request) -> web.Response:
+    await request.app[APP_YOUTUBE_LOGIN].cancel()
+    request.app[APP_BROWSER_SESSION].clear()
+    youtube_session.disconnect()
+    return web.json_response(youtube_session.status(), headers={"Cache-Control": "no-store"})
+
+
+async def login_status(request: web.Request) -> web.Response:
+    return web.json_response(request.app[APP_YOUTUBE_LOGIN].status(), headers={"Cache-Control": "no-store"})
+
+
+async def login_start(request: web.Request) -> web.Response:
+    return web.json_response(await request.app[APP_YOUTUBE_LOGIN].start(), headers={"Cache-Control": "no-store"})
+
+
+async def login_cancel(request: web.Request) -> web.Response:
+    await request.app[APP_YOUTUBE_LOGIN].cancel()
+    return await login_status(request)
+
+
+async def cleanup_login(app: web.Application) -> None:
+    await app[APP_YOUTUBE_LOGIN].close()
+
+
 def register_youtube_routes(app: web.Application, *, controller: YoutubeControllerPort) -> None:
     """Register the YouTube domain without web_api closure coupling."""
 
     app[APP_YOUTUBE_SERVICE] = YoutubeRoutesService(controller=controller)
+    app[APP_BROWSER_SESSION] = BrowserSessionHandoff()
+    app[APP_YOUTUBE_LOGIN] = YouTubeLogin(youtube_session)
+    app.on_cleanup.append(cleanup_login)
+    app.router.add_get("/api/youtube/session/login", login_status)
+    app.router.add_post("/api/youtube/session/login", login_start)
+    app.router.add_delete("/api/youtube/session/login", login_cancel)
+    app.router.add_post("/api/youtube/session/browser-accept", accept_browser_session)
 
     app.router.add_get("/api/youtube/search", search)
     app.router.add_get("/api/youtube/video", video)
     app.router.add_get("/api/youtube/thumbnail", thumbnail)
     app.router.add_post("/api/youtube/transcribe", transcribe)
+    app.router.add_get("/api/youtube/session", session_status)
+    app.router.add_post("/api/youtube/session", session_connect)
+    app.router.add_delete("/api/youtube/session", session_disconnect)

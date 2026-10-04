@@ -841,6 +841,28 @@ artifacts under test.
 
 Real file/YouTube workflow smoke, when credentials and network are available:
 
+For YouTube sign-in recovery, run
+`scripts\project-python.cmd -m pytest tests/test_youtube_login.py tests/test_youtube_session.py tests/test_youtube_download.py tests/test_yt_dlp_compat.py tests/api/test_youtube_routes.py tests/api/test_youtube_browser_session.py tests/test_web_api_security.py`
+and `node --test browser-extension/chrome/tests/*.test.cjs`.
+Frontend cookie filtering and import/clear behavior are covered by
+`youtube-session.test.ts` and `YouTubeSessionSettings.test.tsx`.
+The addon-free flow must open only an owned private Chrome/Edge window after a
+click. Verify successful sign-in, user window close, cancel, timeout, app exit,
+no browser, repeated start, stale completion, and automatic video retry. No
+password or cookie may appear in status, logs or files. Complete a real Google
+sign-in manually before claiming end-to-end browser recovery.
+The official Store ID is `ilbdnbhdihacgkaedacmndeabbiondob`. The live listing
+was 0.1.0 on 2026-10-04; publish the prepared extension 0.2.0 and verify its
+permissions/handoff before releasing UI that recommends this new capability.
+The browser handoff must wait for the optional session before starting a job;
+test denied permission, unavailable/starting Scriber, foreign origin, wrong
+video, missing app token, expired offer, replay, and clear/revocation. For the
+extension UI test, grant only the optional YouTube/local-Scriber permissions.
+Verify a consented real authenticated retry separately: an imported-cookie
+status alone is not successful extraction, and bot challenges may still need
+fresh cookies or an upstream YouTube fix. No local installation is implied by
+these source tests.
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
   -FastLocalInstaller `

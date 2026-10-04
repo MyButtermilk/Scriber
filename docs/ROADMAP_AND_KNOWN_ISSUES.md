@@ -153,6 +153,18 @@ Mic and recording:
 
 YouTube/file:
 
+- YouTube can require sign-in even when a PO token is generated. On 2026-10-04,
+  bgutil 2.0.1 generated a player token but `BFKcC0VyuZA` still returned
+  LOGIN_REQUIRED. A consented YouTube session plus the TV identity correction
+  from upstream PR 17723 and bounded EJS output recovered the complete 586-second
+  audio (Opus, 48 kHz, stereo). Scriber now includes these compatibility fixes
+  and an opt-in private Chrome/Edge sign-in window that needs no add-on, plus an
+  optional automatic extension handoff; manual import is an advanced fallback.
+  The UI links to the official Store; the live 0.1.0 extension must be updated
+  to the corrected 0.2.1 for automatic cookie handoff. Real Google sign-in and
+  extension permission/installed-app recovery must still be checked
+  in the release environment. Source probes do not imply a local installation.
+
 - Thumbnail handling was fixed and covered by browser smoke.
 - File tab drag/drop was fixed and covered by browser smoke.
 - YouTube job progress now advances beyond download completion through upload,

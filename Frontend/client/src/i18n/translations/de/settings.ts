@@ -1,6 +1,59 @@
 import type { TranslationCatalog } from "@/i18n/types";
 
 export const settingsTranslations = {
+  "Open add-on in Chrome Web Store": "Add-on im Chrome Web Store öffnen",
+  "The Chrome Web Store could not be opened. Please try again.":
+    "Der Chrome Web Store konnte nicht geöffnet werden. Bitte versuche es erneut.",
+  "Confirm the installation in Chrome, then allow YouTube sign-in in the add-on when sending a video.":
+    "Bestätige die Installation in Chrome. Gib anschließend beim Übertragen eines Videos im Add-on deine YouTube-Anmeldung frei.",
+  "Sign in to YouTube in a private browser window. No add-on is required. Scriber uses only your YouTube sign-in, for up to two hours or until Scriber closes.":
+    "Melde dich in einem privaten Browserfenster bei YouTube an. Dafür ist kein Add-on nötig. Scriber verwendet nur deine YouTube-Anmeldung, höchstens zwei Stunden oder bis Scriber geschlossen wird.",
+  "Sign in to YouTube": "Bei YouTube anmelden",
+  "Cancel sign-in": "Anmeldung abbrechen",
+  "Complete sign-in in the browser. This video will then restart automatically.":
+    "Schließe die Anmeldung im Browser ab. Anschließend wird dieses Video automatisch erneut gestartet.",
+  "Complete sign-in in the browser. Scriber will connect automatically.":
+    "Schließe die Anmeldung im Browser ab. Scriber übernimmt die Verbindung automatisch.",
+  "The sign-in window could not be opened. Please try again.":
+    "Das Anmeldefenster konnte nicht geöffnet werden. Bitte versuche es erneut.",
+  "Sign-in could not be cancelled. Please try again.":
+    "Die Anmeldung konnte nicht abgebrochen werden. Bitte versuche es erneut.",
+  "Chrome or Edge is needed for this sign-in. You can also import a sign-in file below.":
+    "Für diese Anmeldung wird Chrome oder Edge benötigt. Alternativ kannst du unten eine Anmeldedatei importieren.",
+  "Sign-in took too long. Please try again.": "Die Anmeldung hat zu lange gedauert. Bitte versuche es erneut.",
+  "The sign-in window was closed or could not connect. Please try again.":
+    "Das Anmeldefenster wurde geschlossen oder konnte keine Verbindung herstellen. Bitte versuche es erneut.",
+  "Optional: the Scriber browser add-on can reuse your YouTube sign-in when you send a video, reducing repeated sign-in prompts.":
+    "Optional: Mit dem Scriber-Browser-Add-on wird deine YouTube-Anmeldung beim Übertragen eines Videos übernommen. So musst du dich seltener erneut anmelden.",
+  "YouTube requires sign-in. Connect your YouTube account below to continue.":
+    "YouTube verlangt eine Anmeldung. Verbinde unten dein YouTube-Konto, um fortzufahren.",
+  "YouTube rejected playback extraction. Connect a fresh YouTube sign-in below to try again.":
+    "YouTube hat das Laden abgelehnt. Melde dich unten erneut bei YouTube an, um es noch einmal zu versuchen.",
+  "Start the video with the Scriber browser extension. Allow YouTube sign-in once in its toolbar popup; future videos use it automatically. The session stays on this computer for up to two hours or until Scriber closes.":
+    "Starte das Video über die Scriber-Browsererweiterung. Gib im Erweiterungssymbol einmal deine YouTube-Anmeldung frei; weitere Videos verwenden sie automatisch. Die Sitzung bleibt auf diesem Computer, höchstens zwei Stunden oder bis Scriber geschlossen wird.",
+  "Advanced: import a sign-in file": "Erweitert: Anmeldedatei importieren",
+  "YouTube requires sign-in. Start this video with the Scriber browser extension and allow YouTube sign-in once.":
+    "YouTube verlangt eine Anmeldung. Starte dieses Video über die Scriber-Browsererweiterung und gib dort einmal deine YouTube-Anmeldung frei.",
+  "YouTube rejected playback extraction. Open the video in your browser and start it again with the Scriber extension.":
+    "YouTube hat das Laden abgelehnt. Öffne das Video im Browser und starte es erneut über die Scriber-Erweiterung.",
+  "YouTube rejected playback extraction. Try a fresh YouTube sign-in. If it still fails, an upstream YouTube fix is needed.":
+    "YouTube hat das Laden des Videos abgelehnt. Versuche eine frisch exportierte YouTube-Anmeldung. Scheitert es weiterhin, ist eine Korrektur bei yt-dlp oder YouTube erforderlich.",
+  "How to export YouTube sign-in": "Anleitung: YouTube-Anmeldung exportieren",
+  "YouTube requires sign-in. Import your YouTube sign-in in Settings, then retry this video.":
+    "YouTube verlangt eine Anmeldung. Importiere deine YouTube-Anmeldung in den Einstellungen und wiederhole das Video.",
+  "YouTube sign-in": "YouTube-Anmeldung",
+  "If YouTube asks you to sign in, import an exported YouTube cookies.txt file, then retry the video. Only YouTube cookies are used, for up to two hours or until Scriber closes.":
+    "Wenn YouTube eine Anmeldung verlangt, importiere eine exportierte YouTube-cookies.txt-Datei und wiederhole das Video. Verwendet werden nur YouTube-Cookies, höchstens zwei Stunden oder bis Scriber geschlossen wird.",
+  "YouTube sign-in loaded": "YouTube-Anmeldung geladen",
+  "No YouTube sign-in loaded": "Keine YouTube-Anmeldung geladen",
+  "YouTube sign-in status is unavailable.": "Der Status der YouTube-Anmeldung ist nicht verfügbar.",
+  "YouTube sign-in file": "Datei für die YouTube-Anmeldung",
+  "Import YouTube sign-in": "YouTube-Anmeldung importieren",
+  "Clear YouTube sign-in": "YouTube-Anmeldung entfernen",
+  "The YouTube sign-in file is invalid or could not be imported.":
+    "Die Datei für die YouTube-Anmeldung ist ungültig oder konnte nicht importiert werden.",
+  "YouTube sign-in could not be cleared. Please try again.":
+    "Die YouTube-Anmeldung konnte nicht entfernt werden. Bitte erneut versuchen.",
   "Local dictation in Remote Desktop (experimental)": "Lokal diktieren in Remote Desktop (experimentell)",
   "Windows: keep dictation hotkeys local in the classic Remote Desktop client, including full screen. Enable clipboard sharing to paste into the remote text field. Requires a modifier with a letter, digit, function key, Space, Enter, Tab or Escape.":
     "Windows: Diktierkürzel im klassischen Remote-Desktop-Client lokal verwenden, auch im Vollbild. Aktiviere die Freigabe der Zwischenablage zum Einfügen ins entfernte Textfeld. Erfordert eine Zusatztaste mit Buchstabe, Ziffer, Funktionstaste, Leertaste, Enter, Tab oder Escape.",
@@ -877,4 +930,6 @@ export const settingsTranslations = {
   "Record diagnostic logs": "Diagnoseprotokolle aufzeichnen",
   "When disabled, Scriber stops recording diagnostic logs in the app and backend. Existing logs are kept. You can turn logging back on whenever you need to investigate a problem.":
     "Wenn ausgeschaltet, zeichnet Scriber keine Diagnoseprotokolle mehr in der App und im Hintergrunddienst auf. Vorhandene Protokolle bleiben erhalten. Für die Fehlersuche kannst du die Aufzeichnung jederzeit wieder einschalten.",
+  "Session sharing requires add-on version 0.2.1 or later. You can sign in above at any time.":
+    "Die Übernahme der Anmeldung benötigt Add-on-Version 0.2.1 oder neuer. Du kannst dich jederzeit oben direkt anmelden.",
 } satisfies TranslationCatalog;

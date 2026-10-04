@@ -68,6 +68,16 @@
       return;
     }
     const deepLink = bridge.buildDeepLink({ videoId, ...visibleMetadata() });
+    setButtonState(button, "opening");
+    // A prior explicit permission in the toolbar popup enables later handoffs.
+    // Session transfer is optional and must not consume the click's activation.
+    try {
+      void chrome.runtime
+        .sendMessage({ type: "youtube-session", videoId })
+        .catch(() => {});
+    } catch {
+      // An extension update can invalidate this page's old content script.
+    }
     if (!deepLink) {
       return;
     }

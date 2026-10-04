@@ -24,9 +24,72 @@ from src.youtube_download import (
     _has_video_stream,
     _parse_caption_payload,
     _select_caption_track,
+    _youtube_auth_error,
     download_youtube_audio,
     download_youtube_transcript,
 )
+
+
+def test_auth_error_classification_does_not_turn_transient_failures_into_sign_in():
+    assert "requires sign-in" in _youtube_auth_error("Sign in to confirm you’re not a bot.")
+    assert "Connect a fresh YouTube sign-in" in _youtube_auth_error("The page needs to be reloaded.")
+    assert _youtube_auth_error("HTTP Error 403: Forbidden") is None
+    assert _youtube_auth_error("Requested format is not available") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("audio", [False, True], ids=["captions", "audio"])
+async def test_sign_in_recovery_uses_imported_private_jar_in_both_extractors(monkeypatch, tmp_path, audio):
+    from http.cookiejar import CookieJar
+
+    from src.youtube_session import YouTubeSession
+
+    session = YouTubeSession()
+    monkeypatch.setattr("src.youtube_session.youtube_session", session)
+    calls = []
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self.cookiejar = CookieJar()
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def extract_info(self, _url, *, download):
+            calls.append(list(self.cookiejar))
+            if not calls[-1]:
+                raise RuntimeError("ERROR: [youtube] BFKcC0VyuZA: Sign in to confirm you’re not a bot.")
+            if download:
+                Path(self.options["outtmpl"].replace("%(id)s", "BFKcC0VyuZA").replace("%(ext)s", "webm")).write_bytes(
+                    b"media"
+                )
+            return {"id": "BFKcC0VyuZA", "ext": "webm"}
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+    monkeypatch.setitem(sys.modules, "yt_dlp.networking", types.SimpleNamespace(Request=object))
+    monkeypatch.setattr("src.youtube_download._apply_youtube_only_runtime_policy", lambda: None)
+    monkeypatch.setattr("src.youtube_download._require_ffmpeg", lambda: None)
+    monkeypatch.setattr("src.youtube_download.find_media_tool", lambda _: None)
+    monkeypatch.setattr("src.youtube_download._ensure_audio_only_file", AsyncMock(side_effect=lambda path: path))
+
+    async def run():
+        if audio:
+            return await download_youtube_audio("https://www.youtube.com/watch?v=BFKcC0VyuZA", output_dir=tmp_path)
+        return await download_youtube_transcript("https://www.youtube.com/watch?v=BFKcC0VyuZA")
+
+    with pytest.raises(YouTubeDownloadError, match="YouTube requires sign-in"):
+        await run()
+    assert len(calls) == 1  # Bot checks never enter transient-403 retry loops.
+    session.connect("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tprivate-session")
+    result = await run()
+    assert result is not None if audio else result is None  # No captions correctly allows audio fallback.
+    assert calls[-1][0].value == "private-session"
+    calls[-1][0].value = "extractor-mutated"
+    assert session.snapshot()[0].value == "private-session"
 
 
 class _DummyProc:

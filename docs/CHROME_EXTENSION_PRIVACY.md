@@ -1,6 +1,6 @@
 # Scriber for YouTube - Privacy Policy
 
-Effective date: 2026-08-24
+Effective date: 2026-10-04 (extension 0.2.1)
 
 ## Scope and single purpose
 
@@ -16,8 +16,10 @@ may also read the visible video title and channel name. The toolbar popup uses
 Chrome's `activeTab` permission to read the active tab URL and title only after
 the user opens the popup.
 
-The extension does not read browser history, cookies, authentication data,
-form data, private messages, video or audio content, or transcript content.
+If the user grants the optional sign-in permission in the toolbar popup, the
+extension also reads cookies for https://www.youtube.com/ when handing off a
+video. It filters them to YouTube domains before transmission. No other site's
+cookies, browser history, form data, messages, media, or transcripts are read.
 
 ## How the data is used and transferred
 
@@ -25,6 +27,15 @@ The public video ID and optional visible title and channel name are used only to
 construct a local `scriber://youtube/transcribe` link after an explicit user
 action. The operating system passes that link to the Scriber desktop
 application on the same computer.
+
+With the optional permission, a separate one-use local HTTP handoff transfers
+the YouTube session to Scriber on 127.0.0.1:8765. The app must accept the matching
+video request before cookies can be uploaded. Only the official Store extension
+origin is accepted. Anonymous visitor cookies cannot replace a sign-in, and a
+late transfer cannot override a newer session change. Cookies and handoff capabilities
+are never placed in the protocol link or URLs. The general Scriber API is not
+opened to the extension. Scriber uses the session only to retrieve the selected
+YouTube video's captions or audio from YouTube.
 
 The extension does not send data to the developer, analytics services,
 advertising services, or any other remote server. After the local handoff,
@@ -35,16 +46,20 @@ Chrome extension.
 
 ## Storage and retention
 
-The extension stores no browsing data, video metadata, identifiers, analytics,
-or user settings. It has no developer-operated backend and retains no data.
+The extension holds the one-use handoff and cookies only in memory for at most
+35 seconds and does not write them to disk or extension storage. Scriber keeps
+the YouTube session in memory for up to two hours or until the app closes; it
+can be cleared in Scriber. No developer-operated backend receives these data.
 
 ## Permissions
 
 - `activeTab`: allows the toolbar popup to identify the current YouTube video
   after the user invokes the extension.
-- YouTube-only content-script matches: allow the in-page Scriber action to be
-  shown on supported YouTube pages. No broad host or local-network permission is
-  requested.
+- YouTube-only content-script matches show the in-page action.
+- Optional `cookies` and `https://*.youtube.com/*` access allow YouTube sign-in
+  handoff after explicit permission. These do not grant access to other sites.
+- Optional `http://127.0.0.1:8765/*` access is limited to the local Scriber app.
+  No access to other local-network hosts or broad web hosts is requested.
 
 ## Sharing, advertising, and sale
 
@@ -57,7 +72,12 @@ User Data Policy, including the Limited Use requirements.
 
 ## User control
 
-No video is handed to Scriber without the user's explicit click. Users can stop
+No video is handed to Scriber without the user's explicit click. Users may
+decline/revoke the optional permissions and continue without session transfer.
+They can clear the temporary session in Scriber. A later explicit video handoff
+may load a new temporary session while the extension permission remains enabled;
+revoke that optional permission in Chrome to stop automatic session sharing.
+Users can stop
 using the extension at any time by disabling or uninstalling it in Chrome.
 
 ## Changes and contact

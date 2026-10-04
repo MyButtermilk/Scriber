@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from typing import Any
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from src import youtube_login
 from src.api import youtube_routes
 from src.api.app_keys import APP_HTTP_SESSION
 from src.api.youtube_routes import (
@@ -16,6 +19,7 @@ from src.api.youtube_routes import (
     register_youtube_routes,
     safe_thumbnail_url,
 )
+from src.youtube_session import YouTubeSession
 
 
 class _StubController:
@@ -43,6 +47,69 @@ async def _client(controller: _StubController, *, session: object | None = None)
     client = TestClient(TestServer(app))
     await client.start_server()
     return client
+
+
+@pytest.mark.asyncio
+async def test_explicit_session_import_status_and_clear_never_return_credentials(monkeypatch):
+    session = YouTubeSession()
+    monkeypatch.setattr(youtube_routes, "youtube_session", session)
+    client = await _client(_StubController())
+    try:
+        initial = await client.get("/api/youtube/session")
+        assert await initial.json() == {"connected": False}
+        content = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tprivate-value"
+        imported = await client.post("/api/youtube/session", json={"cookies": content})
+        assert imported.status == 200
+        assert await imported.json() == {"connected": True}
+        assert imported.headers["Cache-Control"] == "no-store"
+        invalid = await client.post("/api/youtube/session", json={"cookies": "secret-invalid"})
+        assert invalid.status == 400
+        assert "secret-invalid" not in await invalid.text()
+        assert session.status() == {"connected": True}
+        oversized = await client.post("/api/youtube/session", data=b"x" * (128 * 1024 + 1))
+        assert oversized.status == 400
+        cleared = await client.delete("/api/youtube/session")
+        assert await cleared.json() == {"connected": False}
+        assert session.snapshot() == ()
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_addon_free_login_routes_start_poll_cancel_and_cleanup(monkeypatch):
+    session = YouTubeSession()
+    monkeypatch.setattr(youtube_routes, "youtube_session", session)
+    monkeypatch.setattr(youtube_login, "find_login_browser", lambda: Path("fixture-chrome.exe"))
+    entered, cleaned = asyncio.Event(), asyncio.Event()
+
+    async def collect(browser, ready):
+        ready()
+        entered.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cleaned.set()
+
+    monkeypatch.setattr(youtube_login, "_collect_session", collect)
+    client = await _client(_StubController())
+    try:
+        assert (await (await client.get("/api/youtube/session/login")).json())["state"] == "idle"
+        assert not entered.is_set()
+        started = await client.post("/api/youtube/session/login")
+        assert started.headers["Cache-Control"] == "no-store"
+        assert (await started.json())["state"] == "opening"
+        await entered.wait()
+        assert (await (await client.get("/api/youtube/session/login")).json())["state"] == "waiting"
+        assert (await (await client.delete("/api/youtube/session/login")).json())["state"] == "idle"
+        assert cleaned.is_set()
+        assert session.snapshot() == ()
+        entered.clear()
+        cleaned.clear()
+        await client.post("/api/youtube/session/login")
+        await entered.wait()
+    finally:
+        await client.close()
+    assert cleaned.is_set()
 
 
 @pytest.mark.parametrize(
