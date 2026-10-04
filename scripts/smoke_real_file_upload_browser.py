@@ -39,6 +39,7 @@ from scripts.measure_history_scroll_baseline import (  # noqa: E402
     wait_http,
 )
 from scripts.smoke_frontend_browser import (  # noqa: E402
+    capture_page_screenshot,
     install_page_error_capture,
     set_file_input_files,
     terminate_process_tree,
@@ -46,6 +47,149 @@ from scripts.smoke_frontend_browser import (  # noqa: E402
 )
 from src import web_api  # noqa: E402
 from src.data.job_store import JobStore  # noqa: E402
+
+
+async def _exercise_file_recovery(
+    cdp: CdpClient, *, frontend_url: str, store: JobStore, fixture: Path, args: argparse.Namespace
+) -> dict[str, Any]:
+    failed_id = "a" * 32
+    pending_title = "Die steuerliche Bewertung von Immobilien für Erbschaft- und Schenkungsteuer"
+    failed_title = "Die Beendigung von Arbeitsverhältnissen"
+    summary_title = "Frühere Zusammenfassung bleibt erhalten"
+    for transcript_id, title, status, summary_status, summary in (
+        ("b" * 32, pending_title, "completed", "pending", ""),
+        (failed_id, failed_title, "failed", "idle", ""),
+        ("c" * 32, summary_title, "completed", "failed", "An earlier summary."),
+    ):
+        await asyncio.to_thread(
+            web_api.db.save_transcript,
+            {
+                "id": transcript_id,
+                "title": title,
+                "date": "2026-10-02",
+                "duration": "2:17:33",
+                "type": "file",
+                "status": status,
+                "summaryStatus": summary_status,
+                "summary": summary,
+                "content": "[Error] Connection failed" if status == "failed" else "Synthetic transcript text.",
+            },
+        )
+    await cdp.evaluate("localStorage.setItem('scriber-ui-locale', 'de')")
+    await cdp.call("Page.navigate", {"url": f"{frontend_url}/file?view=grid"})
+    await wait_for_interaction_state(
+        cdp,
+        label="file-recovery-actions",
+        timeout_sec=args.page_timeout_sec,
+        expression=f"({{ok: !!document.querySelector('[data-transcript-retry=\"{failed_id}\"]:enabled')}})",
+    )
+    layouts = []
+    screenshots = []
+    for width, dark in ((1280, False), (960, True), (390, False)):
+        await cdp.call(
+            "Emulation.setDeviceMetricsOverride",
+            {"width": width, "height": 940, "deviceScaleFactor": 1, "mobile": False},
+        )
+        await cdp.evaluate(f"document.documentElement.classList.toggle('dark', {str(dark).lower()})")
+        layout = await wait_for_interaction_state(
+            cdp,
+            label=f"file-recovery-layout-{width}",
+            timeout_sec=args.page_timeout_sec,
+            expression=f"""(() => {{
+              const cards = [...document.querySelectorAll('.file-history-card')];
+              const pending = cards.find(card => card.textContent.includes({json.dumps(pending_title)}));
+              const failed = cards.find(card => card.textContent.includes({json.dumps(failed_title)}));
+              const summary = cards.find(card => card.textContent.includes({json.dumps(summary_title)}));
+              const icon = pending?.querySelector('.file-history-icon')?.getBoundingClientRect();
+              const expectedIconSize = 3 * parseFloat(getComputedStyle(document.documentElement).fontSize);
+              const badge = pending?.querySelector('[title]')?.getBoundingClientRect();
+              const card = pending?.getBoundingClientRect();
+              return {{
+                ok: icon?.width === expectedIconSize && icon?.height === expectedIconSize
+                  && badge?.left >= icon?.right + 10 && badge?.right <= card?.right - 15
+                  && !!failed?.querySelector('[data-transcript-retry]:enabled')
+                  && !!summary?.querySelector('button[title] .lucide-rotate-ccw')
+                  && cards.every(card => card.scrollWidth <= card.clientWidth + 1)
+                  && document.documentElement.scrollWidth <= innerWidth + 1,
+                width: innerWidth, iconWidth: icon?.width, iconHeight: icon?.height,
+                summaryLabel: pending?.querySelector('[title]')?.textContent?.trim(),
+                horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1
+              }};
+            }})()""",
+        )
+        layouts.append(layout)
+        if args.evidence_dir:
+            await cdp.evaluate(
+                f"""(() => {{
+                  const pending = [...document.querySelectorAll('.file-history-card')]
+                    .find(card => card.textContent.includes({json.dumps(pending_title)}));
+                  pending?.scrollIntoView({{block: 'center', behavior: 'instant'}});
+                }})()"""
+            )
+            # The finite history entry animation must settle before visual QA.
+            await asyncio.sleep(0.35)
+            screenshots.append(
+                await capture_page_screenshot(
+                    cdp,
+                    output_dir=Path(args.evidence_dir),
+                    label=f"file-recovery-{width}-{'dark' if dark else 'light'}",
+                    reset_scroll=False,
+                )
+            )
+
+    await cdp.call("Page.navigate", {"url": f"{frontend_url}/transcript/{failed_id}"})
+    await wait_for_interaction_state(
+        cdp,
+        label="file-detail-retry",
+        timeout_sec=args.page_timeout_sec,
+        expression=f"""(() => {{
+          const button = document.querySelector('[data-transcript-retry="{failed_id}"]:enabled');
+          return {{ok: !!button && button.closest('.space-y-2')?.textContent.includes('Transkription fehlgeschlagen')}};
+        }})()""",
+    )
+    if args.evidence_dir:
+        await asyncio.sleep(0.35)
+        screenshots.append(
+            await capture_page_screenshot(
+                cdp, output_dir=Path(args.evidence_dir), label="file-recovery-detail", reset_scroll=False
+            )
+        )
+    await cdp.evaluate(f"document.querySelector('[data-transcript-retry=\"{failed_id}\"]').click()")
+    await wait_for_interaction_state(
+        cdp,
+        label="file-retry-dialog",
+        timeout_sec=args.page_timeout_sec,
+        expression="({ok: !!document.querySelector('[role=dialog]')})",
+    )
+    await set_file_input_files(
+        cdp,
+        label="file-retry-original",
+        selector='input[type="file"]',
+        files=[fixture],
+        timeout_sec=args.page_timeout_sec,
+    )
+    queued = await wait_for_interaction_state(
+        cdp,
+        label="file-retry-queued",
+        timeout_sec=args.page_timeout_sec,
+        expression=f"""({{
+          ok: location.pathname.startsWith('/transcript/') && !location.pathname.endsWith('{failed_id}')
+            && !!document.querySelector('[data-transcript-detail-header]'), route: location.pathname
+        }})""",
+    )
+    retry_id = str(queued["route"]).rsplit("/", 1)[-1]
+    retry_job = store.get(retry_id)
+    original = await asyncio.to_thread(web_api.db.get_transcript, failed_id)
+    source = Path(str(retry_job.payload.get("path") or "")) if retry_job else Path()
+    return {
+        "ok": all(layout.get("ok") for layout in layouts)
+        and bool(retry_job and retry_job.transcript_id == retry_id and source.is_file())
+        and bool(original and original["status"] == "failed"),
+        "layouts": layouts,
+        "newDurableAttempt": bool(retry_job and retry_job.transcript_id == retry_id),
+        "originalFailurePreserved": bool(original and original["status"] == "failed"),
+        "screenshots": screenshots,
+    }
 
 
 async def _start_test_browser(args: argparse.Namespace, profile_root: Path) -> tuple[subprocess.Popen[str], CdpClient]:
@@ -279,6 +423,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 ),
                 "",
             )
+            recovery = await _exercise_file_recovery(
+                cdp, frontend_url=frontend_url, store=store, fixture=fixture, args=args
+            )
             result = {
                 "schemaVersion": 1,
                 "generatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -288,6 +435,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     and job.transcript_id == transcript_id
                     and job.payload.get("executionRoute", {}).get("provider") == "assemblyai"
                     and source_path.is_file()
+                    and recovery.get("ok") is True
                     and browser_state.get("ok") is True
                     and separate_sources
                     and back_state.get("ok") is True
@@ -310,6 +458,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     "externalProvider": False,
                 },
                 "browser": browser_state,
+                "fileRecovery": recovery,
                 "parallelImports": {"jobCount": len(jobs), "separateSources": separate_sources},
                 "mouseNavigation": {"back": back_state, "forward": forward_state},
                 "websocket": websocket_state,
@@ -344,6 +493,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--startup-timeout-sec", type=float, default=45.0)
     parser.add_argument("--page-timeout-sec", type=float, default=30.0)
     parser.add_argument("--output", default="tmp/real-file-browser-smoke.json")
+    parser.add_argument("--evidence-dir", default="")
     return parser.parse_args()
 
 

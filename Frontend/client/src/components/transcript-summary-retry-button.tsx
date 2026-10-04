@@ -16,6 +16,7 @@ interface TranscriptSummaryRetryButtonProps {
   transcriptTitle: string;
   onComplete?: (transcriptId: string) => void;
   className?: string;
+  compact?: boolean;
 }
 
 export function TranscriptSummaryRetryButton({
@@ -23,6 +24,7 @@ export function TranscriptSummaryRetryButton({
   transcriptTitle,
   onComplete,
   className,
+  compact = false,
 }: TranscriptSummaryRetryButtonProps) {
   const { t } = useI18n();
   const [isRetrying, setIsRetrying] = useState(false);
@@ -70,7 +72,7 @@ export function TranscriptSummaryRetryButton({
       variant="outline"
       size="sm"
       className={cn(
-        "min-h-7 gap-1.5 rounded-full border-red-200 bg-red-50/95 px-2.5 text-ui-micro font-semibold text-red-700 dark:border-red-800 dark:bg-red-950/75 dark:text-red-300",
+        "min-h-7 max-w-full min-w-0 gap-1.5 rounded-full border-red-200 bg-red-50/95 px-2.5 text-ui-micro font-semibold text-red-700 dark:border-red-800 dark:bg-red-950/75 dark:text-red-300",
         className,
       )}
       onClick={retrySummary}
@@ -85,7 +87,9 @@ export function TranscriptSummaryRetryButton({
       title={isRetrying ? t("Creating a new summary") : t("Summary failed. Try again")}
     >
       {isRetrying ? <WavePhysicsLoader size="micro" /> : <RotateCcw className="h-3 w-3" aria-hidden="true" />}
-      <span>{isRetrying ? t("Retrying…") : t("Retry summary")}</span>
+      <span className="min-w-0 truncate">
+        {isRetrying ? t("Retrying…") : compact ? t("Retry") : t("Retry summary")}
+      </span>
     </Button>
   );
 }

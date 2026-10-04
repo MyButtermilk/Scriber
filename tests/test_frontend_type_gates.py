@@ -899,7 +899,7 @@ def test_failed_summary_history_action_is_accessible_and_retries_in_place() -> N
     assert "disabled={isRetrying}" in component_source
     assert "aria-busy={isRetrying}" in component_source
     assert 'aria-live="polite"' in component_source
-    assert '<span>{isRetrying ? t("Retrying…") : t("Retry summary")}</span>' in component_source
+    # Compact/full visible labels and pending states have rendered component coverage.
     assert '? t("Retrying summary for {{title}}", { title: transcriptTitle })' in component_source
     assert ': t("Retry summary for {{title}}", { title: transcriptTitle })' in component_source
     assert 'variant: "destructive"' in component_source
