@@ -193,7 +193,21 @@ YouTube:
    frozen package fails closed. yt-dlp owns current YouTube player-client
    selection; Scriber does not force stale client names. Every downloaded file
    must pass ffprobe audio/structure validation before it can reach a provider.
-5. The browser extension can transfer the YouTube session automatically after
+5. `src.youtube_login` provides opt-in sign-in without a browser extension.
+   GET/POST/DELETE `/api/youtube/session/login` use the existing authenticated
+   HTTP lane; merely checking status never opens a browser. The manager starts
+   only a discovered Chrome/Edge executable with its own fresh temporary profile
+   and loopback debugger. The sign-in target lives in an isolated private
+   context with `disposeOnDetach`, never in the default or a user's profile.
+   It requests cookies for `https://www.youtube.com/` only; credentials/login
+   fields and unrelated browser tabs are never inspected. Cancellation, timeout
+   and shutdown join owned-process cleanup. Cookies stay in memory; the empty
+   default profile is removed best-effort after closure. Session revisions
+   prevent a late window from replacing a newer import or disconnect. A UI-owned
+   attempt ID resumes the failed video once, while an unmounted view never does.
+   The recovery control also links to the official Chrome Store listing and
+   leaves installation confirmation to Chrome.
+6. The optional browser extension can transfer the YouTube session automatically after
    its optional cookie/YouTube/local-Scriber permissions are explicitly granted
    in the toolbar popup. A short-lived, one-use offer is bound to the extension
    origin and video. Only the authenticated app's browser-import handler can

@@ -32,7 +32,7 @@ from src.youtube_download import (
 
 def test_auth_error_classification_does_not_turn_transient_failures_into_sign_in():
     assert "requires sign-in" in _youtube_auth_error("Sign in to confirm you’re not a bot.")
-    assert "Scriber extension" in _youtube_auth_error("The page needs to be reloaded.")
+    assert "Connect a fresh YouTube sign-in" in _youtube_auth_error("The page needs to be reloaded.")
     assert _youtube_auth_error("HTTP Error 403: Forbidden") is None
     assert _youtube_auth_error("Requested format is not available") is None
 

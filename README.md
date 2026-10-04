@@ -107,27 +107,41 @@ continues automatically.
 - Durable progress, retry, cancel, and recovery state
 - Transcript and summary saved beside every other source
 
+#### When YouTube requires sign-in
+
+Choose **Sign in to YouTube** in Scriber's recovery message or Settings. Scriber
+opens a private Chrome or Edge window. Complete sign-in there; Scriber takes
+over the YouTube connection and retries the failed video automatically. No
+browser add-on or cookie export is required. You can cancel at any time.
+The temporary window closes after sign-in, cancellation, or a five-minute wait.
+Only YouTube cookies are used, in memory for up to two hours or until Scriber
+closes. Existing browser profiles and saved passwords are not accessed.
+
 #### Start directly from a YouTube page in Chrome
 
-The Manifest V3 extension is directly loadable from
-`browser-extension/chrome`; it does not need a Scriber API key. Optional
+Install [Scriber für YouTube from the Chrome Web Store](https://chromewebstore.google.com/detail/scriber-f%C3%BCr-youtube/ilbdnbhdihacgkaedacmndeabbiondob).
+Chrome asks you to confirm installation; Scriber links directly to the listing.
+The extension is optional and does not need a Scriber API key. Optional
 YouTube sign-in uses a one-use connection to the local app.
 
 1. Install a Scriber build that contains the `scriber://` browser handoff.
-2. Open `chrome://extensions`, enable **Developer mode**, choose **Load
-   unpacked**, and select `browser-extension/chrome`.
+2. Install the extension from the Store link above. Developers can also load
+   `browser-extension/chrome` unpacked through `chrome://extensions`.
 3. Open a YouTube video and choose **Mit Scriber transkribieren** beside the
    video actions. The extension toolbar popup provides the same handoff.
 4. Confirm Chrome's **Open Scriber** prompt on first use. Scriber opens the
    queued transcript immediately and keeps showing progress through completion.
 
-If YouTube requires sign-in, open the extension's toolbar popup and start the
+With extension **0.2.0 or later**, open its toolbar popup and start the
 video there. Allow its optional YouTube/local-Scriber permissions once. The
 extension then passes your YouTube session automatically before transcription,
 including later starts from the in-page button. No cookie export is needed.
 Cookies stay on this computer and in memory, for up to two hours or until
 Scriber closes. Clear them in Settings at any time. Declining the optional
 permission keeps the existing public-video handoff available.
+
+The Store listing was verified at 0.1.0 on 2026-10-04. The new automatic session
+handoff requires the prepared 0.2.0 extension update to be published as well.
 
 The link carries only the public YouTube video ID plus the visible title and
 channel. Scriber validates that exact contract in the desktop shell; the

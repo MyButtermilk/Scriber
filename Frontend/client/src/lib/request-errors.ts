@@ -44,12 +44,12 @@ export function friendlyRequestMessage(rawMessage: string, fallback = "Request f
     normalized.includes("youtube rejected playback extraction.")
   ) {
     return translateNow(
-      "YouTube rejected playback extraction. Open the video in your browser and start it again with the Scriber extension.",
+      "YouTube rejected playback extraction. Connect a fresh YouTube sign-in below to try again.",
     );
   }
   if (requiresYouTubeSignIn(message)) {
     return translateNow(
-      "YouTube requires sign-in. Start this video with the Scriber browser extension and allow YouTube sign-in once.",
+      "YouTube requires sign-in. Connect your YouTube account below to continue.",
     );
   }
 

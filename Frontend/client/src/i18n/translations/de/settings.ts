@@ -1,6 +1,34 @@
 import type { TranslationCatalog } from "@/i18n/types";
 
 export const settingsTranslations = {
+  "Open add-on in Chrome Web Store": "Add-on im Chrome Web Store öffnen",
+  "The Chrome Web Store could not be opened. Please try again.":
+    "Der Chrome Web Store konnte nicht geöffnet werden. Bitte versuche es erneut.",
+  "Confirm the installation in Chrome, then allow YouTube sign-in in the add-on when sending a video.":
+    "Bestätige die Installation in Chrome. Gib anschließend beim Übertragen eines Videos im Add-on deine YouTube-Anmeldung frei.",
+  "Sign in to YouTube in a private browser window. No add-on is required. Scriber uses only your YouTube sign-in, for up to two hours or until Scriber closes.":
+    "Melde dich in einem privaten Browserfenster bei YouTube an. Dafür ist kein Add-on nötig. Scriber verwendet nur deine YouTube-Anmeldung, höchstens zwei Stunden oder bis Scriber geschlossen wird.",
+  "Sign in to YouTube": "Bei YouTube anmelden",
+  "Cancel sign-in": "Anmeldung abbrechen",
+  "Complete sign-in in the browser. This video will then restart automatically.":
+    "Schließe die Anmeldung im Browser ab. Anschließend wird dieses Video automatisch erneut gestartet.",
+  "Complete sign-in in the browser. Scriber will connect automatically.":
+    "Schließe die Anmeldung im Browser ab. Scriber übernimmt die Verbindung automatisch.",
+  "The sign-in window could not be opened. Please try again.":
+    "Das Anmeldefenster konnte nicht geöffnet werden. Bitte versuche es erneut.",
+  "Sign-in could not be cancelled. Please try again.":
+    "Die Anmeldung konnte nicht abgebrochen werden. Bitte versuche es erneut.",
+  "Chrome or Edge is needed for this sign-in. You can also import a sign-in file below.":
+    "Für diese Anmeldung wird Chrome oder Edge benötigt. Alternativ kannst du unten eine Anmeldedatei importieren.",
+  "Sign-in took too long. Please try again.": "Die Anmeldung hat zu lange gedauert. Bitte versuche es erneut.",
+  "The sign-in window was closed or could not connect. Please try again.":
+    "Das Anmeldefenster wurde geschlossen oder konnte keine Verbindung herstellen. Bitte versuche es erneut.",
+  "Optional: the Scriber browser add-on can reuse your YouTube sign-in when you send a video, reducing repeated sign-in prompts.":
+    "Optional: Mit dem Scriber-Browser-Add-on wird deine YouTube-Anmeldung beim Übertragen eines Videos übernommen. So musst du dich seltener erneut anmelden.",
+  "YouTube requires sign-in. Connect your YouTube account below to continue.":
+    "YouTube verlangt eine Anmeldung. Verbinde unten dein YouTube-Konto, um fortzufahren.",
+  "YouTube rejected playback extraction. Connect a fresh YouTube sign-in below to try again.":
+    "YouTube hat das Laden abgelehnt. Melde dich unten erneut bei YouTube an, um es noch einmal zu versuchen.",
   "Start the video with the Scriber browser extension. Allow YouTube sign-in once in its toolbar popup; future videos use it automatically. The session stays on this computer for up to two hours or until Scriber closes.":
     "Starte das Video über die Scriber-Browsererweiterung. Gib im Erweiterungssymbol einmal deine YouTube-Anmeldung frei; weitere Videos verwenden sie automatisch. Die Sitzung bleibt auf diesem Computer, höchstens zwei Stunden oder bis Scriber geschlossen wird.",
   "Advanced: import a sign-in file": "Erweitert: Anmeldedatei importieren",

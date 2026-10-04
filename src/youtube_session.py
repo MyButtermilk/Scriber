@@ -90,17 +90,28 @@ class YouTubeSession:
         self._lock = threading.Lock()
         self._cookies: tuple[Cookie, ...] = ()
         self._deadline = 0.0
+        self._revision = 0
 
-    def connect(self, content: str) -> None:
+    @property
+    def revision(self) -> int:
+        with self._lock:
+            return self._revision
+
+    def connect(self, content: str, *, if_revision: int | None = None) -> bool:
         parsed = _parse(content)
         with self._lock:
+            if if_revision is not None and if_revision != self._revision:
+                return False
             self._cookies = parsed
             self._deadline = time.monotonic() + _SESSION_SECONDS
+            self._revision += 1
+            return True
 
     def disconnect(self) -> None:
         with self._lock:
             self._cookies = ()
             self._deadline = 0.0
+            self._revision += 1
 
     def snapshot(self) -> tuple[Cookie, ...]:
         with self._lock:

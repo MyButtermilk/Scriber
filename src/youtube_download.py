@@ -29,10 +29,8 @@ class YouTubeDownloadError(RuntimeError):
     pass
 
 
-_SIGN_IN_MESSAGE = (
-    "YouTube requires sign-in. Start this video with the Scriber browser extension and allow YouTube sign-in once."
-)
-_SESSION_REJECTED_MESSAGE = "YouTube rejected playback extraction. Open the video in your browser and start it again with the Scriber extension."
+_SIGN_IN_MESSAGE = "YouTube requires sign-in. Connect your YouTube account below to continue."
+_SESSION_REJECTED_MESSAGE = "YouTube rejected playback extraction. Connect a fresh YouTube sign-in below to try again."
 
 
 def _requires_youtube_sign_in(message: str) -> bool:

@@ -158,8 +158,11 @@ YouTube/file:
   LOGIN_REQUIRED. A consented YouTube session plus the TV identity correction
   from upstream PR 17723 and bounded EJS output recovered the complete 586-second
   audio (Opus, 48 kHz, stereo). Scriber now includes these compatibility fixes
-  and an optional automatic extension handoff; manual import is an advanced
-  fallback. Extension permission/installed-app recovery must still be checked
+  and an opt-in private Chrome/Edge sign-in window that needs no add-on, plus an
+  optional automatic extension handoff; manual import is an advanced fallback.
+  The UI links to the official Store; the live 0.1.0 extension must be updated
+  to the prepared 0.2.0 for automatic cookie handoff. Real Google sign-in and
+  extension permission/installed-app recovery must still be checked
   in the release environment. Source probes do not imply a local installation.
 
 - Thumbnail handling was fixed and covered by browser smoke.

@@ -933,7 +933,9 @@ export default function TranscriptDetail() {
                     : undefined
                 }
               />
-              {isFailedYoutubeTranscript && requiresYouTubeSignIn(rawFailureMessage) && <YouTubeSessionSettings />}
+              {isFailedYoutubeTranscript && requiresYouTubeSignIn(rawFailureMessage) && (
+                <YouTubeSessionSettings onConnected={retryYoutubeTranscription} />
+              )}
               {transcript.type === "file" && transcript.resumeAvailable !== true && (
                 <FileTranscriptRetryButton key={transcript.id} transcriptId={id!} resumeAvailable={false} />
               )}
