@@ -32,7 +32,7 @@ jobs:
     name: Verify pre-tag quality contract
     needs: quality-gates
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 25
     permissions:
       contents: read
       actions: read
