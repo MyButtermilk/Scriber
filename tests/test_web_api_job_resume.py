@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sqlite3
 import threading
 import time
@@ -449,9 +450,11 @@ async def test_resume_reconciles_terminal_file_job_and_cleans_owned_upload(isola
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["soniox", "openrouter_stt"])
+@pytest.mark.parametrize("legacy_contract", [False, True])
 async def test_startup_recovers_exact_durable_result_with_failed_projection_and_missing_source(
     isolated_recovery_database,
     provider,
+    legacy_contract,
 ):
     store = JobStore(db_path=isolated_recovery_database)
     ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
@@ -468,6 +471,10 @@ async def test_startup_recovers_exact_durable_result_with_failed_projection_and_
             model="microsoft/mai-transcribe-1.5",
             provider_audio_capability_id="openrouter_stt:audio_transcriptions:microsoft/mai-transcribe-1.5",
         )
+    if legacy_contract:
+        route = replace(route, parser_version="2")
+        if provider == "openrouter_stt":
+            route = replace(route, response_shape="final_text", timestamp_mode="estimated")
     _persist_file_projection(
         transcript_id=transcript_id,
         source_path=missing_source,
@@ -481,6 +488,12 @@ async def test_startup_recovers_exact_durable_result_with_failed_projection_and_
         route=route,
     )
     assert job is not None
+    if legacy_contract:
+        legacy_payload = dict(job.payload)
+        for key in ("responseShape", "timestampMode", "diarizationMode", "parserId", "parserVersion"):
+            legacy_payload["executionRoute"].pop(key, None)
+        with sqlite3.connect(isolated_recovery_database) as conn:
+            conn.execute("UPDATE jobs SET payload = ? WHERE id = ?", (json.dumps(legacy_payload), job.id))
     attempt = _persist_provider_result(
         ctl,
         transcript_id=transcript_id,

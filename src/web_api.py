@@ -9,12 +9,13 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import threading
 import time
 import weakref
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -69,7 +70,11 @@ from src.api.meeting_catalog_routes import (
     register_meeting_catalog_routes,
 )
 from src.api.meeting_delivery_routes import register_meeting_delivery_routes
-from src.api.meeting_import_routes import MeetingImportDeps, register_meeting_import_routes
+from src.api.meeting_import_routes import (
+    MeetingImportDeps,
+    cleanup_terminal_upload_staging,
+    register_meeting_import_routes,
+)
 from src.api.meeting_processing_routes import (
     MeetingProcessingOutcome,
     MeetingReprocessCommand,
@@ -2195,6 +2200,36 @@ async def _release_persistent_audio(controller: Any, claim: AudioAdmissionClaim 
     return await _audio_admission_owner(controller).release(claim)
 
 
+_MEETING_STOP_RESPONSE_TIMEOUT_SECONDS = 30.0
+
+
+async def _retry_meeting_stop_store_operation(controller: Any, operation: Callable[[], Awaitable[Any]]) -> Any:
+    """Retain stop ownership while SQLite's writer is temporarily unavailable.
+
+    The owning supervisor outlives the bounded HTTP wait. Only a confirmed
+    SQLite busy/locked result can be retried; uncertain native operations and
+    provider calls never pass through this boundary.
+    """
+    attempts = 0
+    while True:
+        if getattr(controller, "_shutting_down", False):
+            # Finish the in-flight SQLite call, then leave durable stopping
+            # ownership to startup recovery instead of holding shutdown open.
+            raise asyncio.CancelledError("Meeting stop settlement interrupted by backend shutdown")
+        try:
+            result, pending_cancel = await await_with_delayed_cancellation(operation())
+            if pending_cancel is not None:
+                raise pending_cancel
+            return result
+        except sqlite3.OperationalError as exc:
+            if getattr(exc, "sqlite_errorcode", 0) & 0xFF not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                raise
+            attempts += 1
+            if attempts == 1:
+                logger.warning("Meeting stop is waiting for the local database writer")
+            await asyncio.sleep(min(2.0, 0.25 * attempts))
+
+
 async def _foreign_persistent_audio_claim(controller: Any) -> AudioAdmissionClaim | None:
     return await _audio_admission_owner(controller).foreign_claim()
 
@@ -3671,6 +3706,7 @@ class ScriberWebController:
                 error_message="Scriber stopped before the upload was committed.",
             )
             shutil.rmtree(data_dir() / "meeting-imports" / import_job.id, ignore_errors=True)
+        cleanup_terminal_upload_staging(self._meeting_import_store, data_dir())
         if self._loop.is_running():
             for import_job in self._meeting_import_store.list_recoverable():
                 self.schedule_meeting_import(import_job.id)
@@ -3730,14 +3766,16 @@ class ScriberWebController:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                await asyncio.to_thread(self._outlook_calendar.record_sync_error, type(exc).__name__)
+                await to_thread_cancellation_barrier(self._outlook_calendar.record_sync_error, type(exc).__name__)
                 calendar_backoff_seconds = min(6 * 60 * 60, calendar_backoff_seconds * 2)
                 logger.debug("Outlook background delta sync deferred: {}", type(exc).__name__)
             await asyncio.sleep(calendar_backoff_seconds)
 
     async def _resume_pending_meeting_pcm_purges(self) -> None:
         try:
-            meeting_ids = await asyncio.to_thread(self._meeting_store.meetings_with_pending_audio_chunk_purges)
+            meeting_ids = await to_thread_cancellation_barrier(
+                self._meeting_store.meetings_with_pending_audio_chunk_purges
+            )
             if not meeting_ids:
                 return
             from src.summarization import generate_text_with_model
@@ -3762,7 +3800,7 @@ class ScriberWebController:
     async def _resume_pending_transcript_source_purges(self) -> None:
         """Finish File/YouTube source deletion after an interrupted two-phase purge."""
         try:
-            assets = await asyncio.to_thread(
+            assets = await to_thread_cancellation_barrier(
                 self._transcript_artifacts.list_source_assets_by_state,
                 SourceAssetState.PURGE_PENDING,
                 purpose="processing_only",
@@ -3795,7 +3833,7 @@ class ScriberWebController:
                         except OSError:
                             break
                         parent = parent.parent
-                    await asyncio.to_thread(
+                    await to_thread_cancellation_barrier(
                         self._transcript_artifacts.mark_source_asset_purged,
                         asset.id,
                         expected_version=asset.state_version,
@@ -3815,7 +3853,7 @@ class ScriberWebController:
     async def _prune_discarded_meeting_workspaces(self) -> None:
         """Finish a discard interrupted between its DB tombstone and deletion."""
         try:
-            meeting_ids = await asyncio.to_thread(self._meeting_store.discarded_meeting_ids)
+            meeting_ids = await to_thread_cancellation_barrier(self._meeting_store.discarded_meeting_ids)
             for meeting_id in meeting_ids:
                 if not re.fullmatch(r"[0-9a-f]{32}", meeting_id):
                     logger.error("Refusing to prune a Meeting with an invalid storage ID")
@@ -3860,7 +3898,7 @@ class ScriberWebController:
 
     async def _prune_expired_meeting_audio(self) -> None:
         try:
-            meeting_ids = await asyncio.to_thread(self._meeting_store.expired_audio_meetings)
+            meeting_ids = await to_thread_cancellation_barrier(self._meeting_store.expired_audio_meetings)
             root = (data_dir() / "meetings").resolve()
             for meeting_id in meeting_ids:
                 target = (root / meeting_id).resolve()
@@ -3870,7 +3908,9 @@ class ScriberWebController:
                 if target.is_dir():
                     await asyncio.to_thread(shutil.rmtree, target)
                 purged_at = datetime.now(UTC).isoformat()
-                await asyncio.to_thread(self._meeting_store.mark_audio_purged, meeting_id, purged_at=purged_at)
+                await to_thread_cancellation_barrier(
+                    self._meeting_store.mark_audio_purged, meeting_id, purged_at=purged_at
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -5402,6 +5442,88 @@ class ScriberWebController:
             raise TranscriptPersistenceError("Could not persist the provider request acceptance boundary")
         return True
 
+    async def _file_transcription_checkpoint(
+        self, rec: TranscriptRecord, source_path: Path, route: FrozenTranscriptionRoute
+    ) -> Any | None:
+        if route.provider not in {"openrouter_stt", "azure_mai", "soniox", "soniox_async"}:
+            return None
+        job_id = self._job_ids_by_transcript.get(rec.id)
+        if not job_id:
+            return None
+        from src.data.transcription_part_store import source_sha256
+
+        digest = await to_thread_cancellation_barrier(source_sha256, source_path)
+        return await asyncio.to_thread(
+            self._job_store.transcription_checkpoint,
+            job_id,
+            source_digest=digest,
+            source_path=source_path,
+            execution_route={
+                "provider": route.provider,
+                "diarization_mode": route.diarization_mode,
+                **route.execution_route(),
+            },
+        )
+
+    async def _retain_checkpoint_source(self, rec: TranscriptRecord) -> bool:
+        if rec.status not in {"failed", "stopped"}:
+            return False
+        job_id = self._job_ids_by_transcript.get(rec.id)
+        return bool(job_id and await asyncio.to_thread(self._job_store.has_transcription_checkpoint, job_id))
+
+    async def resume_checkpointed_transcription(self, transcript_id: str) -> bool:
+        """Explicitly resume one failed job without replaying any unknown request."""
+        from src.data.transcription_part_store import source_sha256
+
+        async with self._resume_jobs_lock:
+            if transcript_id in self._running_tasks or transcript_id in self._deleted_transcript_ids:
+                return False
+            job = await asyncio.to_thread(self._job_store.get_by_transcript_id, transcript_id)
+            if job is None or job.status not in {JobStatus.FAILED, JobStatus.CANCELED}:
+                return False
+            persisted = await asyncio.to_thread(db.get_transcript, transcript_id)
+            if not persisted or persisted.get("status") not in {"failed", "stopped"}:
+                return False
+            if not await asyncio.to_thread(self._job_store.checkpoint_resume_available, job.id):
+                raise ValueError("This transcription has an unresolved provider request and cannot be resumed safely")
+            source = await asyncio.to_thread(self._job_store.checkpoint_source_path, job.id)
+            if source is None or not source.is_file():
+                raise ValueError("The original transcription source is no longer available")
+            digest = await to_thread_cancellation_barrier(source_sha256, source)
+            rec = self._record_from_persisted_data(persisted)
+            if job.job_type == JobType.FILE:
+                rec.source_url = str(source)
+            self._remember_job_id(transcript_id, job.id)
+            # Reconstructing the immutable route also checks vocabulary,
+            # endpoint and model evidence before authorizing new missing parts.
+            await self._load_or_freeze_background_route(rec, workload=job.job_type.value)
+            accepted, pending_cancel = await await_with_delayed_cancellation(
+                asyncio.to_thread(
+                    self._job_store.queue_checkpoint_resume,
+                    job.id,
+                    source_digest=digest,
+                    expected_attempt=job.attempts,
+                )
+            )
+            if not accepted:
+                if pending_cancel is not None:
+                    raise pending_cancel
+                raise ValueError("The transcription source or job ownership changed")
+            # The durable marker lets startup reconstruct this parent projection
+            # if cancellation or process exit interrupts the following save.
+            rec.reset_transcription_attempt()
+            rec.status = "processing"
+            rec.step = "Queued (resume missing parts)"
+            rec.updated_at = datetime.now().isoformat()
+            self._add_to_history(rec)
+            self._schedule_retry_scan(0.0)
+            if pending_cancel is not None:
+                raise pending_cancel
+            await self._save_transcript_to_db_async(rec, require_success=True)
+        await self.resume_pending_jobs()
+        await self._broadcast_history_updated(record=rec, reason="resumed")
+        return True
+
     async def _mark_job_provider_request_safe_to_retry(
         self,
         rec: TranscriptRecord,
@@ -5534,6 +5656,11 @@ class ScriberWebController:
             "model": route.model,
             "transport": route.transport,
             "language": route.language,
+            "responseShape": route.response_shape,
+            "timestampMode": route.timestamp_mode,
+            "diarizationMode": route.diarization_mode,
+            "parserId": route.parser_id,
+            "parserVersion": route.parser_version,
             "audioInputFormat": (route.audio_input_format.value if route.audio_input_format is not None else None),
             "providerAudioCapabilityId": (route.provider_audio_capability_id or None),
             "providerAudioCapabilityRevision": (route.provider_audio_capability_revision or None),
@@ -5660,6 +5787,17 @@ class ScriberWebController:
         ):
             return False
         snapshot = recovery.route_snapshot
+        contract_fields = {
+            "responseShape": "response_shape",
+            "timestampMode": "timestamp_mode",
+            "diarizationMode": "diarization_mode",
+            "parserId": "parser_id",
+            "parserVersion": "parser_version",
+        }
+        if any(key in persisted for key in contract_fields) and any(
+            persisted.get(key) != getattr(snapshot, attribute) for key, attribute in contract_fields.items()
+        ):
+            return False
         if not all(
             (
                 snapshot.provider == str(persisted.get("provider") or ""),
@@ -5826,6 +5964,10 @@ class ScriberWebController:
         if not job_id:
             raise TranscriptPersistenceError("Background job is missing its frozen execution route")
         selected = self._job_execution_route(route, prepared=prepared)
+        existing = await asyncio.to_thread(self._persisted_job_execution_route, rec.id)
+        if existing is not None and "responseShape" not in existing:
+            for key in ("responseShape", "timestampMode", "diarizationMode", "parserId", "parserVersion"):
+                selected.pop(key, None)
         updated = await asyncio.to_thread(
             self._job_store.freeze_execution_route,
             job_id,
@@ -5845,6 +5987,10 @@ class ScriberWebController:
         if not job_id:
             raise TranscriptPersistenceError("Background job is missing its selected execution route")
         executed = self._job_execution_route(route, prepared=prepared)
+        existing = await asyncio.to_thread(self._persisted_job_execution_route, rec.id)
+        if existing is not None and "responseShape" not in existing:
+            for key in ("responseShape", "timestampMode", "diarizationMode", "parserId", "parserVersion"):
+                executed.pop(key, None)
         updated = await asyncio.to_thread(
             self._job_store.record_executed_route,
             job_id,
@@ -5860,6 +6006,29 @@ class ScriberWebController:
         prepared: PreparedProviderAudio,
     ) -> None:
         await self._select_job_execution_route(rec, route, prepared=prepared)
+
+    @staticmethod
+    def _restore_response_contract(
+        route: FrozenTranscriptionRoute, persisted: dict[str, Any]
+    ) -> FrozenTranscriptionRoute:
+        fields = {
+            "responseShape": "response_shape",
+            "timestampMode": "timestamp_mode",
+            "diarizationMode": "diarization_mode",
+            "parserId": "parser_id",
+            "parserVersion": "parser_version",
+        }
+        if any(key in persisted for key in fields):
+            if not all(isinstance(persisted.get(key), str) and persisted[key] for key in fields):
+                raise TranscriptPersistenceError("Persisted provider response contract is incomplete")
+            return replace(route, **{attribute: persisted[key] for key, attribute in fields.items()})
+        # Jobs written before part checkpointing used parser v2 and the
+        # OpenRouter text-only response, including MAI2. Preserve that request
+        # and recovery identity instead of silently upgrading frozen jobs.
+        legacy = {"parser_version": "2"}
+        if route.provider == "openrouter_stt":
+            legacy.update(response_shape="final_text", timestamp_mode="estimated")
+        return replace(route, **legacy)
 
     async def _load_or_freeze_background_route(
         self,
@@ -5923,6 +6092,7 @@ class ScriberWebController:
                 provider_region=(str(persisted.get("providerRegion") or "") or None),
                 provider_endpoint_sha256=(str(persisted.get("providerEndpointSha256") or "") or None),
             )
+            route = self._restore_response_contract(route, persisted)
             expected_capability_id = str(persisted.get("providerAudioCapabilityId") or "")
             expected_revision = str(persisted.get("providerAudioCapabilityRevision") or "")
             if expected_capability_id and (
@@ -5985,9 +6155,39 @@ class ScriberWebController:
     def _schedule_retry_scan(self, delay_seconds: float) -> None:
         self._retry_scheduler.schedule_in(delay_seconds)
 
+    async def _request_soniox_cleanup(self) -> None:
+        """Supervise bounded remote cleanup while local deletion remains prompt."""
+        if getattr(self, "_shutting_down", False):
+            return
+        current = getattr(self, "_soniox_cleanup_task", None)
+        if current is not None and not current.done():
+            return
+        try:
+            if not await asyncio.to_thread(self._job_store.list_soniox_cleanup, limit=1):
+                return
+        except Exception as exc:
+            logger.warning("Deferred Soniox cleanup could not be read (error_type={})", type(exc).__name__)
+            self._schedule_retry_scan(60.0)
+            return
+
+        async def drain() -> None:
+            from src.soniox_cleanup import drain_soniox_cleanup
+
+            try:
+                await drain_soniox_cleanup(store=self._job_store, transport=self._provider_http_transport)
+            except Exception as exc:
+                logger.warning("Deferred Soniox cleanup failed (error_type={})", type(exc).__name__)
+            finally:
+                if not self._shutting_down and await asyncio.to_thread(self._job_store.list_soniox_cleanup, limit=1):
+                    self._schedule_retry_scan(60.0)
+
+        self._soniox_cleanup_task = self._spawn_detached(drain(), name="soniox_resource_cleanup")
+
     async def _schedule_next_retry_scan_from_store(self) -> None:
         try:
             delay = await asyncio.to_thread(self._job_store.seconds_until_next_retry)
+            if await asyncio.to_thread(self._job_store.list_soniox_cleanup, limit=1):
+                delay = min(delay, 60.0) if delay is not None else 60.0
         except Exception as exc:  # pragma: no cover - best effort
             logger.warning(f"Failed to query next retry delay: {exc}")
             return
@@ -6145,6 +6345,13 @@ class ScriberWebController:
         *,
         reason: str,
     ) -> _BackgroundCleanupOutcome:
+        if rec.type == "youtube" and reason in {"transcript_deleted", "terminal_parent_absent"}:
+            source_root = (self._downloads_dir / "youtube").resolve()
+            source_dir = (source_root / _safe_work_directory_component(rec.id)).resolve()
+            if source_dir.parent != source_root:
+                return _BackgroundCleanupOutcome.FAILED
+            await remove_tree_if_exists(source_dir)
+            return _BackgroundCleanupOutcome.COMPLETE
         if rec.type != "file":
             return _BackgroundCleanupOutcome.COMPLETE
         try:
@@ -6194,6 +6401,7 @@ class ScriberWebController:
             rec,
             reason="transcript_deleted",
         )
+        await self._request_soniox_cleanup()
         if source_cleanup == _BackgroundCleanupOutcome.FAILED:
             return "persistence_error", rec
 
@@ -6460,7 +6668,8 @@ class ScriberWebController:
                 return _BackgroundCleanupOutcome.DURABLE_PENDING
             self._retain_uncertain_job_projection(rec.id, job_id)
             return _BackgroundCleanupOutcome.FAILED
-        if cleanup_source:
+        retain_checkpoint_source = await self._retain_checkpoint_source(rec)
+        if cleanup_source and not retain_checkpoint_source:
             cleanup = await self._cleanup_terminal_file_source(
                 rec,
                 reason=cleanup_reason,
@@ -7347,6 +7556,7 @@ class ScriberWebController:
         limit: int,
         recover_running: bool,
     ) -> int:
+        await self._request_soniox_cleanup()
         projection_limit = max(100, int(limit))
         projection_cursor = self._terminal_projection_scan_cursor
         try:
@@ -7427,6 +7637,8 @@ class ScriberWebController:
                 and job.provider_request_attempt == job.attempts
                 and job.provider_result_attempt_id
             )
+            checkpoint_resume = job.payload.get("checkpointResumeRequested") is True
+            explicit_or_local_recovery = durable_local_recovery or checkpoint_resume
 
             rec = self._get_history_record(job.transcript_id)
             if rec is None:
@@ -7435,21 +7647,22 @@ class ScriberWebController:
                     str(persisted.get("status") or "").strip().lower() if isinstance(persisted, dict) else ""
                 )
                 if persisted and (
-                    persisted_status in {"completed", "stopped"}
-                    or (persisted_status == "failed" and not durable_local_recovery)
+                    persisted_status == "completed"
+                    or (persisted_status == "stopped" and not explicit_or_local_recovery)
+                    or (persisted_status == "failed" and not explicit_or_local_recovery)
                 ):
                     rec = self._record_from_persisted_data(persisted)
                     self._remember_job_id(rec.id, job.id)
                     await self._reconcile_terminal_background_job(rec)
                     continue
-                if persisted and durable_local_recovery:
+                if persisted and explicit_or_local_recovery:
                     rec = self._record_from_persisted_data(persisted)
                     rec.status = "processing"
                     rec.step = "Queued (provider result recovery)"
                     rec.updated_at = datetime.now().isoformat()
                     self._add_to_history(rec)
             if rec and (
-                rec.status in ("completed", "stopped") or (rec.status == "failed" and not durable_local_recovery)
+                rec.status == "completed" or (rec.status in ("failed", "stopped") and not explicit_or_local_recovery)
             ):
                 self._remember_job_id(rec.id, job.id)
                 await self._reconcile_terminal_background_job(rec)
@@ -7457,7 +7670,7 @@ class ScriberWebController:
             if rec is None:
                 rec = self._build_processing_record_from_job(job)
                 self._add_to_history(rec)
-            elif durable_local_recovery and rec.status == "failed":
+            elif explicit_or_local_recovery and rec.status in ("failed", "stopped"):
                 rec.status = "processing"
                 rec.step = "Queued (provider result recovery)"
                 rec.updated_at = datetime.now().isoformat()
@@ -10679,6 +10892,7 @@ class ScriberWebController:
                 and route.audio_input_format != frozen_audio_selection.audio_format
             ):
                 raise TranscriptPersistenceError("Persisted YouTube audio format no longer matches the frozen route")
+            previous_route = route
             route = self._freeze_background_provider_route(
                 workload="youtube",
                 provider=route.provider,
@@ -10691,6 +10905,7 @@ class ScriberWebController:
                 provider_region=route.provider_region,
                 provider_endpoint_sha256=route.provider_endpoint_sha256,
             )
+            route = self._restore_response_contract(route, self._job_execution_route(previous_route))
 
         if rec.id in self._job_ids_by_transcript:
             await self._select_job_execution_route(rec, route)
@@ -10804,16 +11019,25 @@ class ScriberWebController:
 
                 self._loop.call_soon_threadsafe(apply_progress)
 
-            download_timeout = self._timeout_seconds("SCRIBER_TIMEOUT_YOUTUBE_DOWNLOAD_SEC", 300.0)
-            audio_path = await self._await_with_timeout(
-                download_youtube_audio(
-                    rec.source_url,
-                    output_dir=out_dir,
-                    on_progress=on_download_progress,
-                ),
-                timeout_seconds=download_timeout,
-                timeout_label="YouTube download",
+            job_id = self._job_ids_by_transcript.get(rec.id)
+            retained_source = (
+                await asyncio.to_thread(self._job_store.checkpoint_source_path, job_id) if job_id else None
             )
+            if retained_source is not None:
+                if not retained_source.is_file():
+                    raise ValueError("The original transcription source is no longer available")
+                audio_path = retained_source
+            else:
+                download_timeout = self._timeout_seconds("SCRIBER_TIMEOUT_YOUTUBE_DOWNLOAD_SEC", 300.0)
+                audio_path = await self._await_with_timeout(
+                    download_youtube_audio(
+                        rec.source_url,
+                        output_dir=out_dir,
+                        on_progress=on_download_progress,
+                    ),
+                    timeout_seconds=download_timeout,
+                    timeout_label="YouTube download",
+                )
             probed_duration_seconds = await asyncio.to_thread(_probe_media_duration_seconds, Path(audio_path))
             duration_seconds = _resolved_media_duration_seconds(probed_duration_seconds, rec.duration)
             if duration_seconds > 0.0:
@@ -10841,6 +11065,7 @@ class ScriberWebController:
                         frozen_selection=frozen_audio_selection,
                     )
                 )
+                previous_route = route
                 route = self._freeze_background_provider_route(
                     workload="youtube",
                     provider=route.provider,
@@ -10853,6 +11078,7 @@ class ScriberWebController:
                     provider_region=route.provider_region,
                     provider_endpoint_sha256=route.provider_endpoint_sha256,
                 )
+                route = self._restore_response_contract(route, self._job_execution_route(previous_route))
                 await self._finalize_job_execution_route(rec, route, prepared_audio)
             workflow_phase["value"] = "preparing"
             rec.step = "Preparing transcription..."
@@ -10917,6 +11143,8 @@ class ScriberWebController:
                 direct_file_expected_duration_seconds=duration_seconds,
                 provider_http_transport=getattr(self, "_provider_http_transport", None),
             )
+
+            pipeline.transcription_checkpoint = await self._file_transcription_checkpoint(rec, Path(audio_path), route)
 
             # Use direct file upload for Soniox/Mistral async APIs (more efficient), fallback to pipecat for others
             transcribe_timeout = self._pipeline_transcription_timeout_seconds(
@@ -11204,7 +11432,7 @@ class ScriberWebController:
             # A retry keeps its processing source. Terminal cleanup is a
             # durable two-step lifecycle so the tombstone explains why
             # playback is unavailable after the canonical commit.
-            if rec.status != "processing":
+            if rec.status != "processing" and not await self._retain_checkpoint_source(rec):
                 try:
                     self._mark_source_assets_purge_pending(rec.id)
                     if out_dir.exists():
@@ -11491,6 +11719,7 @@ class ScriberWebController:
                     provider_region=route.provider_region,
                     provider_endpoint_sha256=route.provider_endpoint_sha256,
                 )
+                exact_route = self._restore_response_contract(exact_route, self._job_execution_route(route))
                 await self._finalize_job_execution_route(rec, exact_route, prepared)
                 return await self._transcribe_file_route_to_canonical_artifact(
                     rec,
@@ -11587,6 +11816,7 @@ class ScriberWebController:
                 pipeline,
                 env_key="SCRIBER_TIMEOUT_FILE_TRANSCRIBE_SEC",
             )
+            pipeline.transcription_checkpoint = await self._file_transcription_checkpoint(rec, file_path, route)
             provider_request_fence_persisted = await self._mark_job_provider_request_may_be_committed(
                 rec,
                 provider=provider,
@@ -16076,46 +16306,82 @@ class ScriberWebController:
                 payload={"message": "Meeting finalization could not be reserved."},
             )
 
-        deferred_cancellation: list[asyncio.CancelledError] = []
-        try:
-            async with _audio_admission_lock(self):
-                outcome = await ScriberWebController._settle_meeting_capture_command(
-                    self,
-                    meeting_id,
-                    command="audioMeetingStop",
-                    target_state="stopping",
-                    deferred_cancellation=deferred_cancellation,
-                )
-            if outcome.status >= 400:
-                if deferred_cancellation:
-                    raise deferred_cancellation[0]
-                return outcome
+        tasks = getattr(self, "_meeting_tasks", {})
+        reserved_task = tasks.get(meeting_id) if isinstance(tasks, dict) else None
 
-            async def settle_stop() -> dict[str, Any]:
-                finalizing = await asyncio.to_thread(self._meeting_store.transition, meeting_id, "finalizing")
+        async def settle_stop() -> MeetingCaptureOutcome:
+            try:
+                async with _audio_admission_lock(self):
+                    outcome = await ScriberWebController._settle_meeting_capture_command(
+                        self,
+                        meeting_id,
+                        command="audioMeetingStop",
+                        target_state="stopping",
+                    )
+                if outcome.status >= 400:
+                    return outcome
+                finalizing = await _retry_meeting_stop_store_operation(
+                    self, lambda: asyncio.to_thread(self._meeting_store.transition, meeting_id, "finalizing")
+                )
                 self._meeting_recorders.pop(meeting_id, None)
                 clear_level_state = getattr(self, "clear_meeting_audio_level_state", None)
                 if callable(clear_level_state):
                     clear_level_state(meeting_id)
                 start_gate.set()
                 await self.broadcast(meeting_state_event(finalizing))
-                return finalizing
-
-            finalizing, settlement_cancel = await await_with_delayed_cancellation(settle_stop())
-            pending_cancel = deferred_cancellation[0] if deferred_cancellation else settlement_cancel
-            if pending_cancel is not None:
-                raise pending_cancel
-            return MeetingCaptureOutcome(
-                status=202,
-                payload={**finalizing, "apiVersion": REST_API_VERSION},
-            )
-        finally:
-            if not start_gate.is_set():
-                tasks = getattr(self, "_meeting_tasks", {})
-                reserved_task = tasks.get(meeting_id) if isinstance(tasks, dict) else None
-                if reserved_task is not None:
+                return MeetingCaptureOutcome(status=202, payload={**finalizing, "apiVersion": REST_API_VERSION})
+            except Exception:
+                logger.exception("Meeting stop settlement failed; native ownership remains authoritative")
+                try:
+                    current = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+                    if current.get("state") == "stopping":
+                        failed = await _retry_meeting_stop_store_operation(
+                            self,
+                            lambda: asyncio.to_thread(
+                                self._meeting_store.transition,
+                                meeting_id,
+                                "finalization_failed",
+                                error_code="meeting_stop_settlement_failed",
+                                error_message="Meeting stop could not finish. Saved audio remains available for retry.",
+                            ),
+                        )
+                        await self.broadcast(meeting_state_event(failed))
+                except Exception:
+                    logger.exception("Meeting stop failure state unavailable; claim retained for recovery")
+                return MeetingCaptureOutcome(
+                    status=503,
+                    payload={"message": "Meeting stop could not finish. Saved audio remains available for retry."},
+                )
+            finally:
+                if not start_gate.is_set() and reserved_task is not None:
                     reserved_task.cancel()
                     await asyncio.gather(reserved_task, return_exceptions=True)
+
+        # The complete native/local/store settlement has an owner even after an
+        # HTTP timeout. Request cancellation waits for that same settlement.
+        async def supervised_settlement() -> MeetingCaptureOutcome:
+            return await _await_cleanup_barrier(settle_stop())
+
+        worker = self._detached_task_supervisor.spawn(supervised_settlement(), name=f"meeting-stop-{meeting_id[:8]}")
+        if worker is None:
+            if reserved_task is not None:
+                reserved_task.cancel()
+                await asyncio.gather(reserved_task, return_exceptions=True)
+            return MeetingCaptureOutcome(status=503, payload={"message": "Meeting stop could not be scheduled."})
+        try:
+            done, _ = await asyncio.wait({worker}, timeout=_MEETING_STOP_RESPONSE_TIMEOUT_SECONDS)
+        except asyncio.CancelledError as initial_cancel:
+            try:
+                _, repeated_cancel = await await_with_delayed_cancellation(worker)
+            except Exception:
+                raise initial_cancel from None
+            raise repeated_cancel or initial_cancel from None
+        if worker in done:
+            return worker.result()
+        return MeetingCaptureOutcome(
+            status=503,
+            payload={"message": "Meeting stop is waiting for local storage and will finish automatically."},
+        )
 
     async def resume_meeting_capture(self, meeting_id: str) -> MeetingCaptureOutcome:
         try:
@@ -16863,14 +17129,20 @@ class ScriberWebController:
                     capture_metadata["pauseStartedAtMs"] = max(offsets)
                     capture_metadata["pauseStartedAtUtc"] = datetime.now(UTC).isoformat()
                 try:
-                    updated, transition_cancel = await await_with_delayed_cancellation(
-                        asyncio.to_thread(
+
+                    async def persist_capture_end() -> dict[str, Any]:
+                        return await asyncio.to_thread(
                             self._meeting_store.transition,
                             meeting_id,
                             target_state,
                             capture_metadata=capture_metadata,
                             capture_ended_at=capture_ended_at,
                         )
+
+                    updated, transition_cancel = await await_with_delayed_cancellation(
+                        _retry_meeting_stop_store_operation(self, persist_capture_end)
+                        if command == "audioMeetingStop"
+                        else persist_capture_end()
                     )
                     pending_cancel = pending_cancel or transition_cancel
                 except (InvalidMeetingTransition, MeetingConflict) as exc:
@@ -16885,7 +17157,7 @@ class ScriberWebController:
                 )
             )
         if recorder_stop_failure is None and command == "audioMeetingStop":
-            await _release_persistent_audio(self, meeting_claim)
+            await _retry_meeting_stop_store_operation(self, lambda: _release_persistent_audio(self, meeting_claim))
             registry.pop(meeting_id, None)
             self._resume_idle_mic_prewarm_after_capture()
 
@@ -17230,6 +17502,7 @@ class ScriberWebController:
                 name="provider_replay_shutdown_cleanup",
             )
         current = asyncio.current_task()
+        maintenance_task = self._meeting_retention_task
         tasks = {
             task
             for task in (
@@ -17279,18 +17552,30 @@ class ScriberWebController:
             wait_tasks.add(background_stop_task)
         wait_tasks.update(task for task in self._live_mic_finalizer_tasks if task is not current and not task.done())
         pending: set[asyncio.Task] = set()
-        if wait_tasks:
-            done, pending = await asyncio.wait(
-                wait_tasks,
-                timeout=max(0.0, float(timeout_seconds)),
-            )
-            if done:
-                await asyncio.gather(*done, return_exceptions=True)
-            if pending:
-                logger.warning(
-                    "Timed out waiting for {} background task(s) during shutdown",
-                    len(pending),
+        try:
+            if wait_tasks:
+                done, pending = await asyncio.wait(
+                    wait_tasks,
+                    timeout=max(0.0, float(timeout_seconds)),
                 )
+                if done:
+                    await asyncio.gather(*done, return_exceptions=True)
+                if pending:
+                    logger.warning(
+                        "Timed out waiting for {} background task(s) during shutdown",
+                        len(pending),
+                    )
+        finally:
+            # Cancelling a maintenance coroutine cannot stop its SQLite thread.
+            # Its barriers retain that worker, and this join must outlive the
+            # generic drain timeout before callers may close persistence stores.
+            if maintenance_task is not None and maintenance_task is not current:
+                _, maintenance_join_cancel = await await_with_delayed_cancellation(
+                    asyncio.gather(maintenance_task, return_exceptions=True)
+                )
+                pending.discard(maintenance_task)
+                if maintenance_join_cancel is not None:
+                    raise maintenance_join_cancel
 
         # Finalizers outlive a timed-out caller drain. Retain and observe them
         # without the cancellation used for generic background work below.
@@ -17511,7 +17796,8 @@ class ScriberWebController:
             self._meeting_detection_task = None
         if self._meeting_retention_task is not None:
             self._meeting_retention_task.cancel()
-            self._meeting_retention_task = None
+            if self._meeting_retention_task.done():
+                self._meeting_retention_task = None
         # Cancel pending debounce timers so they don't fire on a tearing-down loop.
         self._cancel_settings_persist_timer()
         if self._history_broadcast_handle is not None:
@@ -18277,6 +18563,10 @@ class ScriberWebController:
             )
             await mark_failed(public_message)
             return SummaryOutcome(kind="failed", message=public_message)
+        finally:
+            # The caller may be a persistent podcast worker. Ownership ends
+            # with this summary call, even when its asyncio task keeps running.
+            self._unregister_summary_task(transcript_id, summary_task)
 
     async def cancel_transcript(self, transcript_id: str) -> bool:
         """Cancel a running transcription task."""
@@ -18719,18 +19009,38 @@ class ScriberWebController:
         else:
             result = await asyncio.to_thread(db.get_transcript, transcript_id)
         if result is not None:
+            job = await asyncio.to_thread(self._job_store.get_by_transcript_id, transcript_id)
+            result["resumeAvailable"] = False
+            if job is not None and await asyncio.to_thread(self._job_store.checkpoint_resume_available, job.id):
+                source = await asyncio.to_thread(self._job_store.checkpoint_source_path, job.id)
+                result["resumeAvailable"] = bool(source is not None and source.is_file())
             artifact_store = getattr(self, "_transcript_artifacts", None)
             if artifact_store is not None:
 
-                def fallback_code() -> str | None:
+                def completion_evidence() -> tuple[str | None, list[dict[str, Any]]]:
                     head = artifact_store.get_head(transcript_id)
                     artifact = artifact_store.get_artifact(head.artifact_id) if head else None
                     stage = artifact_store.get_stage_result(artifact.attempt_id) if artifact else None
-                    if stage and stage.evidence.get("diarizationFallback") == "diarization_unavailable":
-                        return "diarization_unavailable"
-                    return None
+                    fallback = (
+                        "diarization_unavailable"
+                        if stage and stage.evidence.get("diarizationFallback") == "diarization_unavailable"
+                        else None
+                    )
+                    warnings = []
+                    raw_warnings = stage.evidence.get("chunkBoundaryWarnings", []) if stage else []
+                    fields = ("leftPartIndex", "rightPartIndex", "startMs", "endMs")
+                    for warning in raw_warnings if isinstance(raw_warnings, list) else []:
+                        if (
+                            isinstance(warning, dict)
+                            and warning.get("code") in {"overlap_conflicting_words", "overlap_missing_word_timestamps"}
+                            and all(type(warning.get(field)) is int and warning[field] >= 0 for field in fields)
+                        ):
+                            warnings.append({"code": warning["code"], **{field: warning[field] for field in fields}})
+                    return fallback, warnings
 
-                result["diarizationFallback"] = await asyncio.to_thread(fallback_code)
+                result["diarizationFallback"], result["chunkBoundaryWarnings"] = await asyncio.to_thread(
+                    completion_evidence
+                )
         return result
 
 

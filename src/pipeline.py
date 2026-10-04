@@ -1877,6 +1877,7 @@ class ScriberPipeline:
         provider_http_transport: ProviderHttpTransport | None = None,
         on_silence_timeout: Callable[[], None] | None = None,
         on_capture_stopped: Callable[[], Awaitable[None]] | None = None,
+        transcription_checkpoint: Any | None = None,
     ):
         self.service_name = service_name
         self.on_status_change = on_status_change
@@ -1957,6 +1958,7 @@ class ScriberPipeline:
         # dictation intentionally keeps ``None`` and continues to read current
         # settings at session start.
         self.execution_route = dict(execution_route) if execution_route is not None else None
+        self.transcription_checkpoint = transcription_checkpoint
         try:
             expected_duration = float(direct_file_expected_duration_seconds or 0.0)
         except TypeError, ValueError:
@@ -4413,6 +4415,7 @@ class ScriberPipeline:
                     prepared_audio.path,
                     content_type=prepared_audio.content_type,
                     capability_prepared=True,
+                    prepared_audio=prepared_audio,
                 )
                 self._provider_request_state = "result_received"
                 return
@@ -4444,6 +4447,7 @@ class ScriberPipeline:
                         prepared.path,
                         content_type=prepared.content_type,
                         capability_prepared=True,
+                        prepared_audio=prepared,
                     )
                     self._provider_request_state = "result_received"
         except Exception as e:
@@ -4460,6 +4464,7 @@ class ScriberPipeline:
         *,
         content_type: str,
         capability_prepared: bool,
+        prepared_audio: PreparedProviderAudio | None = None,
     ) -> None:
         """Run the existing provider request against already selected bytes."""
 
@@ -4702,6 +4707,12 @@ class ScriberPipeline:
                         language=self._execution_language(),
                         on_progress=self.on_progress,
                         timeout_secs=batch_timeout_seconds,
+                        checkpoint=self.transcription_checkpoint,
+                        request_word_timestamps=(
+                            self.execution_route.get("timestamp_mode") in {"word", "word_or_segment"}
+                            if self.execution_route is not None
+                            else None
+                        ),
                     )
 
                 text = openai_transcript_payload_to_text(
@@ -4758,7 +4769,7 @@ class ScriberPipeline:
                     azure_mai_content_type,
                     azure_mai_transcript_payload_to_text,
                     prepared_azure_mai_audio_file,
-                    transcribe_azure_mai_file,
+                    transcribe_azure_mai_file_parts,
                     validate_azure_mai_region,
                 )
 
@@ -4778,7 +4789,7 @@ class ScriberPipeline:
                         contextlib.nullcontext(path) if capability_prepared else prepared_azure_mai_audio_file(path)
                     )
                     async with upload_context as upload_path:
-                        payload = await transcribe_azure_mai_file(
+                        payload = await transcribe_azure_mai_file_parts(
                             audio_path=upload_path,
                             session=session,
                             speech_key=api_key,
@@ -4790,6 +4801,8 @@ class ScriberPipeline:
                             diarize=self.direct_file_speaker_diarization,
                             on_progress=self.on_progress,
                             timeout_secs=batch_timeout_seconds,
+                            checkpoint=self.transcription_checkpoint,
+                            prepared_audio=prepared_audio,
                         )
 
                 text = azure_mai_transcript_payload_to_text(payload)
@@ -4952,12 +4965,39 @@ class ScriberPipeline:
             if not api_key:
                 raise ValueError("Soniox API key is missing")
 
+            if self.direct_file_expected_duration_seconds > 18_000:
+                raise ValueError("Soniox file transcription accepts audio up to 300 minutes.")
+
             headers = {"Authorization": f"Bearer {api_key}"}
             soniox_region = self._execution_provider_region(Config.SONIOX_REGION)
             base_url = self._bind_execution_provider_endpoint(soniox_rest_api_base_url(soniox_region))
             model = self._execution_model(Config.SONIOX_ASYNC_MODEL or Config.DEFAULT_SONIOX_ASYNC_MODEL)
             file_id = None
             transcription_id = None
+            checkpoint = self.transcription_checkpoint
+            result_durable = False
+            if checkpoint is not None:
+                await checkpoint.bind(
+                    manifest={
+                        "schemaVersion": 1,
+                        "kind": "soniox_remote_job",
+                        "sourceByteLength": path.stat().st_size,
+                        "parts": [
+                            {"index": 0, "operation": "upload"},
+                            {"index": 1, "operation": "transcription"},
+                        ],
+                    },
+                    request_shape={
+                        "model": model,
+                        "language": self._execution_language(),
+                        "customVocabulary": self._execution_custom_vocab(),
+                        "speakerDiarization": self.direct_file_speaker_diarization,
+                        "contentType": content_type,
+                        "region": soniox_region,
+                    },
+                )
+                file_id = await checkpoint.remote_id(0)
+                transcription_id = await checkpoint.remote_id(1)
 
             if self.on_progress:
                 self.on_progress("Uploading audio...")
@@ -4998,22 +5038,43 @@ class ScriberPipeline:
                             logger.warning(f"Error deleting Soniox file: {exc}")
 
                 try:
+                    cached_payload = await checkpoint.lookup(1, allow_remote=True) if checkpoint is not None else None
+                    if cached_payload is not None:
+                        result_durable = True
+                        self.last_structured_transcript_payload = cached_payload
+                        tokens = cached_payload.get("tokens", [])
+                        text = (
+                            self._format_speaker_transcript(tokens)
+                            if tokens and any(t.get("speaker") not in (None, "") for t in tokens)
+                            else cached_payload.get("text", "") or self._format_speaker_transcript(tokens)
+                        )
+                        if text and self.on_transcription:
+                            self.on_transcription(text, True)
+                        if self.on_progress:
+                            self.on_progress("Completed")
+                        return
                     # Upload file directly
                     file_size = path.stat().st_size
                     logger.info(f"Uploading {path.name} ({file_size} bytes, {content_type})")
 
-                    data = aiohttp.FormData()
-                    with open(path, "rb") as f:
-                        data.add_field("file", f, filename=path.name, content_type=content_type)
-
-                        async with session.post(
-                            f"{base_url}/files",
-                            data=data,
-                            headers=headers,
-                            timeout=aiohttp.ClientTimeout(total=upload_timeout_seconds),
-                        ) as resp:
-                            resp.raise_for_status()
-                            file_id = (await read_response_json_limited(resp, 64 * 1024 * 1024))["id"]
+                    if file_id is None:
+                        data = aiohttp.FormData()
+                        with open(path, "rb") as f:
+                            data.add_field("file", f, filename=path.name, content_type=content_type)
+                            if checkpoint is not None:
+                                await checkpoint.mark_started(0)
+                            async with session.post(
+                                f"{base_url}/files",
+                                data=data,
+                                headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=upload_timeout_seconds),
+                            ) as resp:
+                                if checkpoint is not None and resp.status >= 400:
+                                    await checkpoint.mark_rejected(0, resp.status)
+                                resp.raise_for_status()
+                                file_id = (await read_response_json_limited(resp, 64 * 1024 * 1024))["id"]
+                                if checkpoint is not None:
+                                    await checkpoint.save_remote_id(0, file_id)
 
                     # Start transcription with speaker diarization enabled for file/youtube
                     payload = {"file_id": file_id, "model": model}
@@ -5026,14 +5087,21 @@ class ScriberPipeline:
                     # Enable speaker diarization for file/youtube transcription
                     payload["enable_speaker_diarization"] = self.direct_file_speaker_diarization
 
-                    async with session.post(
-                        f"{base_url}/transcriptions",
-                        json=payload,
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=60),
-                    ) as resp2:
-                        resp2.raise_for_status()
-                        transcription_id = (await read_response_json_limited(resp2, 64 * 1024 * 1024))["id"]
+                    if transcription_id is None:
+                        if checkpoint is not None:
+                            await checkpoint.mark_started(1)
+                        async with session.post(
+                            f"{base_url}/transcriptions",
+                            json=payload,
+                            headers=headers,
+                            timeout=aiohttp.ClientTimeout(total=60),
+                        ) as resp2:
+                            if checkpoint is not None and resp2.status >= 400:
+                                await checkpoint.mark_rejected(1, resp2.status)
+                            resp2.raise_for_status()
+                            transcription_id = (await read_response_json_limited(resp2, 64 * 1024 * 1024))["id"]
+                            if checkpoint is not None:
+                                await checkpoint.save_remote_id(1, transcription_id)
 
                     # Poll for completion
                     if self.on_progress:
@@ -5082,6 +5150,28 @@ class ScriberPipeline:
                     ) as r3:
                         r3.raise_for_status()
                         transcript_payload = await read_response_json_limited(r3, 64 * 1024 * 1024)
+                        if not isinstance(transcript_payload, dict) or not (
+                            isinstance(transcript_payload.get("text"), str)
+                            or (
+                                isinstance(transcript_payload.get("tokens"), list)
+                                and all(
+                                    isinstance(token, dict) and isinstance(token.get("text"), str)
+                                    for token in transcript_payload["tokens"]
+                                )
+                            )
+                        ):
+                            raise RuntimeError("Soniox response did not include a valid transcript")
+                        if "tokens" in transcript_payload and (
+                            not isinstance(transcript_payload["tokens"], list)
+                            or not all(
+                                isinstance(token, dict) and isinstance(token.get("text"), str)
+                                for token in transcript_payload["tokens"]
+                            )
+                        ):
+                            raise RuntimeError("Soniox response included invalid transcript tokens")
+                        if checkpoint is not None:
+                            await checkpoint.save_success(1, transcript_payload)
+                            result_durable = True
                         self.last_structured_transcript_payload = transcript_payload
 
                         # Parse speaker diarization if available
@@ -5091,7 +5181,7 @@ class ScriberPipeline:
                             text = self._format_speaker_transcript(tokens)
                         else:
                             # Fallback to plain text
-                            text = transcript_payload.get("text", "")
+                            text = transcript_payload.get("text", "") or self._format_speaker_transcript(tokens)
 
                     if text and self.on_transcription:
                         logger.info(f"Soniox direct transcription completed ({len(text)} chars)")
@@ -5100,7 +5190,8 @@ class ScriberPipeline:
                     if self.on_progress:
                         self.on_progress("Completed")
                 finally:
-                    await _cleanup_resources()
+                    if checkpoint is None or result_durable:
+                        await _cleanup_resources()
 
         except Exception:
             raise

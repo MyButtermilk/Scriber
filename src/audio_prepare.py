@@ -86,6 +86,8 @@ class PreparedProviderAudio:
     capability_revision: str
     byte_length: int
     generated: bool
+    duration_ms: int | None = None
+    verified_mtime_ns: int | None = None
 
     def frozen_request_options(self) -> dict[str, Any]:
         return {
@@ -206,6 +208,8 @@ def _format_from_probe_payload(
         return AudioInputFormat.WAV_PCM24, container, codec
     if codec in {"pcm_s32le", "pcm_s32be"} and "wav" in containers:
         return AudioInputFormat.WAV_PCM32, container, codec
+    if codec == "pcm_f32le" and "wav" in containers:
+        return AudioInputFormat.WAV_PCM32_FLOAT, container, codec
     if codec == "mp3" and "mp3" in containers:
         return AudioInputFormat.MP3, container, codec
     if codec == "flac" and "flac" in containers:
@@ -388,7 +392,14 @@ async def prepare_provider_audio_file(
     """Yield one exact, verified representation and clean generated output."""
 
     source = Path(source_path)
+    source_stat = source.stat()
     probe = await asyncio.to_thread(probe_audio_input_file, source)
+    output_stat = source.stat()
+    if (source_stat.st_size, source_stat.st_mtime_ns) != (
+        output_stat.st_size,
+        output_stat.st_mtime_ns,
+    ) or probe.byte_length != output_stat.st_size:
+        raise ProviderAudioPreparationError("Audio source changed during format verification.")
     capability, selected = resolve_provider_audio_selection(
         provider=provider,
         model=model,
@@ -428,6 +439,7 @@ async def prepare_provider_audio_file(
     generated = selected.mode != AudioSelectionMode.ORIGINAL_PASSTHROUGH
     generated_path: Path | None = None
     output_path = source
+    output_probe = probe
     implementation = audio_preparation_implementation(selected)
     try:
         if generated:
@@ -466,17 +478,28 @@ async def prepare_provider_audio_file(
                     audio_format=selected.audio_format,
                 )
             await _run_generated_preparation(command, generated_path)
+            generated_stat = generated_path.stat()
             generated_probe = await asyncio.to_thread(
                 probe_audio_input_file,
                 generated_path,
             )
+            output_stat = generated_path.stat()
+            if (generated_stat.st_size, generated_stat.st_mtime_ns) != (
+                output_stat.st_size,
+                output_stat.st_mtime_ns,
+            ) or generated_probe.byte_length != output_stat.st_size:
+                raise ProviderAudioPreparationError("Generated provider audio changed during format verification.")
             if generated_probe.audio_format != selected.audio_format:
                 raise ProviderAudioPreparationError(
                     "Generated provider audio failed exact container/codec verification."
                 )
             output_path = generated_path
+            output_probe = generated_probe
 
-        byte_length = output_path.stat().st_size
+        current_stat = output_path.stat()
+        if (current_stat.st_size, current_stat.st_mtime_ns) != (output_stat.st_size, output_stat.st_mtime_ns):
+            raise ProviderAudioPreparationError("Prepared provider audio changed after format verification.")
+        byte_length = current_stat.st_size
         effective_limit = (
             min(value for value in (capability.max_upload_bytes, max_bytes) if isinstance(value, int) and value > 0)
             if any(isinstance(value, int) and value > 0 for value in (capability.max_upload_bytes, max_bytes))
@@ -499,6 +522,8 @@ async def prepare_provider_audio_file(
             capability_revision=selected.capability_revision,
             byte_length=byte_length,
             generated=generated,
+            duration_ms=output_probe.duration_ms,
+            verified_mtime_ns=output_stat.st_mtime_ns,
         )
     finally:
         if generated_path is not None:

@@ -121,6 +121,7 @@ async def test_azure_mp3_is_passed_through_without_second_preparation(
         "probe_audio_input_file",
         lambda _path: _probe(AudioInputFormat.MP3, byte_length=source.stat().st_size),
     )
+    monkeypatch.setattr("src.openrouter_audio.probe_audio_input_file", audio_prepare.probe_audio_input_file)
 
     def _unexpected_legacy_preparation(_path):
         raise AssertionError("Azure legacy preparation must not run")
@@ -173,6 +174,7 @@ async def test_failure_before_first_request_chunk_remains_safe_to_retry(
         "probe_audio_input_file",
         lambda _path: _probe(AudioInputFormat.MP3, byte_length=source.stat().st_size),
     )
+    monkeypatch.setattr("src.openrouter_audio.probe_audio_input_file", audio_prepare.probe_audio_input_file)
 
     async def fail_before_body(**_kwargs):
         raise ConnectionError("synthetic connect failure")
@@ -195,26 +197,34 @@ async def test_failure_before_first_request_chunk_remains_safe_to_retry(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("audio_format", [AudioInputFormat.WAV_PCM16, AudioInputFormat.FLAC])
 async def test_external_prepared_audio_is_borrowed_without_probe_or_cleanup(
     monkeypatch,
     tmp_path: Path,
+    audio_format: AudioInputFormat,
 ) -> None:
     original = tmp_path / "original.flac"
     original.write_bytes(b"original")
-    prepared_path = tmp_path / "prepared.wav"
+    suffix = ".wav" if audio_format == AudioInputFormat.WAV_PCM16 else ".flac"
+    content_type = "audio/wav" if audio_format == AudioInputFormat.WAV_PCM16 else "audio/flac"
+    prepared_path = tmp_path / f"prepared{suffix}"
     prepared_path.write_bytes(b"prepared")
-    route = _frozen_route("azure_mai", audio_format=AudioInputFormat.WAV_PCM16)
+    route = _frozen_route("azure_mai", audio_format=audio_format)
     prepared = audio_prepare.PreparedProviderAudio(
         path=prepared_path,
         source_format=AudioInputFormat.FLAC,
-        selected_format=AudioInputFormat.WAV_PCM16,
+        selected_format=audio_format,
         selection_mode=AudioSelectionMode.GENERATED,
-        implementation="ffmpeg_wav_pcm16_control",
-        content_type="audio/wav",
+        implementation="ffmpeg_wav_pcm16_control"
+        if audio_format == AudioInputFormat.WAV_PCM16
+        else "ffmpeg_flac_fast_control",
+        content_type=content_type,
         capability_id=route["provider_audio_capability_id"],
         capability_revision=route["provider_audio_capability_revision"],
         byte_length=prepared_path.stat().st_size,
         generated=True,
+        duration_ms=1_000,
+        verified_mtime_ns=prepared_path.stat().st_mtime_ns,
     )
     monkeypatch.setattr(Config, "AZURE_MAI_SPEECH_KEY", "configured")
     monkeypatch.setattr(Config, "AZURE_MAI_REGION", "northeurope")
@@ -230,6 +240,8 @@ async def test_external_prepared_audio_is_borrowed_without_probe_or_cleanup(
         "src.azure_mai_stt.prepared_azure_mai_audio_file",
         _unexpected_preparation,
     )
+    monkeypatch.setattr(audio_prepare, "probe_audio_input_file", _unexpected_preparation)
+    monkeypatch.setattr("src.openrouter_audio.probe_audio_input_file", _unexpected_preparation)
     captured: dict[str, object] = {}
 
     async def _transcribe(**kwargs):
@@ -250,8 +262,8 @@ async def test_external_prepared_audio_is_borrowed_without_probe_or_cleanup(
     )
 
     assert captured == {
-        "filename": "prepared.wav",
-        "content_type": "audio/wav",
+        "filename": prepared_path.name,
+        "content_type": content_type,
         "body": b"prepared",
     }
     assert prepared_path.read_bytes() == b"prepared"

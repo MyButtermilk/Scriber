@@ -117,4 +117,55 @@ describe("failed transcript", () => {
     expect(screen.getByText("No transcript text captured.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Export" })).toBeDisabled();
   });
+
+  it.each(["failed", "stopped"] as const)(
+    "offers resume for a %s file only when the backend confirms eligibility",
+    async (status) => {
+      mount("Retained speech.", "", "", "file", { status, resumeAvailable: true });
+      expect(await screen.findByRole("button", { name: "Resume transcription" })).toBeEnabled();
+      expect(screen.queryByRole("button", { name: "Retry transcription" })).toBeNull();
+      expect(screen.queryByRole("dialog")).toBeNull();
+    },
+  );
+
+  it("offers a new upload retry when saved progress is explicitly unavailable", async () => {
+    mount("Retained speech.", "Failed", "", "file", { resumeAvailable: false });
+    const retry = await screen.findByRole("button", { name: "Retry transcription" });
+    await waitFor(() => expect(retry).toBeEnabled());
+    expect(screen.queryByRole("button", { name: "Resume transcription" })).toBeNull();
+    fireEvent.click(retry);
+    expect(await screen.findByRole("dialog")).toBeVisible();
+  });
+
+  it.each([
+    { type: "file", status: "failed", resumeAvailable: false },
+    { type: "file", status: "stopped" },
+    { type: "file", status: "processing", resumeAvailable: true },
+    { type: "mic", status: "failed", resumeAvailable: true },
+  ] satisfies Partial<TranscriptDetailResponse>[])(
+    "does not offer resume without an eligible terminal file: %j",
+    async (overrides) => {
+      mount("Retained speech.", "", "", "file", overrides);
+      await screen.findByRole("heading", { name: "Live Mic" });
+      expect(screen.queryByRole("button", { name: "Resume transcription" })).toBeNull();
+    },
+  );
+
+  it("shows uncertain joins at their original recording times without inserting warnings into speech", async () => {
+    mount("Yes. Yes.", "", "", "file", {
+      status: "completed",
+      chunkBoundaryWarnings: [
+        {
+          code: "overlap_missing_word_timestamps",
+          leftPartIndex: 0,
+          rightPartIndex: 1,
+          startMs: 3_601_000,
+          endMs: 3_609_000,
+        },
+      ],
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent("1:00:01–1:00:09");
+    expect(screen.getByText("Yes. Yes.")).toBeInTheDocument();
+    expect(screen.getByText("2 words")).toBeInTheDocument();
+  });
 });

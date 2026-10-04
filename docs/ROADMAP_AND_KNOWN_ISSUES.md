@@ -152,10 +152,12 @@ YouTube/file:
   shown only after summary completion. Live Mic history uses transcript excerpts
   and stable, non-overlapping time sections without layout-motion gaps.
 - File history preserves fixed-size icons and bounds compact summary labels.
-  Every failed File record offers explicit transcription retry in list/grid and
+  Failed File records offer explicit transcription retry in list/grid and
   detail views: linked podcast episodes requeue their durable source, while
-  uploaded files reopen file selection because terminal upload workspaces are
-  removed. Summary failures retry only the summary, including failed replacement
+  uploaded files reopen file selection for a new attempt. Detail views instead
+  offer Resume when the backend confirms retained checkpoint/source eligibility,
+  preserving completed provider parts without asking for another upload.
+  Summary failures retry only the summary, including failed replacement
   summaries that retain an earlier successful result.
 - Live Mic, YouTube, and File now share a responsive history toolbar with exact
   result counts. YouTube separates loading, no-results, and failure states and

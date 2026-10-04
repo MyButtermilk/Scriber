@@ -159,7 +159,7 @@ class PodcastService:
             transcript_id = episode["transcript_id"]
             if transcript_id and not episode["download_only"] and episode["status"] != "completed":
                 view = await self._processor.view(transcript_id)
-                if view is None or view.status in {"failed", "canceled", "cancelled"}:
+                if view is None or view.status in {"failed", "stopped", "canceled", "cancelled"}:
                     # Only this explicit user retry can allocate a new paid attempt.
                     await to_thread_cancellation_barrier(
                         self._store.update, identifier, status=episode["status"], transcript_id=uuid4().hex

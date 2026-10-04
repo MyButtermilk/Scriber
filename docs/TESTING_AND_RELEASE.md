@@ -1452,6 +1452,44 @@ actionlint v1.7.12 invocation ignores only its known pre-`concurrency.queue`
 schema error; GitHub documents `queue: max`, and every other actionlint check
 remains active.
 
+Before creating a version tag, dispatch `.github/workflows/release-qualification.yml`
+on `main`. It captures `github.sha` once and runs the existing six reusable
+quality gates, including Windows real-browser File upload, followed by an API
+contract check. It has read-only repository permissions and no signing,
+installer build, or release publication. A PR's synthetic merge SHA, a different
+main commit, or an ordinary Hybrid PR Checks run cannot replace this qualification.
+
+```powershell
+gh workflow run release-qualification.yml --repo MyButtermilk/Scriber --ref main
+gh run list --repo MyButtermilk/Scriber --workflow release-qualification.yml --limit 5
+gh run watch <qualification-run-id> --repo MyButtermilk/Scriber --exit-status
+scripts\project-python.cmd -m scripts.ci.pre_tag_qualification create-tag `
+  --repo MyButtermilk/Scriber `
+  --run-id <qualification-run-id> --run-attempt <qualification-run-attempt> `
+  --head-sha <full-qualified-commit-sha> --tag vX.Y.Z `
+  --evidence tmp\pre-tag-qualification.json
+```
+
+Use the successful run's full `head_sha` and `run_attempt`. The tag helper
+checks canonical origin, current main, concrete app version, complete quality
+and contract jobs, all earlier attempts, immutable reusable-workflow provenance,
+and 24-hour freshness before creating an annotated tag at that exact SHA. It
+also requires any fresh matching main CI run to have completed successfully,
+so a separate green qualification cannot hide a main failure the release would
+reject. If main CI is still running, wait before qualifying/tagging.
+It never force-pushes or replaces tags. If main advances, qualify the new commit
+before tagging. Failed attempts cannot be erased with a failed-job rerun.
+
+The release planner requires a successful qualification completed before the
+tag workflow's original creation time. It fails closed on unavailable API data,
+incomplete pagination, pending/failed/skipped jobs, changed attempts, stale data,
+or post-tag qualification. Before signing it rechecks the pinned qualification
+run and attempt, jobs, provenance and freshness. Uploaded JSON is diagnostic
+output, never authorization. All existing quality/signing/installer/publication
+barriers remain active. Direct `git tag`/`git push` bypasses the safe creation
+helper and can still consume a tag; the release rejects such an unqualified tag.
+Do not repair it by retargeting an immutable version tag.
+
 `.github/workflows/release-windows.yml` is the Windows release build.
 
 It:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -30,7 +31,9 @@ from pipecat.services.stt_service import STTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
+from src.audio_prepare import PreparedProviderAudio
 from src.config import Config
+from src.core.provider_audio_formats import AZURE_MAI_MAX_AUDIO_BYTES, AZURE_MAI_MAX_AUDIO_DURATION_MS
 from src.core.provider_errors import ProviderTransportError, provider_transport_error, provider_user_error
 from src.provider_transcript import AZURE_MAI_DIARIZATION_FALLBACK_KEY
 from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool
@@ -77,6 +80,8 @@ async def transcribe_azure_mai_file(
     on_progress: Callable[[str], None] | None = None,
     timeout_secs: float = 900.0,
     raw_transport: AzureMaiRawTransport | None = None,
+    request_word_timestamps: bool = False,
+    on_success: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """One explicit text-only recovery after Azure rejects native diarization.
 
@@ -85,6 +90,18 @@ async def transcribe_azure_mai_file(
     The durable outer job fence remains active across both requests.
     """
     fallback = False
+
+    def apply_fallback_marker(payload: dict[str, Any]) -> None:
+        # This marker belongs to Scriber, never to the provider response.
+        payload.pop(AZURE_MAI_DIARIZATION_FALLBACK_KEY, None)
+        if fallback:
+            payload[AZURE_MAI_DIARIZATION_FALLBACK_KEY] = "diarization_unavailable"
+
+    async def receive_success(payload: dict[str, Any]) -> None:
+        apply_fallback_marker(payload)
+        if on_success is not None:
+            await on_success(payload)
+
     for attempt in range(2):
         try:
             with audio_path.open("rb") as audio:
@@ -103,11 +120,10 @@ async def transcribe_azure_mai_file(
                     on_progress=on_progress,
                     timeout_secs=timeout_secs,
                     raw_transport=raw_transport,
+                    request_word_timestamps=request_word_timestamps,
+                    on_success=receive_success if on_success is not None else None,
                 )
-            # This marker belongs to Scriber, never to the provider response.
-            payload.pop(AZURE_MAI_DIARIZATION_FALLBACK_KEY, None)
-            if fallback:
-                payload[AZURE_MAI_DIARIZATION_FALLBACK_KEY] = "diarization_unavailable"
+            apply_fallback_marker(payload)
             return payload
         except ProviderTransportError as exc:
             if not (
@@ -122,6 +138,82 @@ async def transcribe_azure_mai_file(
             logger.warning("Azure MAI native diarization unavailable; attempting one clean text-only transcription")
             _report_progress(on_progress, "Speaker diarization unavailable; transcribing without speaker labels...")
     raise AssertionError("unreachable MAI transcription attempt")
+
+
+async def transcribe_azure_mai_file_parts(
+    *,
+    audio_path: Path,
+    session: aiohttp.ClientSession,
+    speech_key: str,
+    region: str,
+    content_type: str,
+    language: Language | str | None,
+    model: str | None = None,
+    custom_vocab: str | None = None,
+    diarize: bool = False,
+    on_progress: Callable[[str], None] | None = None,
+    timeout_secs: float = 900.0,
+    raw_transport: AzureMaiRawTransport | None = None,
+    checkpoint: Any = None,
+    prepared_audio: PreparedProviderAudio | None = None,
+) -> dict[str, Any]:
+    """Bound MP3 parts and fitting frozen, verified WAV/FLAC requests."""
+    from src.file_transcription_parts import transcribe_mp3_parts, validate_part_result
+    from src.openrouter_audio import OpenRouterAudioPart
+
+    selected_model = azure_mai_model(model)
+    words = selected_model.casefold() == "mai-transcribe-2"
+
+    async def transcribe(part: OpenRouterAudioPart) -> dict[str, Any]:
+        def progress(message: str) -> None:
+            _report_progress(
+                on_progress,
+                f"Transcribing part {part.index} of {part.count}..." if part.count > 1 else message,
+            )
+
+        async def receive_success(payload: dict[str, Any]) -> None:
+            validate_part_result("azure_mai", payload)
+            await checkpoint.save_success(part.index, payload)
+
+        return await transcribe_azure_mai_file(
+            audio_path=part.path,
+            session=session,
+            speech_key=speech_key,
+            region=region,
+            content_type=content_type,
+            language=language,
+            model=selected_model,
+            custom_vocab=custom_vocab,
+            diarize=diarize,
+            on_progress=progress,
+            timeout_secs=timeout_secs,
+            raw_transport=raw_transport,
+            request_word_timestamps=words,
+            on_success=receive_success if checkpoint else None,
+        )
+
+    return await transcribe_mp3_parts(
+        source=audio_path,
+        provider="azure_mai",
+        max_audio_bytes=AZURE_MAI_MAX_AUDIO_BYTES,
+        max_duration_ms=AZURE_MAI_MAX_AUDIO_DURATION_MS,
+        request_shape={
+            "provider": "azure_mai",
+            "model": selected_model,
+            "api_version": _AZURE_MAI_API_VERSION,
+            "region": azure_mai_region(region),
+            "language": azure_mai_language_locales(language),
+            "word_timestamps": words,
+            "diarize": diarize,
+            "custom_vocabulary_sha256": hashlib.sha256(
+                json.dumps(azure_mai_phrase_list(custom_vocab), ensure_ascii=False).encode("utf-8")
+            ).hexdigest(),
+        },
+        transcribe=transcribe,
+        checkpoint=checkpoint,
+        timeout_secs=timeout_secs,
+        prepared_audio=prepared_audio,
+    )
 
 
 def _capture_time_mp3_enabled() -> bool:
@@ -197,6 +289,7 @@ def build_azure_mai_definition(
     custom_vocab: str | None = None,
     transcribe_style: str | None = None,
     diarize: bool = False,
+    request_word_timestamps: bool = False,
 ) -> dict[str, Any]:
     selected_model = azure_mai_model(model)
     definition: dict[str, Any] = {
@@ -214,6 +307,7 @@ def build_azure_mai_definition(
         definition["phraseList"] = {"phrases": phrases}
     if is_v2 and diarize:
         definition["diarization"] = {"enabled": True}
+    if is_v2 and (diarize or request_word_timestamps):
         definition["enhancedMode"]["modelOptions"] = {"timestamps": "word"}
     selected_style = azure_mai_transcribe_style(transcribe_style, model=selected_model)
     if selected_style is not None:
@@ -405,6 +499,7 @@ async def _azure_mai_http_raw_transport(
     speech_key: str,
     timeout_secs: float,
     audio_preparation_implementation: str | None = None,
+    on_success_response: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[int, str]:
     del audio_preparation_implementation
     data = aiohttp.FormData()
@@ -417,7 +512,21 @@ async def _azure_mai_http_raw_transport(
         timeout=aiohttp.ClientTimeout(total=timeout_secs),
     ) as resp:
         raw = await read_response_text_limited(resp, 64 * 1024 * 1024)
+        if resp.status < 400 and on_success_response is not None:
+            # Preserve a complete paid response before response cleanup can
+            # deliver cancellation, including the file wrapper's metadata.
+            await on_success_response(raw)
         return int(resp.status), raw
+
+
+def _parse_azure_mai_success_response(raw: str) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return {"text": raw}
+    return payload if isinstance(payload, dict) else {}
 
 
 async def transcribe_with_azure_mai(
@@ -438,6 +547,8 @@ async def transcribe_with_azure_mai(
     raw_transport: AzureMaiRawTransport | None = None,
     on_response_complete: Callable[[], None] | None = None,
     audio_preparation_implementation: str | None = None,
+    request_word_timestamps: bool = False,
+    on_success: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     region = validate_azure_mai_region(region)
     url = (
@@ -448,6 +559,7 @@ async def transcribe_with_azure_mai(
         language,
         model=model,
         custom_vocab=custom_vocab,
+        request_word_timestamps=request_word_timestamps,
         transcribe_style=transcribe_style,
         diarize=diarize,
     )
@@ -455,6 +567,21 @@ async def transcribe_with_azure_mai(
     _report_progress(on_progress, "Uploading audio...")
     _report_progress(on_progress, "Processing transcription...")
     transport = raw_transport or _azure_mai_http_raw_transport
+    received_payload: dict[str, Any] | None = None
+
+    async def receive_success(raw: str) -> None:
+        nonlocal received_payload
+        if on_response_complete is not None:
+            on_response_complete()
+        received_payload = _parse_azure_mai_success_response(raw)
+        if on_success is not None:
+            await on_success(received_payload)
+
+    # Custom raw transports retain their existing tuple/keyword contract.
+    # The built-in transport can persist before its response-context cleanup.
+    transport_options = (
+        {"on_success_response": receive_success} if raw_transport is None and on_success is not None else {}
+    )
     status, raw = await transport(
         session=session,
         url=url,
@@ -465,11 +592,12 @@ async def transcribe_with_azure_mai(
         speech_key=speech_key,
         timeout_secs=timeout_secs,
         audio_preparation_implementation=audio_preparation_implementation,
+        **transport_options,
     )
     # This boundary is intentionally before status handling and JSON parsing:
     # installed performance evidence measures controllable local tail latency
     # from the instant the complete raw provider response is available.
-    if on_response_complete is not None:
+    if on_response_complete is not None and received_payload is None:
         on_response_complete()
     if status >= 400:
         # Azure's MAI gateway sometimes wraps the decoder error in plain text.
@@ -493,13 +621,12 @@ async def transcribe_with_azure_mai(
             code=safe_code,
         )
 
-    if not raw:
-        return {}
-    try:
-        payload = json.loads(raw)
-    except Exception:
-        return {"text": raw}
-    return payload if isinstance(payload, dict) else {}
+    if received_payload is not None:
+        return received_payload
+    payload = _parse_azure_mai_success_response(raw)
+    if on_success is not None:
+        await on_success(payload)
+    return payload
 
 
 class AzureMaiTranscribeSTTService(STTService):

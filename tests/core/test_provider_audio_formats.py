@@ -39,6 +39,19 @@ def test_audio_formats_keep_container_and_codec_exact():
         coerce_audio_input_format("webm")
 
 
+def test_float_wav_is_recognized_only_as_a_source_to_convert():
+    source = AudioInputFormat.WAV_PCM32_FLOAT
+    assert source.container == AudioContainer.WAV
+    assert source.codec == AudioCodec.PCM_F32LE
+    assert exact_audio_input_format(AudioContainer.WAV, AudioCodec.PCM_F32LE) == source
+    for capability in PROVIDER_AUDIO_CAPABILITY_MATRIX:
+        assert source not in capability.batch_formats
+        assert source not in capability.realtime_formats
+        assert source not in capability.direct_passthrough_formats
+        assert source != capability.preferred_lossy_format
+        assert source != capability.preferred_lossless_format
+
+
 def test_generic_ogg_and_webm_evidence_does_not_grant_opus():
     capability = resolve_batch_provider_audio_capabilities("mistral_async", "voxtral-mini-2602")
     assert AudioContainer.OGG in capability.batch_generic_containers
@@ -204,7 +217,8 @@ def test_legacy_azure_override_retains_exact_capability_and_mp3_control():
 
     assert capability.capability_id == "azure_mai:llm_speech_batch:mai-transcribe-1.5"
     assert capability.revision == "provider-audio-formats-v2"
-    assert capability.max_upload_bytes == 300_000_000
+    # Logical file limit, enforced as multiple bounded provider requests.
+    assert capability.max_upload_bytes == 2 * 1024 * 1024 * 1024
     assert selection.audio_format is AudioInputFormat.MP3
     assert selection.mode is AudioSelectionMode.GENERATED
 
@@ -229,8 +243,10 @@ def test_matrix_entries_carry_evidence_date_and_revision():
     for capability in PROVIDER_AUDIO_CAPABILITY_MATRIX:
         assert capability.capability_id
         assert capability.revision == CAPABILITY_REVISION
-        if capability.model_family in {"MAI-Transcribe-2", "microsoft/mai-transcribe-2"}:
-            expected_date = date(2026, 9, 4)
+        if capability.provider in {"azure_mai", "openrouter_stt"} or (
+            capability.provider in {"soniox", "soniox_async"} and capability.route == "async_transcription"
+        ):
+            expected_date = date(2026, 10, 2)
         elif capability.provider in {"meta_stt", "meta_stt_async"}:
             expected_date = date(2026, 9, 2)
         elif capability.provider == "speechmatics_async":

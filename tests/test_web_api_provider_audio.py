@@ -261,8 +261,8 @@ async def test_openrouter_mai_freezes_exact_model_route_and_endpoint(monkeypatch
 
     assert route.model == "microsoft/mai-transcribe-2"
     assert route.provider_route == "audio_transcriptions"
-    assert route.response_shape == "final_text"
-    assert route.timestamp_mode == "estimated"
+    assert route.response_shape == "verbose_json_words"
+    assert route.timestamp_mode == "word"
     assert route.diarization_mode == "local_fallback_if_enabled"
     assert route.provider_audio_capability_id == ("openrouter_stt:audio_transcriptions:microsoft/mai-transcribe-2")
     assert (
@@ -323,6 +323,8 @@ async def test_queued_openrouter_legacy_route_survives_model_upgrade(tmp_path, w
     legacy = replace(
         current,
         model="microsoft/mai-transcribe-1.5",
+        response_shape="final_text",
+        timestamp_mode="estimated",
         provider_audio_capability_id="openrouter_stt:audio_transcriptions:microsoft/mai-transcribe-1.5",
     )
     job = store.enqueue(
@@ -373,6 +375,7 @@ async def test_file_preserves_received_azure_error_without_replaying(tmp_path: P
     store = JobStore(db_path=tmp_path / "jobs.db")
     controller = ScriberWebController(asyncio.get_running_loop(), job_store=store)
     source = tmp_path / "source.mp3"
+    source.write_bytes(b"owned-test-source")
     rec = _record(transcript_id="azure-response", transcript_type="file", source=source)
     job = store.enqueue(transcript_id=rec.id, job_type=JobType.FILE, payload={"path": str(source)})
     assert store.mark_running(job.id)

@@ -117,10 +117,10 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
         supports_live_streaming=False,
         supports_direct_file_upload=True,
         injects_immediately_in_live_mode=False,
-        # MAI currently returns timed phrases for Scriber's request, not words.
+        # This provider-wide hint must cover legacy 1.5 frozen routes too.
+        # Exact MAI-2 file routes request and validate words independently.
         supports_word_timestamps=False,
-        # The active adapter transcodes to mono 64-kbit/s MP3 before upload;
-        # five hours remain below MAI's documented 300-MB file boundary.
+        # File finalization splits MP3 at the active REST byte/duration bounds.
         supports_five_hour_meeting=True,
     ),
     "gladia": ProviderCapabilities(
@@ -227,8 +227,8 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
         supports_live_streaming=False,
         supports_direct_file_upload=True,
         injects_immediately_in_live_mode=False,
-        # OpenRouter's Microsoft MAI route returns final text only. Do not
-        # inherit OpenAI-compatible verbose timestamps or diarization.
+        # Model-specific MAI-2 routes request verbose words. The provider-wide
+        # hint remains false because frozen MAI-1.5 supports only final text.
         supports_batch_diarization=False,
         supports_word_timestamps=False,
         # OpenRouter does not publish an integration contract proving a whole

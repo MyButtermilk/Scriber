@@ -1,5 +1,7 @@
 import { useParams, Link, useLocation } from "wouter";
 import { TranscriptionDiarizationNotice } from "@/components/transcription-diarization-notice";
+import { TranscriptionBoundaryNotice } from "@/components/transcription-boundary-notice";
+import { FileTranscriptResumeButton } from "@/components/file-transcript-resume-button";
 import { ArrowLeft, Download, Copy, Check, Sparkles, FileText, Youtube, ExternalLink } from "lucide-react";
 import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { Button } from "@/components/ui/button";
@@ -858,6 +860,11 @@ export default function TranscriptDetail() {
                 onStop={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })}
               />
             )}
+            {transcript.type === "file" &&
+              transcript.resumeAvailable === true &&
+              (transcript.status === "failed" || transcript.status === "stopped") && (
+                <FileTranscriptResumeButton key={transcript.id} transcriptId={transcript.id} />
+              )}
             {showHeaderSummaryAction && (
               <div className="hidden md:block">
                 <SummarizeButton
@@ -924,7 +931,9 @@ export default function TranscriptDetail() {
                     : undefined
                 }
               />
-              {transcript.type === "file" && <FileTranscriptRetryButton transcriptId={id!} />}
+              {transcript.type === "file" && transcript.resumeAvailable !== true && (
+                <FileTranscriptRetryButton key={transcript.id} transcriptId={id!} />
+              )}
               {technicalFailureMessage && (
                 <p className="text-xs text-muted-foreground px-1">
                   {t("Technical details")}: {technicalFailureMessage}
@@ -945,6 +954,7 @@ export default function TranscriptDetail() {
           )}
 
           <TranscriptionDiarizationNotice code={transcript.diarizationFallback} />
+          <TranscriptionBoundaryNotice warnings={transcript.chunkBoundaryWarnings} />
           <div key={id} className="transcript-summary-layout">
             {showSummaryToc && (
               <SummaryTableOfContents

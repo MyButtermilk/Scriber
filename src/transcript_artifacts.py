@@ -37,7 +37,7 @@ from src.provider_transcript import azure_mai_used_text_fallback, has_speaker_ev
 from src.youtube_download import YouTubeCaptionCue
 
 PARSER_ID = "scriber-provider-transcript"
-PARSER_VERSION = "2"
+PARSER_VERSION = "3"
 CAPTION_PARSER_ID = "youtube-caption-cues"
 CAPTION_PARSER_VERSION = "1"
 
@@ -74,6 +74,8 @@ class FrozenTranscriptionRoute:
             "language": self.language,
             "custom_vocab": self.custom_vocab,
             "transport": self.transport,
+            "response_shape": self.response_shape,
+            "timestamp_mode": self.timestamp_mode,
             "provider_route": self.provider_route,
             "audio_input_format": (self.audio_input_format.value if self.audio_input_format else None),
             "provider_audio_capability_id": self.provider_audio_capability_id,
@@ -210,8 +212,9 @@ def freeze_provider_route(
         "meta_stt",
         "meta_stt_async",
     }
-    final_text_only = key in {"modulate", "modulate_async", "openrouter_stt"}
     resolved_model = str(model or provider_batch_model(key)).strip()
+    openrouter_words = key == "openrouter_stt" and resolved_model == "microsoft/mai-transcribe-2"
+    final_text_only = key in {"modulate", "modulate_async"} or (key == "openrouter_stt" and not openrouter_words)
     streaming_only = key in {
         "assemblyai_realtime",
         "deepgram",
@@ -365,10 +368,16 @@ def freeze_provider_route(
         model=resolved_model,
         transport=resolved_transport,
         language=str(Config.LANGUAGE if language is None else language) or "auto",
-        response_shape=("final_text" if final_text_only else "provider_segments_or_words"),
-        timestamp_mode=("estimated" if final_text_only else "word_or_segment"),
+        response_shape=(
+            "verbose_json_words"
+            if openrouter_words
+            else "final_text"
+            if final_text_only
+            else "provider_segments_or_words"
+        ),
+        timestamp_mode=("word" if openrouter_words else "estimated" if final_text_only else "word_or_segment"),
         diarization_mode=(
-            ("local_fallback_if_enabled" if final_text_only else "native_if_evidenced_else_local")
+            ("local_fallback_if_enabled" if final_text_only or openrouter_words else "native_if_evidenced_else_local")
             if diarization_requested
             else "disabled"
         ),
@@ -511,6 +520,26 @@ def stage_units_from_provider(
         evidence["sourceMediaDurationMs"] = int(duration_ms)
     if provider == "azure_mai" and azure_mai_used_text_fallback(payload):
         evidence["diarizationFallback"] = "diarization_unavailable"
+    merged = payload.get("_scriberMerged") if isinstance(payload, dict) else None
+    if isinstance(merged, dict):
+        tolerance = merged.get("audioBoundaryToleranceMs")
+        if type(tolerance) is int and 0 <= tolerance <= 1_000:
+            evidence["audioBoundaryToleranceMs"] = tolerance
+        warnings = merged.get("boundaryWarnings")
+        if isinstance(warnings, list):
+            safe_warnings = []
+            for warning in warnings:
+                if not isinstance(warning, dict) or warning.get("code") not in {
+                    "overlap_conflicting_words",
+                    "overlap_missing_word_timestamps",
+                }:
+                    continue
+                fields = ("leftPartIndex", "rightPartIndex", "startMs", "endMs")
+                if any(type(warning.get(field)) is not int or warning[field] < 0 for field in fields):
+                    continue
+                safe_warnings.append({"code": warning["code"], **{field: warning[field] for field in fields}})
+            if safe_warnings:
+                evidence["chunkBoundaryWarnings"] = safe_warnings
     return tuple(units), evidence
 
 

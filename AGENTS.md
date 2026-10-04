@@ -93,7 +93,8 @@ Backend and runtime:
   connection stays visible in `status()`. File Transcription owns multipart
   parsing, bounded disk streaming, ffmpeg preparation, workspace cleanup, and
   the one ownership hand-off to its durable job. Its controller port exposes
-  only the immutable admission plan, a public workspace root, and that hand-off;
+  only the immutable admission plan, a public workspace root, that hand-off,
+  and explicit checkpointed File-job resume;
   the route must never read `_downloads_dir` or mutable provider settings.
   WebSocket routes own browser-origin validation, initial state delivery, ping
   handling, and the add/remove-client lifecycle behind a four-member controller
@@ -190,6 +191,10 @@ Backend and runtime:
   only explicit retry may allocate a new attempt after failure. The first
   subscription queues its latest episode, subsequent new episodes queue while
   the app runs. Preserve the per-episode/cache limits and cancellation barriers.
+  File's `stopped` status is terminal unsuccessful work; explicit episode retry
+  allocates a fresh transcript identity. Summary registration ends in the
+  summary function's identity-checked `finally`, even when its caller is a
+  persistent podcast worker.
   `src/api/podcast_routes.py` owns the strict controller-free HTTP boundary and
   local collaborator port; never add scheduler logic or private paths to the UI.
 - `src/data/job_store.py`: persistent file/YouTube jobs.
@@ -205,6 +210,10 @@ Backend and runtime:
   returns the pending `CancelledError` beside the result so a caller can
   record the ownership it just acquired before unwinding. Call these directly
   rather than through aliases in `web_api.py`.
+  Controller maintenance SQLite workers use this barrier; shutdown joins the
+  maintenance task before persistence-store close even after the general drain
+  timeout or repeated cancellation. Synchronous shutdown retains its task
+  reference until that join can finish.
 - `src/runtime/task_supervisor.py`: event-loop-local ownership for intentionally
   concurrent asyncio work. It retains tasks, observes every result, reports
   failures through the loop handler, reserves thread-safe submissions before
@@ -521,7 +530,16 @@ Packaging and scripts:
   configure Tauri with SHA-256 plus an HTTPS RFC 3161 timestamp, and validate
   the desktop, backend, NSIS installer, and timestamp/publisher evidence.
   Never call an updater-signed-only installer Authenticode-signed.
-- `.github/workflows/release-windows.yml`: adaptive release DAG. Planning may
+- `.github/workflows/release-windows.yml`: adaptive release DAG.
+  Official tags additionally require a completed `release-qualification.yml`
+  main dispatch for the identical SHA, created within 24 hours and completed
+  before the tag run began. That read-only pre-tag workflow runs the same six
+  reusable quality/browser gates and API contract. Create tags only through
+  `scripts/ci/pre_tag_qualification.py create-tag` after it succeeds. Planning
+  and the pre-signing boundary revalidate its run/attempt/provenance and jobs;
+  missing, failed, pending, stale or post-tag evidence cannot fall back to local
+  checks. Existing signing, quality, installer and publication gates remain mandatory.
+  Planning may
   select canonical main quality evidence for the identical SHA, under 24 hours
   old, with immutable reusable-workflow provenance. Missing evidence starts
   the complete local suite; a known failed matching run blocks release.
@@ -1243,6 +1261,9 @@ Packaging and scripts:
 - File-backed direct STT probes both container and codec before selecting
   provider input. New batch encodes prefer mono 64-kbit/s MP3 when the exact
   route accepts it; convert lossless inputs instead of uploading large WAVs.
+  Recognize Float32 PCM WAV as decodable source audio, then normalize it to the
+  route's verified upload representation; recognition is not provider
+  pass-through capability. Verify the generated container and codec strictly.
   Preserve allowed lossy originals byte-for-byte, including MP3 and verified
   Opus/AAC, to avoid increasing size or adding another lossy encode. Azure MAI
   and OpenRouter retain their narrower MP3-only original policy. Meta Voice
@@ -1260,6 +1281,30 @@ Packaging and scripts:
   provider route, exact format, capability id/revision, selection mode, and
   implementation before the provider request; recovery must not switch any of
   those fields silently.
+- Long-file limits are specific to the active endpoint: OpenRouter MAI multipart
+  is 25,000,000 bytes, with a conservative MAI2-only two-hour model-card bound;
+  Azure Speech REST `2025-10-15` is below 250 MB and two
+  hours per request. Soniox async documents 300 minutes, but no numerical
+  per-file byte ceiling; its 10-GB stored-file quota is not an upload limit.
+  Keep local ingestion bounds distinct from these provider limits. See the
+  dated official-source table in `docs/ARCHITECTURE.md` before changing them.
+  Preserve fitting files intact. Necessary audio parts retain a versioned
+  original-time manifest and short overlap, prefer locally detected pauses,
+  and are individually size/duration checked before HTTP. Only exact
+  `microsoft/mai-transcribe-2` OpenRouter requests use `verbose_json` plus word
+  timestamps; MAI-1.5 and frozen text-only attempts keep their own contract.
+  Merge by monotone timestamp-and-text evidence, never global string dedup or
+  an LLM rewrite. Preserve uncertain text and project boundary warnings outside
+  transcript speech. Scope provider speaker IDs to each request until overlap
+  evidence supports a mapping.
+- File-job part checkpoints bind the exact source hash, frozen route, request
+  shape, and manifest. Validate and commit each received result before
+  cancellable response/request cleanup or starting the next part. Explicit
+  resume reuses paid results and must refuse ambiguous in-flight
+  requests; never clear a no-replay fence merely because a partial result
+  exists. Retain owned source audio while resume requires it, and delete the
+  checkpoints with transcript deletion. Soniox can resume known remote IDs
+  through polling; a lost create response is not an idempotent request.
 - Caption-first YouTube jobs persist the audio STT route only as
   `plannedFallbackRoute`. They select one actual `executionRoute` after caption
   resolution, and `executedRoute` must later match that selection. A successful
@@ -1721,6 +1766,19 @@ Packaging and scripts:
   repeated-cancellation barrier. Stop reserves a closed finalizer task gate
   before touching native capture; only a durable `finalizing` commit may open
   that gate and release a pending request cancellation.
+  The controller supervisor owns the whole Stop settlement through SQLite
+  writer contention. HTTP waits at most 30 seconds before reporting pending
+  local recovery; request cancellation still waits for ownership settlement.
+  Backend shutdown stops subsequent local retries after the active SQLite call,
+  retaining the claim and durable phase for startup recovery.
+  Failed imports settle the durable error and uncommitted staging removal
+  within one cancellation barrier. Startup removes terminal upload leftovers
+  only when no committed original or Meeting workspace owns their directory.
+- Retry the initial Meeting finalization by projecting its completed canonical
+  head when route, reprocess generation, and source-audio identities match.
+  Canonical stage evidence binds every input track's PCM hash, samples,
+  duration, and timeline origin, including tracks without speech. A projection
+  failure must not repeat an already committed provider request.
 - Startup recovery must preserve workflow phase: only `starting`, `recording`,
   and `paused` become resumable `interrupted` capture. `stopping` and
   `finalizing` become `finalization_failed`, and `analyzing` becomes

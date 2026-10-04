@@ -65,6 +65,7 @@ class _Controller:
         self._root = root
         self._plan = plan or _plan()
         self.started: list[tuple[Path, str, FileUploadPlan]] = []
+        self.resume_checkpointed_transcription = AsyncMock(return_value=True)
 
     @property
     def file_upload_root(self) -> Path:
@@ -116,9 +117,10 @@ async def test_file_upload_reaches_durable_admission_through_the_domain_route(tm
 
 
 @pytest.mark.asyncio
-async def test_openrouter_mp3_bypasses_lossy_ingest_compression(monkeypatch, tmp_path):
-    route = replace(_route(), provider="openrouter_stt", model="microsoft/mai-transcribe-2")
-    plan = FileUploadPlan(route=route, limits=file_upload_limits("openrouter_stt", source_is_video=False))
+@pytest.mark.parametrize("provider", ["openrouter_stt", "azure_mai", "soniox", "soniox_async"])
+async def test_provider_mp3_bypasses_lossy_ingest_compression(monkeypatch, tmp_path, provider):
+    route = replace(_route(), provider=provider, model="microsoft/mai-transcribe-2")
+    plan = FileUploadPlan(route=route, limits=file_upload_limits(provider, source_is_video=False))
     controller = _Controller(tmp_path / "files", plan=plan)
     compressor = AsyncMock(side_effect=AssertionError("An MP3 must reach the chunking adapter unchanged"))
     monkeypatch.setattr(file_transcription_routes, "maybe_compress_audio_upload", compressor)
@@ -467,9 +469,9 @@ def test_file_route_port_matches_the_production_controller(assert_protocol_contr
     assert_protocol_contract(
         FileTranscriptionControllerPort,
         ScriberWebController,
-        methods={"plan_file_upload", "start_file_transcription"},
+        methods={"plan_file_upload", "start_file_transcription", "resume_checkpointed_transcription"},
         properties={"file_upload_root"},
-        returns={"plan_file_upload": FileUploadPlan},
+        returns={"plan_file_upload": FileUploadPlan, "resume_checkpointed_transcription": bool},
     )
 
 
@@ -519,6 +521,52 @@ class _ChunkUploadField:
         if not self._chunks:
             return b""
         return self._chunks.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_resume_file_uses_the_existing_transcript_identity(tmp_path: Path) -> None:
+    controller = _Controller(tmp_path)
+    client = await _client(controller)
+    try:
+        response = await client.post("/api/transcripts/retained-file/resume-file")
+        assert response.status == 202
+        assert await response.json() == {"success": True, "id": "retained-file"}
+    finally:
+        await client.close()
+    controller.resume_checkpointed_transcription.assert_awaited_once_with("retained-file")
+    assert controller.started == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", [False, ValueError("Private C:/source/changed.wav")])
+async def test_resume_file_rejects_ineligible_checkpoint_without_disclosing_source(tmp_path: Path, outcome) -> None:
+    controller = _Controller(tmp_path)
+    if isinstance(outcome, Exception):
+        controller.resume_checkpointed_transcription.side_effect = outcome
+    else:
+        controller.resume_checkpointed_transcription.return_value = outcome
+    client = await _client(controller)
+    try:
+        response = await client.post("/api/transcripts/retained-file/resume-file")
+        assert response.status == 409
+        assert await response.json() == {
+            "message": "This transcription cannot be safely resumed from its saved progress."
+        }
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_file_hides_unexpected_failure_details(tmp_path: Path) -> None:
+    controller = _Controller(tmp_path)
+    controller.resume_checkpointed_transcription.side_effect = RuntimeError("private storage details")
+    client = await _client(controller)
+    try:
+        response = await client.post("/api/transcripts/retained-file/resume-file")
+        assert response.status == 500
+        assert await response.json() == {"message": "Failed to resume transcription."}
+    finally:
+        await client.close()
 
 
 def test_multipart_content_length_allows_framing_overhead_at_file_limit():

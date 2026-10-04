@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import struct
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,11 +10,113 @@ from types import SimpleNamespace
 import pytest
 
 from src import audio_prepare
+from src.api import file_transcription_routes
 from src.core.provider_audio_formats import (
     AudioInputFormat,
     AudioSelectionMode,
     UnsupportedProviderAudioRoute,
 )
+from src.runtime.media_tools import find_media_tool
+
+
+@pytest.fixture
+def float_wav_source(tmp_path: Path) -> Path:
+    for tool in ("ffmpeg", "ffprobe"):
+        if find_media_tool(tool) is None:
+            pytest.skip(f"{tool} is required for the real float-WAV preparation regression")
+    # Build IEEE float WAV directly: the shipped FFmpeg supports its decoder,
+    # but intentionally need not include a float-WAV encoder for fixtures.
+    sample_rate = 16_000
+    samples = b"".join(
+        struct.pack("<f", 0.25 * math.sin(2 * math.pi * 440 * i / sample_rate)) for i in range(sample_rate)
+    )
+    fmt = struct.pack("<HHIIHHH", 3, 1, sample_rate, sample_rate * 4, 4, 32, 0)
+    body = (
+        b"WAVEfmt "
+        + struct.pack("<I", len(fmt))
+        + fmt
+        + b"fact"
+        + struct.pack("<II", 4, sample_rate)
+        + b"data"
+        + struct.pack("<I", len(samples))
+        + samples
+    )
+    source = tmp_path / "float.wav"
+    source.write_bytes(b"RIFF" + struct.pack("<I", len(body)) + body)
+    return source
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,model,expected",
+    [
+        ("azure_mai", "MAI-Transcribe-2", AudioInputFormat.MP3),
+        ("meta_stt", "muse-voice-transcribe-1.0", AudioInputFormat.WAV_PCM16),
+    ],
+)
+async def test_small_float_wav_is_converted_after_upload_admission(float_wav_source, provider, model, expected):
+    source = float_wav_source
+    original = source.read_bytes()
+    admitted = await file_transcription_routes.maybe_compress_audio_upload(source)
+    assert admitted == source
+    async with audio_prepare.prepare_provider_audio_file(admitted, provider=provider, model=model) as prepared:
+        generated = prepared.path
+        assert prepared.source_format.value == "wav_pcm32_float"
+        assert prepared.selected_format == expected
+        assert prepared.selection_mode == AudioSelectionMode.GENERATED
+        assert prepared.generated
+        assert generated != source
+        probe = audio_prepare.probe_audio_input_file(generated)
+        assert probe.audio_format == expected
+        assert probe.codec_name != "pcm_f32le"
+        assert probe.channels == 1
+        assert probe.sample_rate == 16_000
+        assert prepared.duration_ms == probe.duration_ms
+        assert prepared.verified_mtime_ns == generated.stat().st_mtime_ns
+    assert not generated.exists()
+    assert source.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_float_wav_precompressed_upload_control_also_prepares(float_wav_source, monkeypatch):
+    original = float_wav_source.read_bytes()
+    upload = float_wav_source.with_name("upload-copy.wav")
+    upload.write_bytes(original)
+    monkeypatch.setattr(file_transcription_routes, "UPLOAD_COMPRESSION_THRESHOLD_BYTES", 1)
+    admitted = await file_transcription_routes.maybe_compress_audio_upload(upload)
+    assert admitted != upload
+    assert not upload.exists()
+    compressed = admitted.read_bytes()
+    assert len(compressed) < len(original)
+    assert audio_prepare.probe_audio_input_file(admitted).audio_format == AudioInputFormat.WEBM_OPUS
+    async with audio_prepare.prepare_provider_audio_file(
+        admitted, provider="azure_mai", model="MAI-Transcribe-2"
+    ) as prepared:
+        generated = prepared.path
+        assert prepared.selected_format == AudioInputFormat.MP3
+        assert audio_prepare.probe_audio_input_file(generated).audio_format == AudioInputFormat.MP3
+    assert not generated.exists()
+    assert admitted.read_bytes() == compressed
+    assert float_wav_source.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_generated_float_wav_cannot_masquerade_as_provider_pcm16(float_wav_source, monkeypatch):
+    original = float_wav_source.read_bytes()
+    generated = []
+
+    async def generate(_command, target):
+        generated.append(target)
+        target.write_bytes(original)
+
+    monkeypatch.setattr(audio_prepare, "_run_generated_preparation", generate)
+    with pytest.raises(audio_prepare.ProviderAudioPreparationError, match="exact container/codec"):
+        async with audio_prepare.prepare_provider_audio_file(
+            float_wav_source, provider="meta_stt", model="muse-voice-transcribe-1.0"
+        ):
+            pytest.fail("A provider requiring PCM16 must never receive float WAV")
+    assert generated and not generated[0].exists()
+    assert float_wav_source.read_bytes() == original
 
 
 def _probe(
@@ -133,9 +237,11 @@ def test_selection_passes_through_exact_azure_mp3() -> None:
 async def test_mai_tagged_mp3_remux_preserves_audio_and_cleans_copy(monkeypatch, tmp_path: Path) -> None:
     source = tmp_path / "podcast.mp3"
     source.write_bytes(b"ID3metadata-audio")
-    tagged = replace(_probe(AudioInputFormat.MP3), has_id3_metadata=True)
+    tagged = replace(_probe(AudioInputFormat.MP3, byte_length=source.stat().st_size), has_id3_metadata=True)
     monkeypatch.setattr(
-        audio_prepare, "probe_audio_input_file", lambda path: tagged if path == source else _probe(AudioInputFormat.MP3)
+        audio_prepare,
+        "probe_audio_input_file",
+        lambda path: tagged if path == source else _probe(AudioInputFormat.MP3, byte_length=path.stat().st_size),
     )
     monkeypatch.setattr(audio_prepare, "require_media_tool", lambda _tool: "ffmpeg")
     commands = []
@@ -205,7 +311,7 @@ async def test_generated_preparation_is_cleaned(monkeypatch, tmp_path: Path) -> 
     def probe(path: Path):
         return _probe(
             AudioInputFormat.OGG_OPUS if Path(path) == source else AudioInputFormat.MP3,
-            byte_length=6,
+            byte_length=Path(path).stat().st_size,
         )
 
     monkeypatch.setattr(
@@ -248,7 +354,7 @@ async def test_generated_preparation_rejects_wrong_container_codec(
     def probe(path: Path):
         return _probe(
             AudioInputFormat.OGG_OPUS if Path(path) == source else AudioInputFormat.WAV_PCM16,
-            byte_length=6,
+            byte_length=Path(path).stat().st_size,
         )
 
     async def generate(_command: list[str], target: Path) -> None:
@@ -361,6 +467,7 @@ async def test_openrouter_preparation_rejects_oversize_output_and_cleans_only_ge
         "probe_audio_input_file",
         lambda path: _probe(
             AudioInputFormat.WEBM_OPUS if path == source else AudioInputFormat.MP3,
+            byte_length=path.stat().st_size,
         ),
     )
     monkeypatch.setattr(audio_prepare, "require_media_tool", lambda _tool: "ffmpeg")

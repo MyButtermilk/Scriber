@@ -1088,9 +1088,16 @@ async def test_gemini_direct_uses_frozen_model_after_config_changes(monkeypatch,
 @pytest.mark.asyncio
 @pytest.mark.parametrize("diarize", [True, False])
 async def test_azure_mai_direct_uses_frozen_model_and_vocab_after_config_changes(monkeypatch, tmp_path, diarize):
+    from src.audio_prepare import ProbedAudioInput
+    from src.core.provider_audio_formats import AudioInputFormat
+
     source = tmp_path / "azure.mp3"
     source.write_bytes(b"audio")
     captured = {}
+    monkeypatch.setattr(
+        "src.openrouter_audio.probe_audio_input_file",
+        lambda path: ProbedAudioInput(AudioInputFormat.MP3, "mp3", "mp3", 16_000, 1, 1_000, path.stat().st_size),
+    )
 
     async def fake_transcribe(**kwargs):
         captured.update(kwargs)

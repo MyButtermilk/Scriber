@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterable
 from typing import Any
+
+from src.transcription_merge import text_words_cover_transcript
 
 _GEMINI_OFFSET_RE = re.compile(r"^(?:0|[1-9]\d*)(?:\.\d+)?s$")
 AZURE_MAI_DIARIZATION_FALLBACK_KEY = "_scriberDiarizationFallback"
@@ -16,7 +19,8 @@ def azure_mai_used_text_fallback(payload: Any) -> bool:
 
 def _number(value: Any) -> float | None:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
+        number = float(value)
+        return number if math.isfinite(number) else None
     return None
 
 
@@ -265,7 +269,7 @@ def group_provider_words(
                 "speakerKey": speaker_key,
                 "speakerLabel": speaker,
                 "startMs": origin_ms + group[0]["startMs"],
-                "endMs": origin_ms + group[-1]["endMs"],
+                "endMs": origin_ms + max(word["endMs"] for word in group),
                 "text": text,
                 "confidence": sum(confidences) / len(confidences) if confidences else None,
                 "alignmentQuality": group_quality,
@@ -280,6 +284,8 @@ def normalize_provider_segments(provider: str, payload: Any, source: str, origin
     if not isinstance(payload, dict):
         return []
     provider = str(provider).lower()
+    if "_scriberMerged" in payload:
+        return group_provider_words(_merged_words(payload), source, origin_ms)
 
     if provider in {"meta_stt", "meta_stt_async"}:
         turns = payload.get("turns", [])
@@ -399,6 +405,9 @@ def normalize_provider_segments(provider: str, payload: Any, source: str, origin
             _timed_items(words, start_key="start", end_key="end", scale=1_000), source, origin_ms
         )
 
+    if provider == "openrouter_stt":
+        return group_provider_words(_openrouter_words(payload), source, origin_ms)
+
     if provider == "openai_async":
         words = _timed_items(payload.get("words", []), start_key="start", end_key="end", scale=1_000)
         if words:
@@ -452,7 +461,10 @@ def normalize_provider_words(provider: str, payload: Any, origin_ms: int = 0) ->
     key = str(provider or "").strip().lower()
     words: list[dict[str, Any]] = []
     concatenate = False
-    if key in {"soniox", "soniox_async"}:
+    if "_scriberMerged" in payload:
+        words = _merged_words(payload)
+        alignment_quality = "exact_word"
+    elif key in {"soniox", "soniox_async"}:
         words = _timed_items(payload.get("tokens", []), start_key="start_ms", end_key="end_ms", scale=1)
         concatenate = True
         alignment_quality = "exact_word"
@@ -491,6 +503,9 @@ def normalize_provider_words(provider: str, payload: Any, origin_ms: int = 0) ->
             source_items = []
         words = _timed_items(source_items, start_key="start", end_key="end", scale=1_000)
         alignment_quality = "exact_word"
+    elif key == "openrouter_stt":
+        words = _openrouter_words(payload)
+        alignment_quality = "exact_word"
     elif key == "openai_async":
         source_items = payload.get("words") or payload.get("segments") or []
         words = _timed_items(source_items, start_key="start", end_key="end", scale=1_000)
@@ -504,4 +519,57 @@ def normalize_provider_words(provider: str, payload: Any, origin_ms: int = 0) ->
         word["endMs"] += max(0, int(origin_ms))
         word["concatenate"] = concatenate
         word.setdefault("alignmentQuality", alignment_quality)
+    return words
+
+
+def _openrouter_words(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_words = payload.get("words")
+    if not isinstance(raw_words, list):
+        return []
+    if any(
+        not isinstance(word, dict)
+        or not isinstance(word.get("text") or word.get("punctuated_word") or word.get("word"), str)
+        for word in raw_words
+    ):
+        return []
+    words = _timed_items(raw_words, start_key="start", end_key="end", scale=1_000)
+    if len(words) != len(raw_words) or not _complete_word_sequence(words, payload.get("text")):
+        return []
+    return words
+
+
+def _complete_word_sequence(words: list[dict[str, Any]], text: Any) -> bool:
+    if not isinstance(text, str) or not text_words_cover_transcript(text, [word["text"] for word in words]):
+        return False
+    previous_start = 0
+    for word in words:
+        if word["startMs"] < previous_start:
+            return False
+        previous_start = word["startMs"]
+    return True
+
+
+def _merged_words(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Only complete merged evidence can replace the preserved full text."""
+    merged = payload.get("_scriberMerged")
+    if not isinstance(merged, dict) or merged.get("wordTimingComplete") is not True:
+        return []
+    raw_words = merged.get("words")
+    if not isinstance(raw_words, list):
+        return []
+    if any(
+        not isinstance(word, dict)
+        or not isinstance(word.get("text"), str)
+        or type(word.get("startMs")) is not int
+        or type(word.get("endMs")) is not int
+        for word in raw_words
+    ):
+        return []
+    words = _timed_items(raw_words, start_key="startMs", end_key="endMs", scale=1)
+    if len(words) != len(raw_words) or not _complete_word_sequence(words, payload.get("text")):
+        return []
+    if "text" in merged and not _complete_word_sequence(words, merged["text"]):
+        return []
+    for word in words:
+        word["alignmentQuality"] = "exact_word"
     return words

@@ -318,4 +318,15 @@ export const transcriptionTranslations = {
   "Transcription failed.": "Die Transkription ist fehlgeschlagen.",
   "YouTube transcription failed": "YouTube-Transkription fehlgeschlagen",
   "{{filename}} is ready.": "{{filename}} ist bereit.",
+  "Resume transcription": "Transkription fortsetzen",
+  "Resuming...": "Wird fortgesetzt...",
+  "Transcription resumed": "Transkription wird fortgesetzt",
+  "Continuing from saved progress. Completed parts will be reused.":
+    "Der gespeicherte Fortschritt wird fortgesetzt. Fertige Teile werden wiederverwendet.",
+  "Could not resume transcription": "Transkription konnte nicht fortgesetzt werden",
+  "Failed to resume transcription.": "Die Transkription konnte nicht fortgesetzt werden.",
+  "This transcription cannot be safely resumed from its saved progress.":
+    "Diese Transkription kann nicht sicher vom gespeicherten Fortschritt aus fortgesetzt werden.",
+  "Some joins between audio parts need review.": "Einige Übergänge zwischen Audioteilen müssen geprüft werden.",
+  "Check these times in the original recording:": "Prüfe diese Zeitstellen in der Originalaufnahme:",
 } satisfies TranslationCatalog;

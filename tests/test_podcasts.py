@@ -549,14 +549,15 @@ async def test_service_serializes_queue_requests_and_reports_failures_without_au
 
 
 @pytest.mark.asyncio
-async def test_failed_transcript_retry_uses_new_identity_and_retained_download(tmp_path: Path) -> None:
+@pytest.mark.parametrize("status", ["failed", "stopped", "canceled", "cancelled"])
+async def test_failed_transcript_retry_uses_new_identity_and_retained_download(tmp_path: Path, status: str) -> None:
     controller = FakeController(tmp_path)
     transport = FakeTransport()
     service = PodcastService(tmp_path / "podcasts", PodcastProcessor(controller), transport=transport, startup_delay=0)
     subscription = await service.subscribe("https://example.com/feed", auto_process=False)
     episode = (await service.episodes(subscription))["items"][0]
     old_id = "a" * 32
-    controller.views[old_id] = _view(old_id, status="failed")
+    controller.views[old_id] = _view(old_id, status=status)
     service._audio.mkdir(parents=True, exist_ok=True)
     (service._audio / f"{episode['id']}.mp3").write_bytes(b"audio-fixture")
     service._store.update(episode["id"], status="failed", transcript_id=old_id, downloaded_bytes=13)
@@ -573,9 +574,115 @@ async def test_failed_transcript_retry_uses_new_identity_and_retained_download(t
         assert retried["transcript_id"] != old_id
         assert controller.started == controller.summaries == [retried["transcript_id"]]
         assert transport.downloads == []
-        assert controller.views[old_id].status == "failed"
+        assert controller.views[old_id].status == status
     finally:
         await service.close()
+
+
+@pytest.mark.asyncio
+async def test_stopped_transcript_fails_episode_and_same_worker_processes_next(tmp_path: Path) -> None:
+    controller = FakeController(tmp_path)
+    service = PodcastService(
+        tmp_path / "podcasts",
+        PodcastProcessor(controller, poll_seconds=0.001),
+        transport=FakeTransport(_feed(2, 1)),
+        startup_delay=0,
+    )
+    subscription = await service.subscribe("https://example.com/feed", auto_process=False)
+    first, second = (await service.episodes(subscription))["items"]
+    stopped_id = "a" * 32
+    controller.views[stopped_id] = _view(stopped_id, status="stopped")
+    # Resume the already admitted attempt, as happens when cancellation finishes
+    # between podcast polling and a service restart.
+    service._store.update(first["id"], status="queued", transcript_id=stopped_id)
+    assert await service.queue(second["id"])
+    worker = service._supervisor.spawn(service._run(), name="podcast_test_worker")
+    try:
+        async with asyncio.timeout(10):
+            while (await service.library())["activeCount"]:
+                await asyncio.sleep(0.01)
+        rows = {row["id"]: row for row in (await service.episodes(subscription))["items"]}
+        failed = rows[first["id"]]
+        assert failed["status"] == "failed"
+        assert "transcription failed" in failed["error"]
+        assert failed["transcript_id"] == stopped_id
+        completed = rows[second["id"]]
+        assert completed["status"] == "completed"
+        assert controller.started == controller.summaries == [completed["transcript_id"]]
+        assert not worker.done()
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_podcast_summary_releases_ownership_before_persistent_worker_exits(tmp_path: Path, monkeypatch) -> None:
+    from src import database, summarization
+    from src.web_api import ScriberWebController, TranscriptRecord
+
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")
+    controller = ScriberWebController(asyncio.get_running_loop())
+    summarize = AsyncMock(return_value="A summary")
+    monkeypatch.setattr(summarization, "summarize_text", summarize)
+    service = PodcastService(
+        tmp_path / "podcasts",
+        PodcastProcessor(controller, poll_seconds=0.001),
+        transport=FakeTransport(_feed(2, 1)),
+        startup_delay=0,
+    )
+    try:
+        subscription = await service.subscribe("https://example.com/feed", auto_process=False)
+        first, second = (await service.episodes(subscription))["items"]
+        for index, episode in enumerate((first, second), start=1):
+            record = TranscriptRecord(
+                id=str(index) * 32,
+                title=episode["title"],
+                date="Today",
+                duration="02:00",
+                status="completed",
+                type="file",
+                language="en",
+                content=f"Completed transcript {index}",
+            )
+            controller._add_to_history(record)
+            await controller._save_transcript_to_db_async(record, require_success=True)
+            service._store.update(episode["id"], status="available", transcript_id=record.id)
+        assert await service.queue(first["id"])
+        worker = service._supervisor.spawn(service._run(), name="podcast_test_worker")
+
+        async def wait_idle() -> None:
+            async with asyncio.timeout(10):
+                while (await service.library())["activeCount"]:
+                    await asyncio.sleep(0.01)
+
+        await wait_idle()
+        first_id, second_id = "1" * 32, "2" * 32
+        assert service._store.episode(first["id"])["status"] == "completed"
+        assert database.get_transcript(first_id)["summary"] == "A summary"
+        assert not worker.done()
+        assert first_id not in controller._summary_tasks
+
+        # A different task can immediately request another summary, and deleting
+        # that old transcript must not cancel the idle podcast subscription worker.
+        outcome = await controller.summarize_transcript(first_id)
+        assert outcome.kind == "completed"
+        deleted, _ = await controller.delete_transcript_record(first_id)
+        assert deleted == "deleted"
+        assert database.get_transcript(first_id) is None
+        assert not worker.done()
+        assert await service.queue(second["id"])
+        await wait_idle()
+        assert service._store.episode(second["id"])["status"] == "completed"
+        assert database.get_transcript(second_id)["summary"] == "A summary"
+        assert summarize.await_count == 3
+        assert not worker.done()
+        assert controller._summary_tasks == {}
+    finally:
+        await service.close()
+        await controller.drain_background_tasks_for_shutdown(timeout_seconds=1)
+        controller.shutdown()
+        controller.close_persistence_stores()
 
 
 @pytest.mark.asyncio
