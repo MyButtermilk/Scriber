@@ -8,6 +8,7 @@
     opening: "Öffne Scriber …",
     handedOff: "An Scriber übergeben",
     unavailable: "Kein Video erkannt",
+    connect: "Bitte im Scriber-Erweiterungssymbol fortfahren",
   };
   let scheduled = false;
   const stateTimers = new Set();
@@ -59,7 +60,7 @@
     }
   }
 
-  function launchCurrentVideo(button) {
+  async function launchCurrentVideo(button) {
     const videoId = bridge.extractVideoId(window.location.href);
     if (!videoId) {
       setButtonState(button, "unavailable");
@@ -68,6 +69,15 @@
       return;
     }
     const deepLink = bridge.buildDeepLink({ videoId, ...visibleMetadata() });
+    setButtonState(button, "opening");
+    const permission = await chrome.runtime
+      .sendMessage({ type: "youtube-session-prepare" })
+      .catch(() => null);
+    if (permission && !permission.allowed) {
+      clearStateTimers();
+      setButtonState(button, "connect");
+      return;
+    }
     // A prior explicit permission in the toolbar popup enables later handoffs.
     void chrome.runtime
       .sendMessage({ type: "youtube-session", videoId })

@@ -10,6 +10,7 @@ function harness(permission = true) {
   let listener;
   const requests = [];
   const cookieReads = [];
+  let openedPopup = false;
   const id = "a".repeat(32);
   const context = vm.createContext({
     ScriberYouTubeSession: session,
@@ -18,6 +19,11 @@ function harness(permission = true) {
     AbortSignal,
     setTimeout: (callback) => setTimeout(callback, 0),
     chrome: {
+      action: {
+        openPopup: async () => {
+          openedPopup = true;
+        },
+      },
       permissions: { contains: async () => permission },
       cookies: {
         getAll: async (query) => {
@@ -56,14 +62,13 @@ function harness(permission = true) {
     requests,
     cookieReads,
     sender,
-    call: (senderOverride = sender) =>
+    get openedPopup() {
+      return openedPopup;
+    },
+    call: (senderOverride = sender, type = "youtube-session") =>
       new Promise((resolve) => {
         if (
-          !listener(
-            { type: "youtube-session", videoId: "BFKcC0VyuZA" },
-            senderOverride,
-            resolve,
-          )
+          !listener({ type, videoId: "BFKcC0VyuZA" }, senderOverride, resolve)
         )
           resolve(false);
       }),
@@ -99,4 +104,21 @@ test("denied optional permission and foreign senders never read cookies or conne
   assert.equal(await h.call({ ...h.sender, url: "https://evil.test/" }), false);
   assert.equal(await h.call({ ...h.sender, id: "b".repeat(32) }), false);
   assert.equal(h.cookieReads.length, 0);
+});
+
+test("first in-page click opens permission UI before creating a failed app job", async () => {
+  const h = harness(false);
+  assert.equal(
+    (await h.call(h.sender, "youtube-session-prepare")).allowed,
+    false,
+  );
+  assert.equal(h.openedPopup, true);
+  assert.equal(h.cookieReads.length, 0);
+  assert.equal(h.requests.length, 0);
+  const connected = harness();
+  assert.equal(
+    (await connected.call(connected.sender, "youtube-session-prepare")).allowed,
+    true,
+  );
+  assert.equal(connected.openedPopup, false);
 });

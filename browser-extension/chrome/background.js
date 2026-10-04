@@ -58,7 +58,10 @@ async function transfer(videoId) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
-  if (sender.id !== chrome.runtime.id || message?.type !== "youtube-session")
+  if (
+    sender.id !== chrome.runtime.id ||
+    !["youtube-session", "youtube-session-prepare"].includes(message?.type)
+  )
     return false;
   const source = sender.url || "";
   if (!(
@@ -66,6 +69,22 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     /^https:\/\/(www\.|m\.)?youtube\.com\//.test(source)
   ))
     return false;
+  if (message.type === "youtube-session-prepare") {
+    chrome.permissions.contains(ScriberYouTubeSession.permissions).then(
+      async (allowed) => {
+        if (!allowed) {
+          try {
+            await chrome.action.openPopup();
+          } catch {
+            /* The content button names the toolbar fallback. */
+          }
+        }
+        respond({ allowed });
+      },
+      () => respond({ allowed: false }),
+    );
+    return true;
+  }
   transfer(message.videoId).then(
     (connected) => respond({ connected }),
     () => respond({ connected: false }),
