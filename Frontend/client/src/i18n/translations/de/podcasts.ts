@@ -1,6 +1,7 @@
 import type { TranslationCatalog } from "@/i18n/types";
 
 export const podcastTranslations: TranslationCatalog = {
+  "Reference: {{id}}": "Referenz: {{id}}",
   Retry: "Wiederholen",
   "Please try again.": "Bitte versuche es erneut.",
   "Podcast retry queued": "Podcast wird erneut verarbeitet",

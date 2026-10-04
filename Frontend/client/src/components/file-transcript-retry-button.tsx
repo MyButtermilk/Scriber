@@ -118,6 +118,7 @@ export function FileTranscriptRetryButton({
     event.currentTarget.value = "";
     if (!file || busy.current) return;
     const originPath = window.location.pathname;
+    let failureCorrelationId: string | undefined;
     busy.current = true;
     setState("pending");
     try {
@@ -135,7 +136,13 @@ export function FileTranscriptRetryButton({
       const result = await startFileUploadBatch([file], {
         getServerProcessingText: (selected) => ({ key: "Preparing {{file}}…", values: { file: selected.name } }),
       });
-      if (result.failures.length) throw new Error(result.failures[0].error);
+      if (result.failures.length) {
+        const failure = result.failures[0];
+        if (typeof failure.correlationId === "string" && /^[a-f0-9]{32}$/.test(failure.correlationId)) {
+          failureCorrelationId = failure.correlationId;
+        }
+        throw new Error(failure.error);
+      }
       const transcript = result.responses[0];
       if (!transcript?.id) throw new Error(t("Retry started, but no transcript ID was returned."));
       void client.invalidateQueries({ queryKey: ["/api/transcripts"] });
@@ -143,9 +150,12 @@ export function FileTranscriptRetryButton({
       setChooseFileOpen(false);
       if (window.location.pathname === originPath) setLocation(`/transcript/${transcript.id}`);
     } catch (error) {
+      const description = t(friendlyError(error, t("Could not restart transcription.")));
       toast({
         title: t("Retry failed"),
-        description: t(friendlyError(error, t("Could not restart transcription."))),
+        description: failureCorrelationId
+          ? `${description}\n${t("Reference: {{id}}", { id: failureCorrelationId })}`
+          : description,
         variant: "destructive",
       });
     } finally {

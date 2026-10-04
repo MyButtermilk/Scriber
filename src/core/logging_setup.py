@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import sys
 import threading
 from collections.abc import Callable
+from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +26,168 @@ _LOGGING_ENABLED = True
 _LAST_COMPONENT = "app"
 _LAST_STDERR = True
 _DIAGNOSTIC_WRITE_LOCK = threading.RLock()
+# Each sink keeps its current file plus three uncompressed generations. Their
+# .log/.jsonl suffixes remain discoverable by the Debug Console/support bundle.
+_LOG_ROTATION_BYTES = 5 * 1024 * 1024
+_LOG_RETENTION_FILES = 3
+
+
+class _BoundedDiagnosticSink:
+    """A synchronous Loguru sink whose I/O failures never expose its record.
+
+    Loguru serializes calls to each sink, and remove() drains those calls. Open
+    handles only for the append itself so our own writer cannot block Windows
+    rotation. A locked reader may delay rotation, but never grow a file beyond
+    twice the normal limit. Counters retain no original message or exception.
+    """
+
+    def __init__(self, path: Path, *, append: bool, structured: bool) -> None:
+        self.path = path
+        self.structured = structured
+        self.limit = _LOG_ROTATION_BYTES
+        self.retention = _LOG_RETENTION_FILES
+        self._blocked = False
+        self._notice_written = False
+        self._dropped_records = 0
+        self._dropped_bytes = 0
+        self._reason = "io_unavailable"
+        self._archive_pattern = re.compile(
+            rf"{re.escape(path.stem)}\.(?:[0-9]+|[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}_[0-9_.-]+)"
+            rf"{re.escape(path.suffix)}"
+        )
+        # Fail closed during initial admission, including a partially successful
+        # setup. Resume is append-only; explicit fresh-start requests truncate.
+        with path.open("ab" if append else "wb"):
+            pass
+
+    def _rotate(self) -> None:
+        archives = [
+            path for path in self.path.parent.iterdir() if self._archive_pattern.fullmatch(path.name) and path.is_file()
+        ]
+        target: Path | None
+        if len(archives) >= self.retention:
+            target = min(archives, key=lambda path: (path.stat().st_mtime_ns, path.name))
+        else:
+            target = next(
+                (
+                    candidate
+                    for index in range(1, self.retention + 1)
+                    if not (candidate := self.path.with_name(f"{self.path.stem}.{index}{self.path.suffix}")).exists()
+                ),
+                None,
+            )
+            if target is None:
+                raise OSError("No diagnostic archive slot available")
+        # Replace the oldest archive atomically, rather than shifting/deleting
+        # archives before learning that the active file is locked. Legacy Loguru
+        # timestamp archives participate in the same retention family.
+        os.replace(self.path, target)
+        # An older installation may have retained more generations. Prune only
+        # after the active file has been safely archived, and never add another
+        # generation while a locked legacy archive prevents cleanup.
+        surplus = len(archives) - self.retention
+        if surplus > 0:
+            oldest = sorted(
+                (path for path in archives if path != target),
+                key=lambda path: (path.stat().st_mtime_ns, path.name),
+            )
+            for path in oldest[:surplus]:
+                path.unlink()
+
+    def _append(self, data: bytes, *, limit: int) -> bool:
+        with self.path.open("ab") as stream:
+            if stream.tell() + len(data) > limit:
+                return False
+            stream.write(data)
+        return True
+
+    def _health_line(self, *, recovered: bool) -> bytes:
+        now = datetime.now(UTC)
+        event = "diagnostic.rotation.recovered" if recovered else "diagnostic.rotation.blocked"
+        message = (
+            "Diagnostic file rotation recovered."
+            if recovered
+            else "Diagnostic file rotation unavailable; bounded append enabled."
+        )
+        meta = {
+            "reason": self._reason,
+            "dropped_records": self._dropped_records,
+            "dropped_bytes": self._dropped_bytes,
+        }
+        if self.structured:
+            return (
+                json.dumps(
+                    {
+                        "timestamp": now.isoformat(),
+                        "level": "WARNING",
+                        "component": "logging",
+                        "event": event,
+                        "message": message,
+                        "meta": meta,
+                    },
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode("utf-8")
+        timestamp = now.strftime("%H:%M:%S.%f")[:-3]
+        return (
+            f"... {timestamp} WARNING [logging    ] [------] [rotation       ] "
+            f"{message} event={event} reason={self._reason} "
+            f"dropped_records={self._dropped_records} dropped_bytes={self._dropped_bytes}\n"
+        ).encode()
+
+    def _block(self, reason: str = "io_unavailable") -> None:
+        if not self._blocked:
+            self._reason = reason
+        self._blocked = True
+
+    def _drop(self, size: int) -> None:
+        self._dropped_records += 1
+        self._dropped_bytes += size
+
+    def _blocked_notice(self, *, reserve: int = 0) -> None:
+        if not self._notice_written:
+            self._notice_written = self._append(self._health_line(recovered=False), limit=2 * self.limit - reserve)
+
+    def write(self, message: str) -> None:
+        data = message.encode("utf-8", errors="replace")
+        if len(data) > self.limit:
+            self._block("record_too_large")
+            self._drop(len(data))
+            # The record is already counted; keep the notice pending.
+            with suppress(OSError):
+                self._blocked_notice()
+            return
+        try:
+            try:
+                size = self.path.stat().st_size
+            except FileNotFoundError:
+                size = 0
+            rotation_failed = False
+            recovered = False
+            if size and (size + len(data) > self.limit or self._blocked):
+                try:
+                    self._rotate()
+                except OSError:
+                    self._block()
+                    rotation_failed = True
+            if self._blocked:
+                if rotation_failed:
+                    self._blocked_notice(reserve=len(data))
+                elif self._append(self._health_line(recovered=True), limit=2 * self.limit):
+                    recovered = True
+                    self._blocked = False
+                    self._notice_written = False
+                    self._dropped_records = 0
+                    self._dropped_bytes = 0
+            if not self._append(data, limit=2 * self.limit if self._blocked or recovered else self.limit):
+                self._block("capacity")
+                self._drop(len(data))
+        except OSError:
+            # Do not let Loguru's default handler print "Record was:" and all
+            # extras to stderr. No recursive logger calls from this sink.
+            self._block()
+            self._drop(len(data))
 
 
 def diagnostic_logging_enabled() -> bool:
@@ -78,7 +244,7 @@ def setup_logging(
     component: str = "app",
     force: bool = False,
     add_stderr: bool = True,
-    append: bool = False,
+    append: bool = True,
     enabled: bool | None = None,
 ) -> dict[str, str]:
     with _DIAGNOSTIC_WRITE_LOCK:
@@ -161,25 +327,21 @@ def _setup_logging(
         )
 
     logger.add(
-        pretty_log_path,
+        _BoundedDiagnosticSink(pretty_log_path, append=append, structured=False),
         level=level_name,
         format=fmt,
         colorize=False,
         enqueue=False,
-        encoding="utf-8",
-        mode="a" if append else "w",
         backtrace=False,
         diagnose=False,
         filter=lambda _record: _LOGGING_ENABLED,
     )
 
     logger.add(
-        structured_log_path,
+        _BoundedDiagnosticSink(structured_log_path, append=append, structured=True),
         level=level_name,
         serialize=True,
         enqueue=False,
-        encoding="utf-8",
-        mode="a" if append else "w",
         backtrace=False,
         diagnose=False,
         filter=lambda _record: _LOGGING_ENABLED,

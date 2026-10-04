@@ -19,11 +19,13 @@ export interface FileUploadQueueItem {
   statusValues?: TranslationValues;
   response: FileTranscribeResponse | null;
   error: string;
+  correlationId?: string;
 }
 
 export interface FileUploadBatchFailure {
   fileName: string;
   error: string;
+  correlationId?: string;
 }
 
 export interface FileUploadBatchResult {
@@ -61,6 +63,19 @@ let snapshot: FileUploadSnapshot = {
 let running = 0;
 const pending: Array<() => Promise<void>> = [];
 const listeners = new Set<() => void>();
+
+class FileUploadError extends Error {
+  constructor(
+    message: string,
+    readonly correlationId?: string,
+  ) {
+    super(message);
+  }
+}
+
+function uploadCorrelationId(value: unknown): string | undefined {
+  return typeof value === "string" && /^[a-f0-9]{32}$/.test(value) ? value : undefined;
+}
 
 function publishItems(items: FileUploadQueueItem[]) {
   const completedFiles = items.filter((item) => item.status === "completed").length;
@@ -158,7 +173,11 @@ function uploadSingleFile(
         resolve(parsed as FileTranscribeResponse);
       } else {
         reject(
-          new Error(parsed.message ? translateNow(parsed.message) : xhr.statusText || translateNow("Upload failed")),
+          new FileUploadError(
+            parsed.message ? translateNow(parsed.message) : xhr.statusText || translateNow("Upload failed"),
+            uploadCorrelationId(parsed.correlationId) ||
+              uploadCorrelationId(xhr.getResponseHeader("X-Scriber-Correlation-Id")),
+          ),
         );
       }
     };
@@ -200,6 +219,7 @@ export function startFileUploadBatch(
               progress: 100,
               statusText: "Upload failed",
               error: error instanceof Error ? error.message : String(error),
+              correlationId: error instanceof FileUploadError ? error.correlationId : undefined,
             });
           }
           resolve(snapshot.items.find((entry) => entry.id === item.id)!);
@@ -212,6 +232,6 @@ export function startFileUploadBatch(
     responses: finished.flatMap((item) => (item.response ? [item.response] : [])),
     failures: finished
       .filter((item) => item.status === "failed")
-      .map((item) => ({ fileName: item.fileName, error: item.error })),
+      .map((item) => ({ fileName: item.fileName, error: item.error, correlationId: item.correlationId })),
   }));
 }

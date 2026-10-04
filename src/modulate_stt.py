@@ -41,6 +41,7 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
 from src.audio_prepare import prepare_provider_wav_stream
+from src.core.provider_errors import ProviderTransportError, provider_transport_error, provider_user_error
 from src.runtime.audio_spool import (
     append_pcm_frame,
     close_pcm_spool,
@@ -172,16 +173,30 @@ async def transcribe_with_modulate_multilingual(
             headers={"X-API-Key": key},
             timeout=aiohttp.ClientTimeout(total=max(1.0, float(timeout_secs))),
         ) as response:
-            raw = await read_response_text_limited(response, _MAX_RESPONSE_BYTES)
             if response.status >= 400:
-                detail = redact_modulate_error(raw, key)
-                raise RuntimeError(f"Modulate batch transcription failed ({response.status}): {detail}")
+                try:
+                    raw = await read_response_text_limited(response, 64 * 1024)
+                except Exception:
+                    raise provider_transport_error(
+                        "modulate", "batch_transcription", status=response.status, code="response_read_failed"
+                    ) from None
+                raise provider_transport_error(
+                    "modulate", "batch_transcription", status=response.status, response_body=raw
+                )
+            raw = await read_response_text_limited(response, _MAX_RESPONSE_BYTES)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        if isinstance(exc, RuntimeError) and str(exc).startswith("Modulate batch transcription failed"):
+        if isinstance(exc, ProviderTransportError):
             raise
-        raise RuntimeError(f"Modulate batch transcription failed: {redact_modulate_error(exc, key)}") from exc
+        code = (
+            "TimeoutError"
+            if isinstance(exc, TimeoutError)
+            else "ClientConnectionError"
+            if isinstance(exc, aiohttp.ClientError)
+            else "RuntimeError"
+        )
+        raise provider_transport_error("modulate", "batch_transcription", code=code) from exc
 
     if not raw:
         raise RuntimeError("Modulate returned an empty transcription response.")
@@ -307,9 +322,11 @@ class ModulateAsyncProcessor(FrameProcessor):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                safe_error = redact_modulate_error(exc, self._api_key)
-                logger.error(f"Modulate async transcription failed: {safe_error}")
-                await self.push_frame(ErrorFrame(error=f"modulate async error: {safe_error}"), direction)
+                info = provider_user_error("modulate", exc)
+                logger.error(
+                    "Modulate async transcription failed (error_type={}, code={})", type(exc).__name__, info.code
+                )
+                await self.push_frame(ErrorFrame(error=f"modulate async error: {info.message}"), direction)
             finally:
                 self._reset_buffer()
             await self.push_frame(frame, direction)

@@ -128,6 +128,8 @@ _KNOWN_CODES = (
     "interaction_queued",
     "invalid_json",
     "empty_response",
+    "response_read_failed",
+    "unexpected_status",
     "DATA-0000",
     "NET-0000",
     "NET-0001",

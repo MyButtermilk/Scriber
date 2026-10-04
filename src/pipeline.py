@@ -65,6 +65,7 @@ from src.core.provider_audio_formats import (
     speechmatics_realtime_base_url,
 )
 from src.core.provider_capabilities import get_capabilities
+from src.core.provider_errors import provider_transport_error, provider_user_error
 from src.mic_silence_stop import MicSilenceStopObserver
 from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool, pcm_stream_to_wav
 from src.runtime.env_values import env_float
@@ -84,6 +85,18 @@ _PROVIDER_INGRESS_DRAIN_SERVICES = frozenset(
 )
 _PROVIDER_INGRESS_DRAIN_TIMEOUT_SECONDS = 2.0
 _PROVIDER_INGRESS_ABORT_TIMEOUT_SECONDS = 2.0
+
+
+async def _raise_soniox_status(response: Any, operation: str) -> None:
+    """Preserve bounded protocol evidence without logging signed URLs or bodies."""
+    if response.status >= 400:
+        try:
+            body = await read_response_text_limited(response, 64 * 1024)
+        except Exception:
+            raise provider_transport_error(
+                "soniox", operation, status=response.status, code="response_read_failed"
+            ) from None
+        raise provider_transport_error("soniox", operation, status=response.status, response_body=body)
 
 
 def _speechmatics_capture_time_wav_enabled() -> bool:
@@ -845,8 +858,10 @@ class SonioxAsyncProcessor(FrameProcessor):
                         direction,
                     )
             except Exception as e:
-                logger.error(f"Soniox async transcription failed: {e}")
-                await self.push_frame(ErrorFrame(error=f"soniox async error: {e}"), direction)
+                logger.error("Soniox async transcription failed (error_type={})", type(e).__name__)
+                await self.push_frame(
+                    ErrorFrame(error=f"soniox async error: {provider_user_error('soniox', e).message}"), direction
+                )
             finally:
                 self._reset_buffer()
             await self.push_frame(frame, direction)
@@ -930,10 +945,8 @@ class SonioxAsyncProcessor(FrameProcessor):
                         raise RuntimeError("Soniox file upload response did not include an id")
                     return uploaded_file_id
 
-                error_body = await read_response_text_limited(response, 64 * 1024 * 1024)
-                logger.error(f"Soniox file upload failed: status={response.status}, body={error_body[:500]}")
-                response.raise_for_status()
-                raise RuntimeError(f"Soniox file upload failed ({response.status})")
+                await _raise_soniox_status(response, "upload")
+                raise provider_transport_error("soniox", "upload", status=response.status, code="unexpected_status")
 
         file_id: str | None = None
         transcription_id: str | None = None
@@ -962,7 +975,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=60),
             ) as resp2:
-                resp2.raise_for_status()
+                await _raise_soniox_status(resp2, "transcription_create")
                 transcription_id = (await read_response_json_limited(resp2, 64 * 1024 * 1024))["id"]
 
                 # Poll status with exponential backoff
@@ -981,13 +994,18 @@ class SonioxAsyncProcessor(FrameProcessor):
                         headers=headers,
                         timeout=aiohttp.ClientTimeout(total=15),
                     ) as r:
-                        r.raise_for_status()
+                        await _raise_soniox_status(r, "transcription_poll")
                         status_payload = await read_response_json_limited(r, 64 * 1024 * 1024)
                         status = (status_payload.get("status") or "").lower()
                         if status in done_statuses:
                             break
                         if status in error_statuses:
-                            raise RuntimeError(status_payload.get("error_message", "Soniox async error"))
+                            raise provider_transport_error(
+                                "soniox",
+                                "transcription",
+                                code="provider_error",
+                                response_body=str(status_payload.get("error_message", ""))[: 64 * 1024],
+                            )
 
                     poll_count += 1
 
@@ -1025,7 +1043,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=60),
             ) as r3:
-                r3.raise_for_status()
+                await _raise_soniox_status(r3, "transcript_fetch")
                 transcript_payload = await read_response_json_limited(r3, 64 * 1024 * 1024)
                 tokens = transcript_payload.get("tokens")
                 token_list = tokens if isinstance(tokens, list) else []
@@ -1041,7 +1059,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                 return text
 
         except Exception as e:
-            logger.error(f"Soniox async transcription failed: {e}")
+            logger.error("Soniox async transcription failed (error_type={})", type(e).__name__)
             raise
         finally:
             # Cancellation is a BaseException on current Python versions, so
@@ -1063,7 +1081,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                 except FileNotFoundError:
                     pass
                 except Exception as exc:
-                    logger.debug(f"Could not remove Soniox temporary audio file: {exc}")
+                    logger.debug("Soniox temporary audio cleanup failed (error_type={})", type(exc).__name__)
 
     @staticmethod
     def _stream_size(stream: BinaryIO) -> int:
@@ -1276,11 +1294,11 @@ class SonioxAsyncProcessor(FrameProcessor):
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status in (200, 204, 404):
-                        logger.debug(f"Deleted Soniox transcription {transcription_id}")
+                        logger.debug("Deleted Soniox transcription")
                     else:
-                        logger.warning(f"Failed to delete transcription {transcription_id}: {resp.status}")
+                        logger.warning("Failed to delete Soniox transcription (status={})", resp.status)
             except Exception as e:
-                logger.warning(f"Error deleting transcription: {e}")
+                logger.warning("Soniox transcription cleanup failed (error_type={})", type(e).__name__)
 
         # Delete the uploaded file
         if file_id:
@@ -1291,11 +1309,11 @@ class SonioxAsyncProcessor(FrameProcessor):
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status in (200, 204, 404):
-                        logger.debug(f"Deleted Soniox file {file_id}")
+                        logger.debug("Deleted Soniox file")
                     else:
-                        logger.warning(f"Failed to delete file {file_id}: {resp.status}")
+                        logger.warning("Failed to delete Soniox file (status={})", resp.status)
             except Exception as e:
-                logger.warning(f"Error deleting file: {e}")
+                logger.warning("Soniox file cleanup failed (error_type={})", type(e).__name__)
 
 
 # ============================================================================
@@ -1606,7 +1624,7 @@ class ConnectionErrorHandlerProcessor(FrameProcessor):
                     except Exception as e:
                         logger.warning(f"Provider error callback failed: {e}")
 
-                logger.error(f"Terminal provider error detected: {error_msg}")
+                logger.error("Terminal provider error detected")
 
                 # Trigger error callback
                 if self.on_error:
@@ -4056,7 +4074,7 @@ class ScriberPipeline:
                     @self.task.event_handler("on_pipeline_error")
                     async def handle_pipeline_error(task, frame):
                         error_msg = str(frame.error) if hasattr(frame, "error") else str(frame)
-                        logger.error(f"Pipeline error event: {error_msg}")
+                        logger.error("Pipeline error event received")
                         if self.on_error:
                             self.on_error(error_msg)
                         # Cancel the pipeline on connection errors to prevent stuck state
@@ -4074,7 +4092,7 @@ class ScriberPipeline:
                 await self.runner.run()
 
         except (ValueError, ImportError) as e:
-            logger.error(f"Configuration error: {e}")
+            logger.error("Configuration error (error_type={})", type(e).__name__)
             self._record_terminal_error(str(e))
             self.is_active = False
             if self.on_status_change:
@@ -4139,7 +4157,7 @@ class ScriberPipeline:
         self._provider_ingress_drain_processor = None
         if self.is_active:
             return
-        logger.info(f"Transcribing audio file with {self.service_name}: {file_path}")
+        logger.info("Transcribing audio file (provider={})", self.service_name)
         self._start_done.clear()
         file_input: FfmpegAudioFileInput | None = None
         run_task: asyncio.Task | None = None
@@ -4205,13 +4223,13 @@ class ScriberPipeline:
                 self._provider_request_state = "result_received"
 
         except (ValueError, ImportError) as e:
-            logger.error(f"Configuration error: {e}")
+            logger.error("Configuration error (error_type={})", type(e).__name__)
             self.is_active = False
             if self.on_status_change:
                 self.on_status_change(f"Error: {e}")
             raise
         except Exception as e:
-            logger.error(f"Error transcribing file: {e}")
+            logger.error("File transcription failed (error_type={})", type(e).__name__)
             self.is_active = False
             if self.on_status_change:
                 self.on_status_change("Error")
@@ -4390,7 +4408,7 @@ class ScriberPipeline:
         if not path.exists():
             raise ValueError(f"File not found: {file_path}")
 
-        logger.info(f"Transcribing file directly with {self.service_name}: {file_path}")
+        logger.info("Transcribing file directly (provider={})", self.service_name)
         self._log_stt_runtime_configuration(workload="file_direct")
         self.is_active = True
 
@@ -4451,7 +4469,7 @@ class ScriberPipeline:
                     )
                     self._provider_request_state = "result_received"
         except Exception as e:
-            logger.error(f"Direct file transcription failed: {e}")
+            logger.error("Direct file transcription failed (error_type={})", type(e).__name__)
             if self.on_status_change:
                 self.on_status_change("Error")
             raise
@@ -4538,7 +4556,7 @@ class ScriberPipeline:
                 async with self._provider_session() as session:
                     if self.on_progress:
                         self.on_progress("Processing transcription...")
-                    logger.info(f"Mistral direct upload: {path.name} ({file_size} bytes, {content_type})")
+                    logger.info("Mistral direct upload (bytes={})", file_size)
 
                     with open(path, "rb") as f:
                         payload = await transcribe_with_mistral(
@@ -5015,13 +5033,11 @@ class ScriberPipeline:
                                 timeout=aiohttp.ClientTimeout(total=10),
                             ) as resp:
                                 if resp.status in (200, 204, 404):
-                                    logger.debug(f"Deleted Soniox transcription {transcription_id}")
+                                    logger.debug("Deleted Soniox transcription")
                                 else:
-                                    logger.warning(
-                                        f"Failed to delete Soniox transcription {transcription_id}: {resp.status}"
-                                    )
+                                    logger.warning("Failed to delete Soniox transcription (status={})", resp.status)
                         except Exception as exc:
-                            logger.warning(f"Error deleting Soniox transcription: {exc}")
+                            logger.warning("Soniox transcription cleanup failed (error_type={})", type(exc).__name__)
 
                     if file_id:
                         try:
@@ -5031,11 +5047,11 @@ class ScriberPipeline:
                                 timeout=aiohttp.ClientTimeout(total=10),
                             ) as resp:
                                 if resp.status in (200, 204, 404):
-                                    logger.debug(f"Deleted Soniox file {file_id}")
+                                    logger.debug("Deleted Soniox file")
                                 else:
-                                    logger.warning(f"Failed to delete Soniox file {file_id}: {resp.status}")
+                                    logger.warning("Failed to delete Soniox file (status={})", resp.status)
                         except Exception as exc:
-                            logger.warning(f"Error deleting Soniox file: {exc}")
+                            logger.warning("Soniox file cleanup failed (error_type={})", type(exc).__name__)
 
                 try:
                     cached_payload = await checkpoint.lookup(1, allow_remote=True) if checkpoint is not None else None
@@ -5055,7 +5071,7 @@ class ScriberPipeline:
                         return
                     # Upload file directly
                     file_size = path.stat().st_size
-                    logger.info(f"Uploading {path.name} ({file_size} bytes, {content_type})")
+                    logger.info("Soniox direct upload (bytes={})", file_size)
 
                     if file_id is None:
                         data = aiohttp.FormData()
@@ -5071,7 +5087,7 @@ class ScriberPipeline:
                             ) as resp:
                                 if checkpoint is not None and resp.status >= 400:
                                     await checkpoint.mark_rejected(0, resp.status)
-                                resp.raise_for_status()
+                                await _raise_soniox_status(resp, "upload")
                                 file_id = (await read_response_json_limited(resp, 64 * 1024 * 1024))["id"]
                                 if checkpoint is not None:
                                     await checkpoint.save_remote_id(0, file_id)
@@ -5098,7 +5114,7 @@ class ScriberPipeline:
                         ) as resp2:
                             if checkpoint is not None and resp2.status >= 400:
                                 await checkpoint.mark_rejected(1, resp2.status)
-                            resp2.raise_for_status()
+                            await _raise_soniox_status(resp2, "transcription_create")
                             transcription_id = (await read_response_json_limited(resp2, 64 * 1024 * 1024))["id"]
                             if checkpoint is not None:
                                 await checkpoint.save_remote_id(1, transcription_id)
@@ -5123,14 +5139,19 @@ class ScriberPipeline:
                             headers=headers,
                             timeout=aiohttp.ClientTimeout(total=15),
                         ) as r:
-                            r.raise_for_status()
+                            await _raise_soniox_status(r, "transcription_poll")
                             status_payload = await read_response_json_limited(r, 64 * 1024 * 1024)
                             status = (status_payload.get("status") or "").lower()
 
                             if status in done_statuses:
                                 break
                             if status in error_statuses:
-                                raise RuntimeError(status_payload.get("error_message", "Soniox transcription error"))
+                                raise provider_transport_error(
+                                    "soniox",
+                                    "transcription",
+                                    code="provider_error",
+                                    response_body=str(status_payload.get("error_message", ""))[: 64 * 1024],
+                                )
 
                         poll_count += 1
                         # Log every 10 seconds for debugging
@@ -5148,7 +5169,7 @@ class ScriberPipeline:
                         headers=headers,
                         timeout=aiohttp.ClientTimeout(total=60),
                     ) as r3:
-                        r3.raise_for_status()
+                        await _raise_soniox_status(r3, "transcript_fetch")
                         transcript_payload = await read_response_json_limited(r3, 64 * 1024 * 1024)
                         if not isinstance(transcript_payload, dict) or not (
                             isinstance(transcript_payload.get("text"), str)

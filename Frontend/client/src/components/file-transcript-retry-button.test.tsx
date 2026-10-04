@@ -110,6 +110,30 @@ describe("File transcript retry", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["a".repeat(32), `Upload failed\nReference: ${"a".repeat(32)}`],
+    ["not-a-valid-request-reference", "Upload failed"],
+  ])(
+    "preserves only a valid upload failure correlation in the retry toast (%s)",
+    async (correlationId, description) => {
+      toast.mockClear();
+      vi.mocked(fetchWithTimeout).mockResolvedValueOnce(new Response(JSON.stringify({ episode: null })));
+      vi.mocked(startFileUploadBatch).mockResolvedValue({
+        failures: [{ fileName: "recording.mp4", error: "Upload failed", correlationId }],
+        responses: [],
+      });
+      mount();
+      fireEvent.click(screen.getByRole("button", { name: "Retry transcription" }));
+      await screen.findByRole("dialog");
+      fireEvent.change(screen.getByLabelText("Original audio or video file"), {
+        target: { files: [new File(["fixture"], "recording.mp4")] },
+      });
+      await waitFor(() =>
+        expect(toast).toHaveBeenCalledWith({ title: "Retry failed", description, variant: "destructive" }),
+      );
+    },
+  );
+
   it("does not assume an uploaded file when the podcast lookup fails", async () => {
     vi.mocked(fetchWithTimeout).mockRejectedValue(new Error("Network unavailable"));
     mount();

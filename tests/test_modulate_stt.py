@@ -19,8 +19,9 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 
 from src.config import Config
+from src.core.error_taxonomy import ErrorCategory
 from src.core.provider_capabilities import get_capabilities
-from src.core.provider_errors import provider_user_error
+from src.core.provider_errors import ProviderTransportError, provider_user_error
 from src.modulate_stt import (
     MODULATE_BATCH_MODEL,
     MODULATE_BATCH_URL,
@@ -192,7 +193,7 @@ async def test_modulate_batch_provider_error_redacts_the_credential():
     session = _FakeSession(
         _FakeResponse(
             403,
-            "request wss://platform.modulate.ai/api/x?api_key=secret-key was denied",
+            "request wss://platform.modulate.ai/api/x?api_key=secret-key PRIVATE_TRANSCRIPT was denied",
         )
     )
     with pytest.raises(RuntimeError) as caught:
@@ -204,7 +205,41 @@ async def test_modulate_batch_provider_error_redacts_the_credential():
             content_type="audio/wav",
         )
     assert "secret-key" not in str(caught.value)
-    assert "api_key=[REDACTED]" in str(caught.value)
+    assert "PRIVATE_TRANSCRIPT" not in str(caught.value)
+    assert "wss://" not in str(caught.value)
+    assert caught.value.status == 403
+
+
+@pytest.mark.asyncio
+async def test_modulate_oversized_error_body_preserves_http_status():
+    session = _FakeSession(_FakeResponse(429, "PRIVATE_BODY" * 10000))
+    with pytest.raises(ProviderTransportError) as caught:
+        await transcribe_with_modulate_multilingual(
+            session=session,
+            api_key="secret-key",
+            audio_source=b"audio",
+            filename="audio.wav",
+            content_type="audio/wav",
+        )
+    assert caught.value.status == 429
+    assert caught.value.code == "response_read_failed"
+    assert "PRIVATE_BODY" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [TimeoutError("PRIVATE_URL"), aiohttp.ClientConnectionError("PRIVATE_TOKEN")])
+async def test_modulate_transport_failure_keeps_network_category_without_raw_detail(failure):
+    session = _FakeSession(_FakeResponse(200, {}))
+    with patch.object(session, "post", side_effect=failure), pytest.raises(ProviderTransportError) as caught:
+        await transcribe_with_modulate_multilingual(
+            session=session,
+            api_key="secret-key",
+            audio_source=b"audio",
+            filename="audio.wav",
+            content_type="audio/wav",
+        )
+    assert provider_user_error("modulate", caught.value).category == ErrorCategory.TRANSIENT_NETWORK
+    assert "PRIVATE_" not in str(caught.value)
 
 
 def test_modulate_top_level_text_parser_never_falls_back_to_utterances():

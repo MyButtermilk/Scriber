@@ -448,6 +448,7 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const TRAY_ID: &str = "scriber-tray";
 const TRAY_PANEL_LABEL: &str = "tray-panel";
 const TRAY_STATUS_EVENT: &str = "scriber-tray-status";
+const TRAY_PANEL_OPENED_EVENT: &str = "scriber-tray-opened";
 const TRAY_NAVIGATE_EVENT: &str = "scriber-navigate";
 const TRAY_PANEL_WIDTH: f64 = 386.0;
 const TRAY_PANEL_HEIGHT: f64 = 668.0;
@@ -1601,7 +1602,14 @@ fn hide_tray_panel(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn tray_action(app: AppHandle, action: String) -> Result<(), String> {
+async fn tray_action(app: AppHandle, action: String) -> Result<(), String> {
+    if action.starts_with("copy_transcript:") {
+        // Backend HTTP and the OS clipboard can wait. Keep the WebView/UI
+        // dispatcher responsive while resolving the selected durable ID.
+        return tauri::async_runtime::spawn_blocking(move || handle_tray_action(&app, &action))
+            .await
+            .map_err(|_| "transcript_copy_failed".to_string())?;
+    }
     handle_tray_action(&app, &action)
 }
 
@@ -1942,6 +1950,9 @@ pub fn run() {
             handle_shell_menu_event(app, event.id().as_ref());
         })
         .on_window_event(|window, event| {
+            if window.label() == native_overlay::OVERLAY_WINDOW_LABEL {
+                native_overlay::record_window_event(event);
+            }
             if should_hide_window_instead_of_closing(window.label()) {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
@@ -2219,7 +2230,11 @@ fn handle_shell_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
     }
 
     if let Some(transcript_id) = item_id.strip_prefix(MENU_ITEM_COPY_TRANSCRIPT_PREFIX) {
-        copy_recent_transcript_from_shell(app, transcript_id);
+        let app = app.clone();
+        let transcript_id = transcript_id.to_string();
+        tauri::async_runtime::spawn_blocking(move || {
+            copy_recent_transcript_from_shell(&app, &transcript_id);
+        });
         return;
     }
 
@@ -3190,6 +3205,8 @@ fn show_tray_panel_for_app<R: Runtime>(app: &AppHandle<R>) -> Result<(), String>
         .set_focus()
         .map_err(|err| format!("tray panel focus failed: {err}"))?;
     emit_tray_status_for_app(app, &tray_status_for_app(app));
+    app.emit_to(TRAY_PANEL_LABEL, TRAY_PANEL_OPENED_EVENT, ())
+        .map_err(|err| format!("tray opened event failed: {err}"))?;
     Ok(())
 }
 
@@ -3304,11 +3321,7 @@ fn handle_tray_action<R: Runtime>(app: &AppHandle<R>, action: &str) -> Result<()
                 .strip_prefix("copy_transcript:")
                 .unwrap_or_default()
                 .trim();
-            if copy_recent_transcript_from_shell(app, transcript_id) {
-                Ok(())
-            } else {
-                Err("could not copy transcript".to_string())
-            }
+            copy_recent_transcript_result(app, transcript_id)
         }
         other => Err(format!("unsupported tray action: {other}")),
     }
@@ -3364,7 +3377,7 @@ fn sanitize_update_field(value: &str, max_chars: usize) -> String {
 }
 
 fn fetch_recent_transcript_ids(access: &BackendAccess) -> Result<Vec<String>, String> {
-    let value = request_backend_json(access, "GET", "/api/transcripts?limit=20&offset=0")?;
+    let value = request_backend_json(access, "GET", "/api/transcripts/recent")?;
     recent_transcript_ids_from_value(&value)
 }
 
@@ -3394,44 +3407,71 @@ fn recent_transcript_ids_from_value(value: &Value) -> Result<Vec<String>, String
 }
 
 fn copy_recent_transcript_from_shell<R: Runtime>(app: &AppHandle<R>, transcript_id: &str) -> bool {
+    copy_recent_transcript_result(app, transcript_id).is_ok()
+}
+
+fn copy_recent_transcript_result<R: Runtime>(
+    app: &AppHandle<R>,
+    transcript_id: &str,
+) -> Result<(), String> {
     if !is_safe_transcript_id(transcript_id) {
         write_shell_log("recent transcript copy skipped: invalid transcript id");
-        return false;
+        return Err("transcript_unavailable".into());
     }
     let manager = app.state::<BackendManager>();
     let status = manager.ensure_started();
     if !status.ready {
-        write_shell_log(&format!(
-            "recent transcript copy skipped because backend is not ready: {}",
-            status.message
-        ));
-        return false;
+        write_shell_log("recent transcript copy skipped: backend unavailable");
+        return Err("transcript_unavailable".into());
     }
-    let path = format!("/api/transcripts/{transcript_id}");
+    let path = format!("/api/transcripts/{transcript_id}/copy");
     let value = match request_backend_json(&manager.access(), "GET", &path) {
         Ok(value) => value,
-        Err(err) => {
-            write_shell_log(&format!("recent transcript copy fetch failed: {err}"));
-            return false;
+        Err(_) => {
+            write_shell_log("recent transcript copy failed: durable read unavailable");
+            return Err("transcript_unavailable".into());
         }
     };
-    let content = value_string(&value, "content");
-    if content.trim().is_empty() {
-        write_shell_log("recent transcript copy skipped: transcript content is empty");
-        return false;
-    }
-    match copy_text_to_clipboard(&content) {
+    let content = validated_tray_copy_content(&value, transcript_id).map_err(|code| {
+        write_shell_log(&format!("recent transcript copy skipped: {code}"));
+        code.to_string()
+    })?;
+    match copy_text_to_clipboard(app, content) {
         Ok(()) => {
-            write_shell_log(&format!(
-                "recent transcript copied to clipboard: {transcript_id}"
-            ));
-            true
+            write_shell_log("tray_copy outcome=success");
+            Ok(())
         }
         Err(err) => {
             write_shell_log(&format!("recent transcript clipboard copy failed: {err}"));
-            false
+            Err("clipboard_unavailable".into())
         }
     }
+}
+
+fn validated_tray_copy_content<'a>(
+    value: &'a Value,
+    transcript_id: &str,
+) -> Result<&'a str, &'static str> {
+    if value.get("id").and_then(Value::as_str) != Some(transcript_id) {
+        return Err("transcript_unavailable");
+    }
+    if value.get("status").and_then(Value::as_str) != Some("completed") {
+        return Err("transcript_not_completed");
+    }
+    let content = value
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if content.contains('\0') {
+        // CF_UNICODETEXT terminates at NUL. Reject before touching the clipboard
+        // instead of reporting success for silently truncated content.
+        return Err("transcript_unsupported_text");
+    }
+    if content.trim().is_empty() {
+        return Err("transcript_empty");
+    }
+    // Preserve the final text exactly, including deliberate formatting.
+    Ok(content)
 }
 
 fn value_string(value: &Value, key: &str) -> String {
@@ -3445,6 +3485,7 @@ fn value_string(value: &Value, key: &str) -> String {
 
 fn is_safe_transcript_id(value: &str) -> bool {
     !value.is_empty()
+        && value.len() <= 160
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
@@ -3465,7 +3506,41 @@ fn sanitize_shell_log_token(value: &str) -> String {
 }
 
 #[cfg(windows)]
-fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
+fn copy_text_to_clipboard<R: Runtime>(app: &AppHandle<R>, text: &str) -> Result<(), String> {
+    let owner = app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .or_else(|| app.get_webview_window(TRAY_PANEL_LABEL))
+        .ok_or_else(|| "clipboard owner window unavailable".to_string())?
+        .hwnd()
+        .map_err(|_| "clipboard owner window unavailable".to_string())?;
+    copy_text_to_clipboard_with_owner(owner.0 as _, text)
+}
+
+#[cfg(any(windows, test))]
+fn retry_clipboard_open(
+    mut try_open: impl FnMut() -> bool,
+    mut wait: impl FnMut(Duration),
+) -> bool {
+    const ATTEMPTS: usize = 10;
+    for attempt in 0..ATTEMPTS {
+        if try_open() {
+            return true;
+        }
+        if attempt + 1 < ATTEMPTS {
+            wait(Duration::from_millis(20));
+        }
+    }
+    false
+}
+
+#[cfg(windows)]
+fn copy_text_to_clipboard_with_owner(
+    owner: windows_sys::Win32::Foundation::HWND,
+    text: &str,
+) -> Result<(), String> {
+    if owner.is_null() {
+        return Err("clipboard owner window unavailable".to_string());
+    }
     let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
     let byte_len = wide.len() * std::mem::size_of::<u16>();
     unsafe {
@@ -3481,7 +3556,11 @@ fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
         std::ptr::copy_nonoverlapping(wide.as_ptr(), locked, wide.len());
         let _ = GlobalUnlock(handle);
 
-        if OpenClipboard(std::ptr::null_mut()) == 0 {
+        // EmptyClipboard makes this window the clipboard owner. Passing NULL
+        // leaves no owner and causes SetClipboardData to fail on Windows.
+        // Clipboard history/RDP can hold the clipboard briefly. Only retry
+        // acquisition, on the copy worker; never repeat EmptyClipboard/Set.
+        if !retry_clipboard_open(|| OpenClipboard(owner) != 0, std::thread::sleep) {
             let _ = GlobalFree(handle);
             return Err("could not open clipboard".to_string());
         }
@@ -3501,7 +3580,7 @@ fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn copy_text_to_clipboard(_text: &str) -> Result<(), String> {
+fn copy_text_to_clipboard<R: Runtime>(_app: &AppHandle<R>, _text: &str) -> Result<(), String> {
     Err("clipboard copy is only implemented on Windows".to_string())
 }
 
@@ -4328,27 +4407,46 @@ fn handle_shortcut_id_event<R: Runtime>(
     }
 
     let app_handle = app.clone();
+    let action_id = Uuid::new_v4();
+    let received_at = Instant::now();
     std::thread::spawn(move || {
         let recording_active = tray_status_for_app(&app_handle).recording_active;
         let show_initializing_overlay =
             should_show_initializing_overlay_for_hotkey(path, recording_active);
-        if show_initializing_overlay {
-            if let Err(err) = native_overlay::handle_shell_command_on_ui_thread(
+        write_shell_log(&format!(
+            "hotkey_dispatch action_id={action_id} edge={event_state:?} path={path} recording_active={recording_active} queue_ms={} outcome=started",
+            received_at.elapsed().as_millis(),
+        ));
+        let preview_revision = if show_initializing_overlay {
+            match native_overlay::handle_shell_command_on_ui_thread(
                 "overlayShow",
-                &json!({ "mode": "initializing" }),
+                &json!({ "mode": "initializing", "previewId": action_id.to_string() }),
             ) {
-                write_shell_log(&format!(
-                    "global hotkey native overlay preview failed: {err}"
-                ));
+                Ok(snapshot) if snapshot["previewApplied"] == true => snapshot["revision"].as_u64(),
+                Ok(_) => None,
+                Err(err) => {
+                    write_shell_log(&format!(
+                        "global hotkey native overlay preview failed action_id={action_id}: {err}"
+                    ));
+                    None
+                }
             }
-        }
+        } else {
+            None
+        };
+        write_shell_log(&format!(
+            "hotkey_preview action_id={action_id} revision={} outcome={}",
+            preview_revision.unwrap_or(0),
+            if preview_revision.is_some() {
+                "shown"
+            } else {
+                "skipped"
+            },
+        ));
 
         let Some(manager) = app_handle.try_state::<BackendManager>() else {
-            write_shell_log("global hotkey ignored because backend manager is unavailable");
-            if show_initializing_overlay {
-                let _ =
-                    native_overlay::handle_shell_command_on_ui_thread("overlayHide", &json!({}));
-            }
+            write_shell_log(&format!("global hotkey ignored because backend manager is unavailable action_id={action_id}"));
+            hide_hotkey_overlay_preview(show_initializing_overlay.then_some(action_id));
             return;
         };
         let mut status = manager.ensure_started();
@@ -4363,13 +4461,10 @@ fn handle_shortcut_id_event<R: Runtime>(
         }
         if !status.ready && !status.running {
             write_shell_log(&format!(
-                "global hotkey ignored because backend is not ready: {}",
+                "global hotkey ignored because backend is not ready action_id={action_id}: {}",
                 status.message
             ));
-            if show_initializing_overlay {
-                let _ =
-                    native_overlay::handle_shell_command_on_ui_thread("overlayHide", &json!({}));
-            }
+            hide_hotkey_overlay_preview(show_initializing_overlay.then_some(action_id));
             return;
         }
         if !status.ready {
@@ -4396,13 +4491,28 @@ fn handle_shortcut_id_event<R: Runtime>(
             None
         };
         if let Err(err) = post_backend_path_with_body(&access, path, benchmark_body.as_ref()) {
-            write_shell_log(&format!("global hotkey action failed path={path}: {err}"));
-            if show_initializing_overlay {
-                let _ =
-                    native_overlay::handle_shell_command_on_ui_thread("overlayHide", &json!({}));
-            }
+            write_shell_log(&format!("global hotkey action failed action_id={action_id} path={path} elapsed_ms={}: {err}", received_at.elapsed().as_millis()));
+            hide_hotkey_overlay_preview(show_initializing_overlay.then_some(action_id));
+        } else {
+            write_shell_log(&format!(
+                "hotkey_dispatch action_id={action_id} path={path} elapsed_ms={} outcome=completed",
+                received_at.elapsed().as_millis()
+            ));
         }
     });
+}
+
+fn hide_hotkey_overlay_preview(preview_id: Option<Uuid>) {
+    if let Some(id) = preview_id {
+        if let Err(err) = native_overlay::handle_shell_command_on_ui_thread(
+            "overlayHide",
+            &json!({ "expectedPreviewId": id.to_string() }),
+        ) {
+            write_shell_log(&format!(
+                "hotkey preview cleanup failed action_id={id}: {err}"
+            ));
+        }
+    }
 }
 
 fn workspace_path_for_hotkey_action(path: &str) -> Option<&'static str> {
@@ -7380,6 +7490,75 @@ mod tests {
         assert!(!is_safe_transcript_id(""));
         assert!(!is_safe_transcript_id("../secret"));
         assert!(!is_safe_transcript_id("bad?id=1"));
+        assert!(!is_safe_transcript_id(&"x".repeat(161)));
+    }
+
+    #[test]
+    fn tray_copy_requires_the_selected_id_and_completed_nonempty_content() {
+        let mut value =
+            serde_json::json!({"id": "mic-1", "status": "completed", "content": "  final\ntext  "});
+        assert_eq!(
+            super::validated_tray_copy_content(&value, "mic-1"),
+            Ok("  final\ntext  ")
+        );
+        assert_eq!(
+            super::validated_tray_copy_content(&value, "mic-2"),
+            Err("transcript_unavailable")
+        );
+        for status in ["recording", "processing", "failed", "stopped"] {
+            value["status"] = serde_json::json!(status);
+            assert_eq!(
+                super::validated_tray_copy_content(&value, "mic-1"),
+                Err("transcript_not_completed")
+            );
+        }
+        value["status"] = serde_json::json!("completed");
+        value["content"] = serde_json::json!("before\0after");
+        assert_eq!(
+            super::validated_tray_copy_content(&value, "mic-1"),
+            Err("transcript_unsupported_text")
+        );
+        value["content"] = serde_json::json!(" \r\n ");
+        assert_eq!(
+            super::validated_tray_copy_content(&value, "mic-1"),
+            Err("transcript_empty")
+        );
+        assert_eq!(
+            super::validated_tray_copy_content(&serde_json::json!({}), "mic-1"),
+            Err("transcript_unavailable")
+        );
+    }
+
+    #[test]
+    fn clipboard_open_retries_transient_contention_with_a_strict_wait_limit() {
+        for (unavailable_attempts, expected_success, expected_attempts) in
+            [(0, true, 1), (3, true, 4), (usize::MAX, false, 10)]
+        {
+            let mut attempts = 0;
+            let mut waits = Vec::new();
+            let opened = super::retry_clipboard_open(
+                || {
+                    attempts += 1;
+                    attempts > unavailable_attempts
+                },
+                |delay| waits.push(delay),
+            );
+            assert_eq!(opened, expected_success);
+            assert_eq!(attempts, expected_attempts);
+            assert_eq!(
+                waits,
+                vec![Duration::from_millis(20); expected_attempts - 1]
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tray_clipboard_rejects_a_missing_owner_without_touching_the_clipboard() {
+        assert_eq!(
+            super::copy_text_to_clipboard_with_owner(std::ptr::null_mut(), "fixture"),
+            Err("clipboard owner window unavailable".to_string())
+        );
     }
 
     #[test]

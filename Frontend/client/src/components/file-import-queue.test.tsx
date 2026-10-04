@@ -27,7 +27,14 @@ it("separates measured upload progress from audio preparation and shows failures
             progress: 100,
             statusText: "Extracting audio…",
           },
-          { ...item, id: "c", fileName: "failed.wav", status: "failed", error: "Upload failed" },
+          {
+            ...item,
+            id: "c",
+            fileName: "failed.wav",
+            status: "failed",
+            error: "Upload failed",
+            correlationId: "0123456789abcdef0123456789abcdef",
+          },
           { ...item, id: "d", fileName: "finished.wav", status: "completed" },
         ]}
       />
@@ -38,5 +45,7 @@ it("separates measured upload progress from audio preparation and shows failures
   expect(bars[0]).toHaveAttribute("aria-valuenow", "47");
   expect(bars[1]).not.toHaveAttribute("aria-valuenow");
   expect(screen.getByRole("alert")).not.toBeEmptyDOMElement();
+  expect(screen.getByText(/0123456789abcdef0123456789abcdef/)).toHaveClass("select-text");
+  expect(screen.getByRole("alert")).not.toHaveTextContent("0123456789abcdef0123456789abcdef");
   expect(screen.queryByText("finished.wav")).toBeNull();
 });

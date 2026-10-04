@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,11 +10,13 @@ from typing import Any
 from uuid import uuid4
 
 from src.core.rest_contracts import REST_API_VERSION
+from src.runtime.log_io import open_log_reader
 from src.runtime.paths import logs_dir
 
 CLEAR_STATE_FILENAME = "debug-log-clear-state.json"
 _MAX_CLEAR_STATE_BYTES = 1024 * 1024
 _CLEAR_FINGERPRINT_BYTES = 256
+_ROTATION_SUFFIX_RE = re.compile(r"\.(?:[0-9]+|[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9_.-]+)$")
 
 
 def clear_state_path() -> Path:
@@ -47,7 +50,31 @@ def load_clear_offsets() -> dict[str, dict[str, Any]]:
 
 
 def clear_offset_for_path(path: Path, offsets: dict[str, Any]) -> int:
-    entry = offsets.get(_path_key(path), 0)
+    path_key = _path_key(path)
+    offset = _matching_clear_offset(path, offsets.get(path_key, 0))
+    if offset:
+        return offset
+    # Native numbered slots shift, and Loguru renames current files with a
+    # timestamp. A clear boundary follows the bytes only within the same log
+    # family and only when its persisted fingerprint still matches.
+    family = _rotation_family(Path(path_key))
+    if family == Path(path_key):
+        # A newly opened current file must not inherit a boundary from an older
+        # generation merely because repeated diagnostic bytes happen to match.
+        return 0
+    for recorded_path, entry in offsets.items():
+        if recorded_path == path_key or not isinstance(entry, dict) or not entry.get("tailSha256"):
+            continue
+        if _rotation_family(Path(recorded_path)) == family:
+            offset = max(offset, _matching_clear_offset(path, entry))
+    return offset
+
+
+def _rotation_family(path: Path) -> Path:
+    return path.with_name(_ROTATION_SUFFIX_RE.sub("", path.stem) + path.suffix)
+
+
+def _matching_clear_offset(path: Path, entry: Any) -> int:
     if isinstance(entry, dict):
         offset = _safe_non_negative_int(entry.get("sizeBytes")) or 0
         expected_fingerprint = str(entry.get("tailSha256") or "")
@@ -136,7 +163,7 @@ def _safe_non_negative_int(value: Any) -> int | None:
 def _tail_fingerprint(path: Path, *, end_offset: int) -> str:
     end = max(0, int(end_offset))
     start = max(0, end - _CLEAR_FINGERPRINT_BYTES)
-    with path.open("rb") as handle:
+    with open_log_reader(path) as handle:
         handle.seek(start)
         payload = handle.read(end - start)
     return hashlib.sha256(payload).hexdigest()

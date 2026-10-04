@@ -1,11 +1,45 @@
 import json
+import os
 import zipfile
+from contextlib import contextmanager
 
 import pytest
 
 from src.runtime import support_bundle
 from src.runtime.log_clear_state import record_clear_state
 from src.runtime.support_bundle import create_support_bundle, redact_mapping, redact_text
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows delete-sharing contract")
+@pytest.mark.parametrize("reader_name", ["support", "debug"])
+def test_log_tail_readers_allow_rotation_and_read_the_open_generation(monkeypatch, tmp_path, reader_name):
+    from src.runtime import debug_logs
+
+    reader_module = support_bundle if reader_name == "support" else debug_logs
+    active = tmp_path / "latest.log"
+    archive = tmp_path / "latest.1.log"
+    original = "retained generation with more bytes\n"
+    # The production tail preserves bytes; avoid Windows text-mode newline
+    # translation when constructing the exact generation being asserted.
+    active.write_bytes(original.encode("utf-8"))
+    open_reader = support_bundle.open_log_reader
+
+    @contextmanager
+    def rotate_while_reading(path):
+        with open_reader(path) as handle:
+            assert not os.get_inheritable(handle.fileno())
+            # A plain Python open on Windows blocks this rename. The reader
+            # must retain the old file while a new active generation is made.
+            os.replace(active, archive)
+            active.write_text("new\n", encoding="utf-8")
+            yield handle
+
+    monkeypatch.setattr(reader_module, "open_log_reader", rotate_while_reading)
+    result = reader_module._read_tail(active)
+    text = result if reader_name == "support" else result[0]
+    assert text == original
+    assert archive.read_text(encoding="utf-8") == original
+    assert active.read_text(encoding="utf-8") == "new\n"
 
 
 def test_redaction_helpers_hide_sensitive_values():
@@ -568,3 +602,89 @@ def test_support_bundle_does_not_follow_log_symlink_outside_root(monkeypatch, tm
 
     with zipfile.ZipFile(bundle) as zf:
         assert "logs/linked.log" not in zf.namelist()
+
+
+def test_support_jsonl_projects_decoded_loguru_records_and_preserves_native_crash_fields(tmp_path):
+    correlation_id = "0123456789abcdef" * 2
+    key = "sk-" + "a" * 12
+    structured = tmp_path / "latest.structured.jsonl"
+    record = {
+        "record": {
+            "message": f"File upload failed: {key}",
+            "level": {"name": "ERROR"},
+            "extra": {
+                "trace_id": "tr_" + correlation_id,
+                "job_id": "c" * 32,
+                "event": "api.job.failed",
+                "workflow": "file",
+                "meta": {
+                    "status": 413,
+                    "episode_id": "a" * 32,
+                    "subscription_id": "b" * 32,
+                    "transcript": "private spoken words",
+                    "response_body": "private provider reply",
+                    "filename": "private-audio.wav",
+                },
+            },
+        }
+    }
+    encoded = json.dumps(record).replace(key, "sk-" + "\\u0061" * 12)
+    structured.write_text(encoded + '\n{"broken":"private partial record', encoding="utf-8")
+
+    text = support_bundle._read_tail(structured)
+    payload = json.loads(text)
+    assert payload["message"] == "File upload failed: [REDACTED]"
+    assert payload["context"]["correlationId"] == correlation_id
+    assert payload["context"]["meta"] == {
+        "status": 413,
+        "episode_id": "a" * 32,
+        "subscription_id": "b" * 32,
+        "job_id": "c" * 32,
+    }
+    assert "private" not in text
+    assert key not in text
+
+    crash = tmp_path / "backend-crash-metadata.1.jsonl"
+    crash.write_text(
+        json.dumps({"timestampMs": 42, "event": "managed_backend_exit", "launchKind": "sidecar", "status": 1}) + "\n",
+        encoding="utf-8",
+    )
+    assert json.loads(support_bundle._read_tail(crash)) == {
+        "timestampMs": 42,
+        "event": "managed_backend_exit",
+        "launchKind": "sidecar",
+        "status": 1,
+    }
+
+
+def test_support_jsonl_tail_discards_partial_record_before_projection(tmp_path):
+    path = tmp_path / "latest.structured.jsonl"
+    first = json.dumps({"record": {"message": "old " + "x" * 400, "extra": {"transcript": "private"}}}) + "\n"
+    final = json.dumps({"record": {"message": "recent complete event"}}) + "\n"
+    path.write_text(first + final, encoding="utf-8")
+
+    payload = support_bundle._read_tail(path, max_bytes=len(final) + 20)
+    assert json.loads(payload)["message"] == "recent complete event"
+    assert "private" not in payload
+
+
+def test_support_bundle_preserves_clear_boundary_after_rotation(monkeypatch, tmp_path):
+    data = tmp_path / "data"
+    logs = data / "logs"
+    logs.mkdir(parents=True)
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(data))
+    monkeypatch.setattr(support_bundle, "repo_root", lambda: tmp_path / "repo")
+    current = logs / "tauri-backend.log"
+    current.write_text("cleared generation\n", encoding="utf-8")
+    record_clear_state([current])
+    with current.open("a", encoding="utf-8") as handle:
+        handle.write("after clear\n")
+    current.rename(logs / "tauri-backend.1.log")
+    current.write_text("new active generation\n", encoding="utf-8")
+
+    bundle = create_support_bundle(runtime_info={"apiVersion": "1"}, app_state={})
+    with zipfile.ZipFile(bundle) as zf:
+        archived = zf.read("logs/tauri-backend.1.log").decode("utf-8")
+        active = zf.read("logs/tauri-backend.log").decode("utf-8")
+    assert archived.splitlines() == ["after clear"]
+    assert active.splitlines() == ["new active generation"]

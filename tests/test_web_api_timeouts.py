@@ -28,13 +28,20 @@ def _write_valid_wav(path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_file_transcription_timeout_marks_failed(monkeypatch, tmp_path):
+@pytest.mark.parametrize("provider_timeout", [False, True], ids=["deadline", "provider-timeout"])
+async def test_file_transcription_timeout_marks_failed(monkeypatch, tmp_path, provider_timeout):
     loop = asyncio.get_running_loop()
     monkeypatch.setenv("SCRIBER_JOB_MAX_ATTEMPTS", "1")
     ctl = ScriberWebController(loop)
 
     monkeypatch.setenv("SCRIBER_TIMEOUT_FILE_TRANSCRIBE_SEC", "0.01")
     monkeypatch.setattr(Config, "DEFAULT_STT_SERVICE", "mistral_async")
+    if provider_timeout:
+        monkeypatch.setattr(
+            _SlowPipeline,
+            "transcribe_file_direct",
+            AsyncMock(side_effect=TimeoutError("private transcript at https://private.example/audio?token=secret")),
+        )
     upload_dir = tmp_path / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
     sample_file = upload_dir / "sample.wav"
@@ -53,7 +60,9 @@ async def test_file_transcription_timeout_marks_failed(monkeypatch, tmp_path):
         await asyncio.gather(task, return_exceptions=True)
 
     assert rec.status == "failed"
-    assert "[Timeout] File transcription timed out" in rec.content
+    assert rec.content == "[Timeout] File transcription timed out. Please try again."
+    assert "private transcript" not in rec.content
+    assert "token=secret" not in rec.content
 
 
 @pytest.mark.asyncio

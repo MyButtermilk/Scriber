@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { motion } from "motion/react";
+import { listen } from "@tauri-apps/api/event";
 import {
   CalendarClock,
   Check,
@@ -33,7 +34,7 @@ import {
   trayAction,
   type TrayStatus,
 } from "@/lib/backend";
-import type { TranscriptHistoryItem, TranscriptType } from "@/lib/api-types";
+import type { TrayTranscriptItem, TranscriptType } from "@/lib/api-types";
 import { checkDesktopUpdate, installDesktopUpdate, type DesktopUpdateProgress } from "@/lib/desktop-updates";
 import { cn } from "@/lib/utils";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
@@ -48,11 +49,12 @@ const DEFAULT_TRAY_STATUS: TrayStatus = {
   updateMessage: "",
 };
 const RECENT_TRANSCRIPT_LIMIT = 8;
+const TRANSCRIPT_PREVIEW_CONTROLS = new RegExp("[\\p{Cc}\\p{Cf}]", "gu");
 
 type TrayView = "main" | "recent";
 
 interface TranscriptListResponse {
-  items?: TranscriptHistoryItem[];
+  items?: TrayTranscriptItem[];
 }
 
 interface TrayLocalizedMessage {
@@ -89,17 +91,21 @@ function transcriptTypeLabel(type: TranscriptType | string | undefined, t: Trans
   }
 }
 
-function compactTranscriptTitle(item: TranscriptHistoryItem, t: Translate): string {
-  const title = String(item.title || "").trim();
-  const generatedLiveMicTitle = title.match(/^Live Mic\s+(.+)$/);
-  if (generatedLiveMicTitle) {
-    return t("Live Mic {{suffix}}", { suffix: generatedLiveMicTitle[1] });
-  }
-  return title || t("Untitled transcript");
+function compactTranscriptTitle(item: TrayTranscriptItem, t: Translate): string {
+  if (item.contentUnavailable) return t("Transcript unavailable. Refresh recent transcripts.");
+  // Render only a bounded plain-text label. React escapes markup and ampersands;
+  // stripping controls also prevents bidi overrides and embedded menu shortcuts.
+  const preview = String(item.preview || "")
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
+    .replace(TRANSCRIPT_PREVIEW_CONTROLS, "")
+    .trim();
+  const chars = Array.from(preview);
+  return (chars.length > 72 ? chars.slice(0, 71).join("") + "…" : preview) || t("Empty transcript");
 }
 
 function compactTranscriptDetail(
-  item: TranscriptHistoryItem,
+  item: TrayTranscriptItem,
   t: Translate,
   formatDate: FormatDate,
   formatLegacyDate: FormatLegacyDate,
@@ -215,23 +221,27 @@ function TrayRow({
 function RecentTranscriptRow({
   item,
   copied,
+  disabled,
   onCopy,
 }: {
-  item: TranscriptHistoryItem;
+  item: TrayTranscriptItem;
   copied: boolean;
+  disabled: boolean;
   onCopy: () => void;
 }) {
   const { formatDate, formatLegacyDate, t } = useI18n();
   return (
     <motion.button
       type="button"
-      whileTap={{ scale: 0.985 }}
+      whileTap={disabled ? undefined : { scale: 0.985 }}
       onClick={onCopy}
+      disabled={disabled}
       className={cn(
         "group flex h-[46px] w-full items-center gap-3 rounded-[12px] px-3 text-left outline-none transition-colors duration-150",
         "text-slate-950 hover:bg-slate-950/[0.055]",
         "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white/80",
         copied && "bg-emerald-50 text-emerald-700",
+        disabled && "cursor-default opacity-55",
       )}
     >
       <span
@@ -291,12 +301,18 @@ export default function TrayPanel() {
   const [updateCheckMessage, setUpdateCheckMessage] = useState<TrayLocalizedMessage | null>(null);
   const [progress, setProgress] = useState<DesktopUpdateProgress | null>(null);
   const [error, setError] = useState("");
-  const [recentItems, setRecentItems] = useState<TranscriptHistoryItem[]>([]);
+  const [recentItems, setRecentItems] = useState<TrayTranscriptItem[]>([]);
   const [recentLoaded, setRecentLoaded] = useState(false);
   const [recentLoading, setRecentLoading] = useState(false);
   const [recentError, setRecentError] = useState("");
   const [copiedTranscriptId, setCopiedTranscriptId] = useState("");
+  const [copyPending, setCopyPending] = useState(false);
   const shortcutLoadRequestRef = useRef(0);
+  const recentRequestRef = useRef(0);
+  const recentAbortRef = useRef<AbortController | null>(null);
+  const copyPendingRef = useRef(false);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const blurTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const applyShortcuts = useCallback(
     (hotkey?: string, meetingHotkey?: string) => {
@@ -369,13 +385,10 @@ export default function TrayPanel() {
         if (value) setStatus(value);
       })
       .catch((error) => console.debug("Tray status lookup failed.", error));
-    void import("@tauri-apps/api/event")
-      .then(({ listen }) =>
-        listen<TrayStatus>("scriber-tray-status", (event) => {
-          setStatus({ ...DEFAULT_TRAY_STATUS, ...event.payload });
-          void loadRegisteredShortcuts(false);
-        }),
-      )
+    void listen<TrayStatus>("scriber-tray-status", (event) => {
+      setStatus({ ...DEFAULT_TRAY_STATUS, ...event.payload });
+      void loadRegisteredShortcuts(false);
+    })
       .then((cleanup) => {
         if (disposed) {
           cleanup();
@@ -402,13 +415,19 @@ export default function TrayPanel() {
       }
     };
     const handleBlur = () => {
-      window.setTimeout(() => void hideTrayPanel(), 140);
+      clearTimeout(blurTimerRef.current);
+      blurTimerRef.current = setTimeout(() => void hideTrayPanel(), 140);
     };
+    const handleFocus = () => clearTimeout(blurTimerRef.current);
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("blur", handleBlur);
+    window.addEventListener("focus", handleFocus);
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("focus", handleFocus);
+      clearTimeout(blurTimerRef.current);
+      clearTimeout(hideTimerRef.current);
     };
   }, []);
 
@@ -427,16 +446,30 @@ export default function TrayPanel() {
     [t],
   );
 
+  const cancelRecentRequest = useCallback(() => {
+    ++recentRequestRef.current;
+    recentAbortRef.current?.abort();
+    clearTimeout(hideTimerRef.current);
+  }, []);
+
   const loadRecentTranscripts = useCallback(async () => {
     if (!backendReady) return;
+    const requestId = ++recentRequestRef.current;
+    recentAbortRef.current?.abort();
+    const controller = new AbortController();
+    recentAbortRef.current = controller;
+    clearTimeout(hideTimerRef.current);
+    setCopiedTranscriptId("");
+    setRecentItems([]);
     setRecentLoading(true);
     setRecentError("");
     try {
       const response = await fetchWithTimeout(
-        apiUrl("/api/transcripts?limit=20&offset=0"),
+        apiUrl("/api/transcripts/recent"),
         {
           credentials: "include",
           cache: "no-store",
+          signal: controller.signal,
         },
         10_000,
       );
@@ -444,42 +477,101 @@ export default function TrayPanel() {
         throw new Error(t("Could not load recent transcripts ({{status}}).", { status: response.status }));
       }
       const payload = (await response.json()) as TranscriptListResponse;
-      const items = Array.isArray(payload.items) ? payload.items : [];
+      if (requestId !== recentRequestRef.current) return;
+      if (!Array.isArray(payload.items)) throw new Error(t("Could not load recent transcripts."));
+      const seen = new Set<string>();
       setRecentItems(
-        items
-          .filter((item) => item.status === "completed" && String(item.id || "").trim())
+        payload.items
+          .filter((item) => {
+            if (
+              !item ||
+              item.status !== "completed" ||
+              typeof item.id !== "string" ||
+              !/^[A-Za-z0-9_-]{1,160}$/.test(item.id) ||
+              seen.has(item.id)
+            )
+              return false;
+            seen.add(item.id);
+            return true;
+          })
           .slice(0, RECENT_TRANSCRIPT_LIMIT),
       );
       setRecentLoaded(true);
-    } catch (err) {
-      setRecentError(err instanceof Error ? err.message : String(err || t("Could not load recent transcripts.")));
+    } catch {
+      if (requestId === recentRequestRef.current) setRecentError(t("Could not load recent transcripts."));
     } finally {
-      setRecentLoading(false);
+      if (requestId === recentRequestRef.current) setRecentLoading(false);
     }
   }, [backendReady, t]);
+
+  useEffect(() => {
+    if (!backendReady) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const refresh = () => {
+      clearTimeout(blurTimerRef.current);
+      setError("");
+      void loadRecentTranscripts();
+    };
+    if (isTauriRuntime()) {
+      // Listen before the initial read: the first show can precede WebView
+      // startup, while every subsequent show (even already focused) emits this.
+      void listen("scriber-tray-opened", refresh)
+        .then((cleanup) => {
+          if (disposed) cleanup();
+          else {
+            unlisten = cleanup;
+            refresh();
+          }
+        })
+        .catch(() => {
+          if (!disposed) setRecentError(t("Could not load recent transcripts."));
+        });
+    } else refresh();
+    return () => {
+      disposed = true;
+      unlisten?.();
+      cancelRecentRequest();
+    };
+  }, [backendReady, cancelRecentRequest, loadRecentTranscripts, t]);
 
   const openRecentView = useCallback(() => {
     setError("");
     setRecentError("");
     setCopiedTranscriptId("");
     setView("recent");
-    if (!recentLoaded && !recentLoading) {
-      void loadRecentTranscripts();
-    }
-  }, [loadRecentTranscripts, recentLoaded, recentLoading]);
+    void loadRecentTranscripts();
+  }, [loadRecentTranscripts]);
 
   const copyRecentTranscript = useCallback(
-    async (item: TranscriptHistoryItem) => {
+    async (item: TrayTranscriptItem) => {
       const transcriptId = String(item.id || "").trim();
-      if (!transcriptId) return;
+      if (!transcriptId || !item.contentAvailable || copyPendingRef.current) return;
+      copyPendingRef.current = true;
+      setCopyPending(true);
+      const requestId = recentRequestRef.current;
       setRecentError("");
       setCopiedTranscriptId("");
       try {
         await trayAction(`copy_transcript:${transcriptId}`);
+        if (requestId !== recentRequestRef.current) return;
         setCopiedTranscriptId(transcriptId);
-        window.setTimeout(() => void hideTrayPanel(), 650);
+        hideTimerRef.current = setTimeout(() => void hideTrayPanel(), 650);
       } catch (err) {
-        setRecentError(err instanceof Error ? err.message : String(err || t("Could not copy transcript.")));
+        if (requestId !== recentRequestRef.current) return;
+        const code = err instanceof Error ? err.message : String(err);
+        setRecentError(
+          code === "transcript_empty"
+            ? t("Empty transcript")
+            : code === "transcript_unsupported_text"
+              ? t("This transcript contains unsupported characters and cannot be copied.")
+              : code === "clipboard_unavailable"
+                ? t("Could not copy transcript.")
+                : t("Transcript unavailable. Refresh recent transcripts."),
+        );
+      } finally {
+        copyPendingRef.current = false;
+        setCopyPending(false);
       }
     },
     [t],
@@ -721,6 +813,7 @@ export default function TrayPanel() {
                     key={item.id}
                     item={item}
                     copied={copiedTranscriptId === item.id}
+                    disabled={copyPending || !item.contentAvailable}
                     onCopy={() => void copyRecentTranscript(item)}
                   />
                 ))

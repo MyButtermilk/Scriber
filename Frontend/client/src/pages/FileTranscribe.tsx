@@ -191,6 +191,11 @@ const FileCard = memo(function FileCard({
                   <span>•</span>
                   <span>{dateLabel}</span>
                 </div>
+                {(historyStatus === "failed" || historyStatus === "summary_failed") && (
+                  <p className="mt-1 select-text break-all font-mono text-xs text-muted-foreground">
+                    {t("Reference: {{id}}", { id: item.id })}
+                  </p>
+                )}
               </div>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2">
@@ -313,6 +318,11 @@ const FileCard = memo(function FileCard({
                 {item.title}
               </button>
             </h3>
+            {(historyStatus === "failed" || historyStatus === "summary_failed") && (
+              <p className="mb-2 select-text break-all font-mono text-xs text-muted-foreground">
+                {t("Reference: {{id}}", { id: item.id })}
+              </p>
+            )}
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-auto">
               <span>{item.duration}</span>
               <span>•</span>

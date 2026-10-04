@@ -46,6 +46,10 @@ _AUDIO_TYPES = {
 class PodcastError(ValueError):
     """Bounded, user-visible failure; never includes remote response bodies or URLs."""
 
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status if type(status) is int and 100 <= status <= 599 else None
+
 
 def public_url(value: str) -> str:
     if not isinstance(value, str) or len(value) > 4096 or any(ord(ch) < 33 for ch in value):
@@ -226,7 +230,9 @@ class PodcastHttp:
                 continue
             if response.status != 200:
                 response.release()
-                raise PodcastError("The podcast host is currently unavailable. Try again later.")
+                raise PodcastError(
+                    "The podcast host is currently unavailable. Try again later.", status=response.status
+                )
             if response.headers.get("Content-Encoding", "identity").strip().casefold() not in {"", "identity"}:
                 response.release()
                 raise PodcastError("The podcast host returned unsupported compressed data.")

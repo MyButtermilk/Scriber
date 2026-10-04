@@ -60,6 +60,11 @@ export const componentTranslations = {
   "Copy full log message": "Vollständige Protokollmeldung kopieren",
   "Copy raw structured log data": "Strukturierte Rohdaten des Protokolls kopieren",
   "Could not copy transcript.": "Das Transkript konnte nicht kopiert werden.",
+  "Empty transcript": "Leeres Transkript",
+  "This transcript contains unsupported characters and cannot be copied.":
+    "Dieses Transkript enthält nicht unterstützte Zeichen und kann nicht kopiert werden.",
+  "Transcript unavailable. Refresh recent transcripts.":
+    "Transkript nicht verfügbar. Bitte die letzten Transkripte aktualisieren.",
   "Could not load data": "Daten konnten nicht geladen werden",
   "Could not load recent transcripts ({{status}}).":
     "Die letzten Transkripte konnten nicht geladen werden ({{status}}).",

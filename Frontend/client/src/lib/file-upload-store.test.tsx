@@ -12,13 +12,19 @@ class UploadRequest {
   status = 200;
   responseText = "";
   statusText = "";
+  correlationHeader: string | null = null;
   open() {}
+  getResponseHeader(name: string) {
+    return name.toLowerCase() === "x-scriber-correlation-id" ? this.correlationHeader : null;
+  }
   send() {
     UploadRequest.requests.push(this);
   }
-  finish(id: string, status = 200) {
+  finish(id: string, status = 200, correlationId?: unknown) {
     this.status = status;
-    this.responseText = JSON.stringify(status === 200 ? { id, status: "processing" } : { message: "Upload failed" });
+    this.responseText = JSON.stringify(
+      status === 200 ? { id, status: "processing" } : { message: "Upload failed", correlationId },
+    );
     this.onload?.();
   }
 }
@@ -36,6 +42,35 @@ afterEach(() => {
 });
 
 describe("file upload queue", () => {
+  it.each(["body", "header"])(
+    "keeps the server reference from the %s separate from its translated message",
+    async (source) => {
+      vi.stubGlobal("XMLHttpRequest", UploadRequest);
+      const { startFileUploadBatch, getFileUploadSnapshot } = await import("./file-upload-store");
+      const correlationId = "0123456789abcdef0123456789abcdef";
+      const batch = startFileUploadBatch(files("failed.wav"), options);
+      const request = UploadRequest.requests[0];
+      if (source === "header") request.correlationHeader = correlationId;
+      request.finish("unused", 500, source === "body" ? correlationId : undefined);
+      const result = await batch;
+      expect(result.failures[0].correlationId).toBe(correlationId);
+      expect(result.failures[0].error).not.toContain(correlationId);
+      expect(getFileUploadSnapshot().items[0]).toMatchObject({ status: "failed", correlationId });
+      await settle();
+    },
+  );
+
+  it("discards malformed server references", async () => {
+    vi.stubGlobal("XMLHttpRequest", UploadRequest);
+    const { startFileUploadBatch, getFileUploadSnapshot } = await import("./file-upload-store");
+    const batch = startFileUploadBatch(files("failed.wav"), options);
+    UploadRequest.requests[0].correlationHeader = "private-file.wav";
+    UploadRequest.requests[0].finish("unused", 500, "token=private-secret");
+    expect((await batch).failures[0].correlationId).toBeUndefined();
+    expect(getFileUploadSnapshot().items[0].correlationId).toBeUndefined();
+    await settle();
+  });
+
   it("prepares two files concurrently, accepts additions, and isolates failures and progress", async () => {
     vi.stubGlobal("XMLHttpRequest", UploadRequest);
     const { startFileUploadBatch, getFileUploadSnapshot } = await import("./file-upload-store");

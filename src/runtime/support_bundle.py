@@ -13,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from src.runtime.log_clear_state import clear_offset_for_path, load_clear_offsets
+from src.runtime.log_io import open_log_reader
 from src.runtime.paths import data_dir, logs_dir, repo_root, settings_path, support_bundles_dir
 from src.version import app_version
 
@@ -177,19 +178,49 @@ def redact_text(text: str) -> str:
 
 
 def _read_tail(path: Path, *, max_bytes: int = _MAX_LOG_BYTES, start_offset: int = 0) -> str:
-    size = path.stat().st_size
-    start_offset = max(0, min(start_offset, size))
-    readable_size = size - start_offset
-    with path.open("rb") as handle:
+    with open_log_reader(path) as handle:
+        # Rotation may replace the path after opening. Measure the generation
+        # actually held by this reader, not the replacement active file.
+        size = os.fstat(handle.fileno()).st_size
+        start_offset = max(0, min(start_offset, size))
+        readable_size = size - start_offset
         if readable_size > max_bytes:
-            handle.seek(size - max_bytes)
+            handle.seek(size - max_bytes - 1)
+            starts_on_line = handle.read(1) == b"\n"
             data = handle.read(max_bytes)
-            data = b"[truncated to last bytes]\n" + data
+            if not starts_on_line:
+                data = data.partition(b"\n")[2]
         else:
             if start_offset:
                 handle.seek(start_offset)
             data = handle.read(readable_size)
-    return redact_text(data.decode("utf-8", errors="replace"))
+    text = data.decode("utf-8", errors="replace")
+    if path.suffix == ".jsonl":
+        # Share Loguru's decoded, allowlisted projection with the Debug Console.
+        # Import lazily because that module uses this module's redaction helpers.
+        from src.runtime.debug_logs import _parse_log_line
+
+        lines: list[str] = []
+        for number, line in enumerate(text.splitlines(), start=1):
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if isinstance(payload.get("record"), dict):
+                entry = _parse_log_line(line, source=path.name, line_number=number)
+                if entry is None:
+                    continue
+                payload = entry.to_public()
+            else:
+                # Native crash records have their own schema: preserve exit
+                # codes/lifecycle evidence while redacting decoded values.
+                payload = redact_mapping(payload)
+            lines.append(json.dumps(payload, ensure_ascii=False) + "\n")
+        return "".join(lines)
+    prefix = "[truncated to last complete lines]\n" if readable_size > max_bytes else ""
+    return prefix + redact_text(text)
 
 
 def _write_json(zf: zipfile.ZipFile, name: str, value: dict[str, Any]) -> None:
@@ -315,7 +346,13 @@ def _write_log_files(zf: zipfile.ZipFile) -> None:
                 if resolved.is_file() and resolved.is_relative_to(directory_root):
                     candidates.append(resolved)
 
-    paths = sorted(set(candidates))
+    def newest_first(path: Path) -> tuple[int, str]:
+        try:
+            return (-path.stat().st_mtime_ns, str(path))
+        except OSError:
+            return (0, str(path))
+
+    paths = sorted(set(candidates), key=newest_first)
     for path in paths[:_MAX_LOG_FILES]:
         if path in seen:
             continue

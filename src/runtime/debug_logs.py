@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import threading
 from collections import OrderedDict
@@ -14,6 +15,7 @@ from typing import Any, TypeGuard
 from src.core.logging_setup import diagnostic_logging_enabled
 from src.core.rest_contracts import REST_API_VERSION
 from src.runtime.log_clear_state import clear_offset_for_path, load_clear_offsets, record_clear_state
+from src.runtime.log_io import open_log_reader
 from src.runtime.paths import data_dir, logs_dir, repo_root
 from src.runtime.support_bundle import is_sensitive_key, redact_text
 
@@ -28,24 +30,31 @@ _SHELL_LOG_RE = re.compile(r"^(?P<timestamp_ms>\d{12,})\s+(?P<message>.*)$")
 _PUBLIC_META_KEYS = {
     "active",
     "attached",
+    "attempt",
     "configured",
     "category",
     "channels",
     "chars",
     "count",
+    "dropped_records",
+    "dropped_writes",
     "enabled",
     "engine",
     "error_type",
     "errorType",
+    "explicit_retry",
     "fallback_reason",
     "fallbackReason",
+    "from_status",
     "hasStream",
+    "http_status",
     "language",
     "lastHealthCheckActive",
     "lastStartSuccess",
     "mode",
     "method",
     "model",
+    "os_error",
     "post_processed",
     "provider",
     "provider_error_code",
@@ -55,14 +64,22 @@ _PUBLIC_META_KEYS = {
     "region",
     "route",
     "restore_mode",
+    "resume",
     "consumer_confirmed",
     "retryable",
     "sample_rate_hz",
     "sampleRateHz",
     "status",
+    "source_reused",
+    "download_only",
+    "to_status",
     "total",
+    "write_failures",
 }
 _PUBLIC_NUMERIC_META_KEY_RE = re.compile(r"(?:_ms|Ms|_count|Count|_chars|Chars|_bytes|Bytes|_hz|Hz)$")
+_CORRELATION_ID_RE = re.compile(r"(?:tr_)?([0-9a-f]{32})")
+_WORKFLOW_ID_RE = re.compile(r"[0-9a-f]{32}")
+_PUBLIC_LINK_ID_KEYS = ("episode_id", "subscription_id", "job_id", "transcript_id")
 _MAX_PUBLIC_META_DEPTH = 4
 # Keep the interactive console light even when it opens an older structured log
 # whose ``meta`` still contains an O(n²) timing matrix. The complete record stays
@@ -182,7 +199,8 @@ def _read_entries(path: Path, *, stat: Any, start_offset: int, limit: int) -> tu
 
 
 def clear_debug_logs() -> dict[str, Any]:
-    cleared, failed = record_clear_state(_candidate_log_files())
+    # Clear every generation, including files outside the bounded console view.
+    cleared, failed = record_clear_state(_candidate_log_files(limit=None))
     with _CACHE_LOCK:
         _FILE_CACHE.clear()
 
@@ -202,7 +220,7 @@ def _clamp_limit(limit: int) -> int:
     return min(limit, _MAX_LIMIT)
 
 
-def _candidate_log_files() -> list[Path]:
+def _candidate_log_files(*, limit: int | None = _MAX_FILES) -> list[Path]:
     candidates: list[Path] = []
     for directory in (logs_dir(), data_dir() / "logs", repo_root()):
         if not directory.exists():
@@ -222,7 +240,14 @@ def _candidate_log_files() -> list[Path]:
 
     resolved: list[Path] = []
     seen: set[Path] = set()
-    for path in sorted(candidates, key=lambda item: (item.name, str(item.parent))):
+
+    def newest_first(path: Path) -> tuple[int, str]:
+        try:
+            return (-path.stat().st_mtime_ns, str(path))
+        except OSError:
+            return (0, str(path))
+
+    for path in sorted(candidates, key=newest_first):
         try:
             resolved_path = path.resolve()
         except OSError:
@@ -231,17 +256,17 @@ def _candidate_log_files() -> list[Path]:
             continue
         seen.add(resolved_path)
         resolved.append(resolved_path)
-        if len(resolved) >= _MAX_FILES:
+        if limit is not None and len(resolved) >= limit:
             break
     return resolved
 
 
 def _read_tail(path: Path, *, start_offset: int = 0) -> tuple[str, bool]:
-    size = path.stat().st_size
-    start_offset = max(0, min(start_offset, size))
-    readable_size = size - start_offset
-    truncated = readable_size > _MAX_BYTES_PER_FILE
-    with path.open("rb") as handle:
+    with open_log_reader(path) as handle:
+        size = os.fstat(handle.fileno()).st_size
+        start_offset = max(0, min(start_offset, size))
+        readable_size = size - start_offset
+        truncated = readable_size > _MAX_BYTES_PER_FILE
         if truncated:
             handle.seek(size - _MAX_BYTES_PER_FILE - 1)
             starts_on_line = handle.read(1) == b"\n"
@@ -350,14 +375,17 @@ def _public_log_context(extra: Any) -> dict[str, Any] | None:
 
     Runtime log files remain the full machine-readable source. The Debug Console
     receives only explicitly useful workflow fields and safe primitive metadata;
-    identifiers, credentials, transcript text, and arbitrary record extras never
-    cross this boundary.
+    credentials, transcript text, and arbitrary record extras never cross this
+    boundary. Correlation and workflow links require validated opaque UUIDs.
     """
 
     if not isinstance(extra, dict):
         return None
 
     context: dict[str, Any] = {}
+    trace_id = extra.get("trace_id")
+    if isinstance(trace_id, str) and (match := _CORRELATION_ID_RE.fullmatch(trace_id)):
+        context["correlationId"] = match.group(1)
     public_fields = (
         ("event", "event"),
         ("workflow", "workflow"),
@@ -379,10 +407,13 @@ def _public_log_context(extra: Any) -> dict[str, Any] | None:
     if isinstance(milestone, bool):
         context["milestone"] = milestone
 
-    budget = [_MAX_PUBLIC_META_ITEMS]
+    link_ids = {key: value for key in _PUBLIC_LINK_ID_KEYS if _is_workflow_id(value := extra.get(key))}
+    budget = [_MAX_PUBLIC_META_ITEMS - len(link_ids)]
     meta = _public_meta_value(extra.get("meta"), depth=0, budget=budget)
-    if isinstance(meta, dict) and meta:
-        context["meta"] = meta
+    public_meta = meta if isinstance(meta, dict) else {}
+    public_meta.update(link_ids)
+    if public_meta:
+        context["meta"] = public_meta
 
     return context or None
 
@@ -396,6 +427,11 @@ def _public_meta_value(
 ) -> Any:
     if depth > _MAX_PUBLIC_META_DEPTH or budget[0] <= 0:
         return None
+
+    if key in _PUBLIC_LINK_ID_KEYS:
+        # Reject non-string containers too, so a diagnostic-looking child key
+        # cannot turn an invalid identifier into public metadata.
+        return value if _is_workflow_id(value) else None
 
     if isinstance(value, dict):
         public: dict[str, Any] = {}
@@ -439,6 +475,10 @@ def _public_meta_value(
     if value is None and key in _PUBLIC_META_KEYS:
         return None
     return None
+
+
+def _is_workflow_id(value: Any) -> bool:
+    return isinstance(value, str) and _WORKFLOW_ID_RE.fullmatch(value) is not None
 
 
 def _is_public_meta_key(key: str, value: Any) -> bool:

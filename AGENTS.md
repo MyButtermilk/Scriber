@@ -46,6 +46,15 @@ the user explicitly asks for a temporary investigation note.
   listener before completing `native_overlay_renderer_ready`; that handshake
   returns the authoritative current snapshot so a hotkey fired during lazy
   renderer startup cannot leave a visible but transparent popup.
+- Native lifecycle revisions order overlay events and renderer-ready snapshots.
+  A hotkey preview has a UUID owner, is admitted only while hidden, and failure
+  cleanup must compare that owner under the native mutation lane. It must never
+  hide a later backend transition. Backend shows carry the recording-session
+  owner too; finalization and startup cancellation hide only that owner. A
+  successor can already be initializing before the controller's active session
+  changes, so native ownership remains authoritative during this overlap. Log
+  lifecycle changes and dispatch outcomes, not RMS frames, transcript content,
+  or raw window identifiers.
 
 ## Repository Map
 
@@ -722,6 +731,16 @@ Packaging and scripts:
   single-instance show actions must reveal that same WebView again; do not leave
   a headless tray process whose main window no longer exists. Explicit tray
   Quit and app exit still use the bounded graceful backend/audio cleanup path.
+- The custom tray WebView refreshes recent transcripts on every native show
+  through `scriber-tray-opened`, and after installing its listener on first
+  startup. Abort and generation guards prevent older requests from replacing
+  newer history. The Transcript routes' `/recent` and `/{id}/copy` reads use
+  one durable SQLite snapshot each: completed rows only for the list, current
+  canonical head content when available, and durable Mic/legacy content when
+  no artifact head exists. Never copy cached previews or in-memory history.
+  Labels are bounded plain-text previews; empty text stays visibly disabled.
+  Copy validates the selected ID and final status again, runs off the UI
+  dispatcher, and uses an owned Scriber HWND for Windows clipboard ownership.
 - Rust registers both live-mic shortcuts and the Meeting shortcut after the
   token-protected backend identity is ready. Fresh installs default to
   `Ctrl+Shift+D` for Live Mic, `Ctrl+Shift+F` for post-processing, and
@@ -871,11 +890,14 @@ Packaging and scripts:
   instead of ad hoc `any` boundaries.
 - `/api/runtime/logs` may expose only a compact human-readable message plus
   bounded, allowlisted structured context. Recursively redact public metadata,
-  omit identifiers, secrets, transcript/prompt content, and arbitrary extras,
+  omit arbitrary identifiers, secrets, transcript/prompt content, and extras,
   and keep the complete machine record in the local log file. The Debug Console
   keeps technical context and long legacy messages collapsed by default, shows
   named hot-path startup/finalization timings, and offers per-entry copyable
   redacted JSON rather than rendering dictionary dumps inline.
+  File/Podcast correlation and explicit job/transcript/episode/subscription
+  cross-references are permitted only as validated opaque UUIDs. Keep upload
+  references distinct from durable job references and preserve the hand-off.
 - Every STT execution must log one credential-free runtime configuration with
   workload, provider, exact effective model, mode, language, sample rate, and
   channel count; Soniox also includes the selected region. Never include API
