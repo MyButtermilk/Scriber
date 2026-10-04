@@ -36,6 +36,7 @@ export function FileTranscriptRetryButton({
   const busy = useRef(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const [chooseFileOpen, setChooseFileOpen] = useState(false);
+  const [confirmedResume, setConfirmedResume] = useState(false);
   const [state, setState] = useState<"idle" | "pending" | "queued">("idle");
   // History metadata does not include checkpoint eligibility. Read full detail
   // only after explicit recovery; scrolling must retain metadata-only loading.
@@ -51,7 +52,7 @@ export function FileTranscriptRetryButton({
     },
     staleTime: 10_000,
   });
-  const canResume = resumeAvailable ?? detailQuery.data?.resumeAvailable;
+  const canResume = resumeAvailable ?? confirmedResume;
   const podcastQuery = useQuery<{ episode: { id: string; status: string } | null }>({
     queryKey: ["/api/podcasts/transcripts", transcriptId],
     enabled: false,
@@ -74,7 +75,10 @@ export function FileTranscriptRetryButton({
       if (resumeAvailable === undefined) {
         const detail = await detailQuery.refetch();
         if (detail.error || !detail.data) throw detail.error || new Error(t("Could not restart transcription."));
-        if (detail.data.resumeAvailable === true) return;
+        if (detail.data.resumeAvailable === true) {
+          setConfirmedResume(true);
+          return;
+        }
       }
       // A failed lookup must not misclassify a podcast as an uploaded file.
       const lookup = await podcastQuery.refetch();
@@ -124,6 +128,7 @@ export function FileTranscriptRetryButton({
         throw eligibility.error || new Error(t("Could not restart transcription."));
       }
       if (eligibility.data.resumeAvailable === true) {
+        setConfirmedResume(true);
         setChooseFileOpen(false);
         return;
       }
@@ -152,7 +157,11 @@ export function FileTranscriptRetryButton({
   if (canResume === true) {
     return (
       <div className="contents" onClick={(event) => event.stopPropagation()}>
-        <FileTranscriptResumeButton key={transcriptId} transcriptId={transcriptId} />
+        <FileTranscriptResumeButton
+          key={transcriptId}
+          transcriptId={transcriptId}
+          onError={() => setConfirmedResume(false)}
+        />
       </div>
     );
   }

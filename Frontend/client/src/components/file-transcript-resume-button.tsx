@@ -8,7 +8,7 @@ import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { friendlyError, responseErrorMessage } from "@/lib/request-errors";
 
-export function FileTranscriptResumeButton({ transcriptId }: { transcriptId: string }) {
+export function FileTranscriptResumeButton({ transcriptId, onError }: { transcriptId: string; onError?: () => void }) {
   const { t } = useI18n();
   const { toast } = useToast();
   const client = useQueryClient();
@@ -33,6 +33,7 @@ export function FileTranscriptResumeButton({ transcriptId }: { transcriptId: str
       });
     } catch (error) {
       setState("idle");
+      onError?.();
       toast({
         title: t("Could not resume transcription"),
         description: friendlyError(error, t("Failed to resume transcription.")),

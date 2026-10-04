@@ -166,6 +166,32 @@ describe("File transcript retry", () => {
     expect(startFileUploadBatch).not.toHaveBeenCalled();
   });
 
+  it("rechecks stale positive eligibility instead of trapping a failed history card on Resume", async () => {
+    vi.mocked(fetchWithTimeout)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ resumeAvailable: false })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ episode: null })));
+    mount({}, true);
+    expect(fetchWithTimeout).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Retry transcription" }));
+    expect(await screen.findByRole("dialog")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Resume transcription" })).not.toBeInTheDocument();
+  });
+
+  it("rechecks eligibility after a rejected Resume before offering recovery again", async () => {
+    vi.mocked(fetchWithTimeout)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ resumeAvailable: true })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "Checkpoint no longer resumable" }), { status: 409 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ resumeAvailable: false })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ episode: null })));
+    mount({});
+    fireEvent.click(screen.getByRole("button", { name: "Retry transcription" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Resume transcription" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry transcription" }));
+    expect(await screen.findByRole("dialog")).toBeVisible();
+    expect(startFileUploadBatch).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it("rechecks eligibility after file selection before admitting another upload", async () => {
     vi.mocked(fetchWithTimeout)
       .mockResolvedValueOnce(new Response(JSON.stringify({ episode: null })))
