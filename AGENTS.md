@@ -2,6 +2,14 @@
 
 Last verified: 2026-09-18
 
+YouTube sign-in recovery uses explicit, temporary cookies.txt import through
+`src.youtube_session` and `/api/youtube/session`. Keep cookies out of logs,
+transcript/job persistence, disk files, and status responses. Filter foreign
+domains before frontend transmission and again in the backend; use HTTPS-only
+private extractor jars with a two-hour memory lifetime. No browser-wide
+credential extraction. A loaded jar is not proof of accepted authentication;
+real network recovery remains a separate verification step.
+
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
 conflict, then update the docs in the same task.

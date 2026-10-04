@@ -841,6 +841,15 @@ artifacts under test.
 
 Real file/YouTube workflow smoke, when credentials and network are available:
 
+For explicit YouTube sign-in recovery, run
+`scripts\project-python.cmd -m pytest tests/test_youtube_session.py tests/test_youtube_download.py tests/api/test_youtube_routes.py`.
+Frontend cookie filtering and import/clear behavior are covered by
+`youtube-session.test.ts` and `YouTubeSessionSettings.test.tsx`.
+Verify a consented real authenticated retry separately: an imported-cookie
+status alone is not successful extraction, and bot challenges may still need
+fresh cookies or an upstream YouTube fix. No local installation is implied by
+these source tests.
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1 `
   -FastLocalInstaller `

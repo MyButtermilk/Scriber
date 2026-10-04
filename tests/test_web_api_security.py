@@ -6,12 +6,35 @@ import types
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiohttp import WSServerHandshakeError
+from aiohttp import WSServerHandshakeError, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from src import web_api
 from src.api import youtube_routes
 from src.web_api import APP_SHUTDOWN_EVENT, ScriberWebController
+
+
+@pytest.mark.asyncio
+async def test_youtube_session_credentials_require_the_existing_origin_and_token_lane(monkeypatch, tmp_path):
+    from src.youtube_session import YouTubeSession
+
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "session-test-token")
+    monkeypatch.setattr(youtube_routes, "youtube_session", YouTubeSession())
+    app = web.Application(middlewares=[web_api.cors_middleware, web_api.session_token_middleware])
+    youtube_routes.register_youtube_routes(app, controller=types.SimpleNamespace())
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        denied_origin = await client.post(
+            "/api/youtube/session", headers={"Origin": "https://evil.example"}, json={"cookies": "unused"}
+        )
+        assert denied_origin.status == 403
+        denied_token = await client.get("/api/youtube/session", headers={"Origin": "http://tauri.localhost"})
+        assert denied_token.status == 401
+        assert youtube_routes.youtube_session.status() == {"connected": False}
+    finally:
+        await client.close()
 
 
 def test_safe_youtube_thumbnail_url_allows_only_youtube_thumbnail_hosts():

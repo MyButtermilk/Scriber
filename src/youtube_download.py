@@ -22,10 +22,28 @@ from src.core.provider_audio_formats import AudioInputFormat
 from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, ffprobe_video_stream_args, webm_opus_transcode_args
 from src.runtime.media_tools import find_media_tool, require_media_tool
 from src.runtime.subprocess_utils import communicate_or_kill_on_cancel, hidden_subprocess_kwargs
+from src.youtube_session import attach_youtube_session, youtube_session
 
 
 class YouTubeDownloadError(RuntimeError):
     pass
+
+
+_SIGN_IN_MESSAGE = "YouTube requires sign-in. Import your YouTube sign-in in Settings, then retry this video."
+_SESSION_REJECTED_MESSAGE = "YouTube rejected playback extraction. Try a fresh YouTube sign-in. If it still fails, an upstream YouTube fix is needed."
+
+
+def _requires_youtube_sign_in(message: str) -> bool:
+    normalized = message.lower().replace("’", "'")
+    return "sign in to confirm you're not a bot" in normalized or "sign in to confirm your age" in normalized
+
+
+def _youtube_auth_error(message: str) -> str | None:
+    if _requires_youtube_sign_in(message):
+        return _SIGN_IN_MESSAGE
+    if "the page needs to be reloaded" in message.lower():
+        return _SESSION_REJECTED_MESSAGE
+    return None
 
 
 @dataclass(frozen=True)
@@ -519,6 +537,7 @@ async def download_youtube_transcript(
             options["js_runtimes"] = {"quickjs": {"path": quickjs_path}}
 
         with yt_dlp.YoutubeDL(options) as ydl:
+            attach_youtube_session(ydl)
             info = ydl.extract_info(url, download=False)
             if not isinstance(info, dict):
                 return None
@@ -570,6 +589,9 @@ async def download_youtube_transcript(
     except YouTubeDownloadError:
         raise
     except Exception as exc:
+        auth_error = _youtube_auth_error(str(exc))
+        if auth_error:
+            raise YouTubeDownloadError(auth_error) from None
         raise YouTubeDownloadError(f"Failed to read YouTube captions: {exc}") from exc
 
 
@@ -812,6 +834,7 @@ async def download_youtube_audio(
                     for attempt in range(max_retries):
                         try:
                             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                                attach_youtube_session(ydl)
                                 info = ydl.extract_info(url, download=True)
                                 if info:
                                     # Get the final filename (no post-processing, so ext comes from format)
@@ -822,6 +845,10 @@ async def download_youtube_audio(
                         except Exception as e:
                             last_error = e
                             error_str = str(e)
+
+                            auth_error = _youtube_auth_error(error_str)
+                            if auth_error:
+                                raise YouTubeDownloadError(auth_error) from None
 
                             # Retry on transient 403 errors
                             if _is_forbidden_error(error_str) and attempt < max_retries - 1:
@@ -893,6 +920,8 @@ async def download_youtube_audio(
     # Source/dev-only fallback if the library import fails. Frozen builds ship
     # the exact pinned package inside PyInstaller and must never execute a
     # distlib/PATH launcher whose shebang points at a build-machine Python.
+    if youtube_session.status()["connected"]:
+        raise YouTubeDownloadError("The yt-dlp library is required to use the imported YouTube sign-in.")
     exe = find_media_tool("yt-dlp")
     exe_cmd = [sys.executable, "-m", "yt_dlp"] if not exe else [exe]
 
@@ -946,6 +975,10 @@ async def download_youtube_audio(
                 break
 
             last_error_msg = stderr.strip() or stdout.strip() or f"yt-dlp exited with code {proc.returncode}"
+
+            auth_error = _youtube_auth_error(last_error_msg)
+            if auth_error:
+                raise YouTubeDownloadError(auth_error)
 
             if _is_forbidden_error(last_error_msg) and attempt < max_retries - 1:
                 delay = 2.0 + attempt * 2.0  # Increasing delay: 2s, 4s, 6s

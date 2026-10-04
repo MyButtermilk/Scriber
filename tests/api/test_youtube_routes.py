@@ -16,6 +16,7 @@ from src.api.youtube_routes import (
     register_youtube_routes,
     safe_thumbnail_url,
 )
+from src.youtube_session import YouTubeSession
 
 
 class _StubController:
@@ -43,6 +44,32 @@ async def _client(controller: _StubController, *, session: object | None = None)
     client = TestClient(TestServer(app))
     await client.start_server()
     return client
+
+
+@pytest.mark.asyncio
+async def test_explicit_session_import_status_and_clear_never_return_credentials(monkeypatch):
+    session = YouTubeSession()
+    monkeypatch.setattr(youtube_routes, "youtube_session", session)
+    client = await _client(_StubController())
+    try:
+        initial = await client.get("/api/youtube/session")
+        assert await initial.json() == {"connected": False}
+        content = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tprivate-value"
+        imported = await client.post("/api/youtube/session", json={"cookies": content})
+        assert imported.status == 200
+        assert await imported.json() == {"connected": True}
+        assert imported.headers["Cache-Control"] == "no-store"
+        invalid = await client.post("/api/youtube/session", json={"cookies": "secret-invalid"})
+        assert invalid.status == 400
+        assert "secret-invalid" not in await invalid.text()
+        assert session.status() == {"connected": True}
+        oversized = await client.post("/api/youtube/session", data=b"x" * (128 * 1024 + 1))
+        assert oversized.status == 400
+        cleared = await client.delete("/api/youtube/session")
+        assert await cleared.json() == {"connected": False}
+        assert session.snapshot() == ()
+    finally:
+        await client.close()
 
 
 @pytest.mark.parametrize(

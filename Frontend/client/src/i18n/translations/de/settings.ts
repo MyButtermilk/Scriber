@@ -1,6 +1,24 @@
 import type { TranslationCatalog } from "@/i18n/types";
 
 export const settingsTranslations = {
+  "YouTube rejected playback extraction. Try a fresh YouTube sign-in. If it still fails, an upstream YouTube fix is needed.":
+    "YouTube hat das Laden des Videos abgelehnt. Versuche eine frisch exportierte YouTube-Anmeldung. Scheitert es weiterhin, ist eine Korrektur bei yt-dlp oder YouTube erforderlich.",
+  "How to export YouTube sign-in": "Anleitung: YouTube-Anmeldung exportieren",
+  "YouTube requires sign-in. Import your YouTube sign-in in Settings, then retry this video.":
+    "YouTube verlangt eine Anmeldung. Importiere deine YouTube-Anmeldung in den Einstellungen und wiederhole das Video.",
+  "YouTube sign-in": "YouTube-Anmeldung",
+  "If YouTube asks you to sign in, import an exported YouTube cookies.txt file, then retry the video. Only YouTube cookies are used, for up to two hours or until Scriber closes.":
+    "Wenn YouTube eine Anmeldung verlangt, importiere eine exportierte YouTube-cookies.txt-Datei und wiederhole das Video. Verwendet werden nur YouTube-Cookies, höchstens zwei Stunden oder bis Scriber geschlossen wird.",
+  "YouTube sign-in loaded": "YouTube-Anmeldung geladen",
+  "No YouTube sign-in loaded": "Keine YouTube-Anmeldung geladen",
+  "YouTube sign-in status is unavailable.": "Der Status der YouTube-Anmeldung ist nicht verfügbar.",
+  "YouTube sign-in file": "Datei für die YouTube-Anmeldung",
+  "Import YouTube sign-in": "YouTube-Anmeldung importieren",
+  "Clear YouTube sign-in": "YouTube-Anmeldung entfernen",
+  "The YouTube sign-in file is invalid or could not be imported.":
+    "Die Datei für die YouTube-Anmeldung ist ungültig oder konnte nicht importiert werden.",
+  "YouTube sign-in could not be cleared. Please try again.":
+    "Die YouTube-Anmeldung konnte nicht entfernt werden. Bitte erneut versuchen.",
   "Local dictation in Remote Desktop (experimental)": "Lokal diktieren in Remote Desktop (experimentell)",
   "Windows: keep dictation hotkeys local in the classic Remote Desktop client, including full screen. Enable clipboard sharing to paste into the remote text field. Requires a modifier with a letter, digit, function key, Space, Enter, Tab or Escape.":
     "Windows: Diktierkürzel im klassischen Remote-Desktop-Client lokal verwenden, auch im Vollbild. Aktiviere die Freigabe der Zwischenablage zum Einfügen ins entfernte Textfeld. Erfordert eine Zusatztaste mit Buchstabe, Ziffer, Funktionstaste, Leertaste, Enter, Tab oder Escape.",

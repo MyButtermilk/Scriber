@@ -193,9 +193,20 @@ YouTube:
    frozen package fails closed. yt-dlp owns current YouTube player-client
    selection; Scriber does not force stale client names. Every downloaded file
    must pass ffprobe audio/structure validation before it can reach a provider.
-5. Persistent job metadata tracks the caption preference, download, media
+5. When YouTube requires bot/age sign-in, Settings and the failed-video view
+   offer an explicit Netscape cookies.txt import. The frontend removes other
+   sites before transmission; `src.youtube_session` validates a bounded
+   YouTube-only HTTPS cookie set and holds it in memory for at most two hours
+   or until backend exit. Each caption/audio extractor gets a private copy.
+   GET/POST/DELETE `/api/youtube/session` use the existing HTTP security lane,
+   return only loaded status, and never persist credentials. Loaded status does
+   not prove that YouTube accepts the session. Clear/expiry affect future
+   extractors; an already-running download retains its private jar. The source
+   subprocess fallback fails closed when a session is loaded. Automatic
+   browser-wide cookie extraction and cookie files on disk are not used.
+6. Persistent job metadata tracks the caption preference, download, media
    preparation, transcription, summary, retry, resume, cancel, and completion.
-6. Transcript and summary are saved as a `youtube` transcript. A pending summary
+7. Transcript and summary are saved as a `youtube` transcript. A pending summary
    remains a processing state in Recent videos even after transcript persistence.
 
 File:

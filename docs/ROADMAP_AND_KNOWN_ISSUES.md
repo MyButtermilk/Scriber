@@ -153,6 +153,18 @@ Mic and recording:
 
 YouTube/file:
 
+- YouTube can reject extraction with a bot sign-in challenge. Explicit
+  temporary YouTube-only cookie import is available in Settings and the failed
+  transcript view, with loaded status distinct from successful authentication.
+  On 2026-10-04, video `BFKcC0VyuZA` still failed with stable `2026.08.19`
+  and nightly `2026.09.27.232945`: unauthenticated extraction requested sign-in;
+  a consented Chrome session reached "The page needs to be reloaded" with
+  default clients, and the nightly embedded/Safari probes offered no usable
+  media formats. No version bump is justified by this result. The related
+  upstream issue remains open: https://github.com/yt-dlp/yt-dlp/issues/17389.
+  Successful extraction and installed-app recovery for this video remain
+  unverified; the source import/retry plumbing is tested separately.
+
 - Thumbnail handling was fixed and covered by browser smoke.
 - File tab drag/drop was fixed and covered by browser smoke.
 - YouTube job progress now advances beyond download completion through upload,

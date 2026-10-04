@@ -104,6 +104,7 @@ import { QueryErrorState } from "@/components/ui/query-error-state";
 import { PageIntro } from "@/components/page-intro";
 import { LocalPolishingSettings } from "@/components/settings/LocalPolishingSettings";
 import { LiveMicAutoStopSettings } from "@/components/settings/LiveMicAutoStopSettings";
+import { YouTubeSessionSettings } from "@/components/settings/YouTubeSessionSettings";
 import {
   checkDesktopUpdate,
   checkDesktopUpdateIfDue,
@@ -6020,9 +6021,7 @@ export default function Settings() {
                 </div>
                 <SettingLine
                   label={t("Clean up meeting audio")}
-                  description={t(
-                    "Reduces speaker echo, background noise, and reverberation locally on your computer.",
-                  )}
+                  description={t("Reduces speaker echo, background noise, and reverberation locally on your computer.")}
                 >
                   <Switch
                     checked={meetingAecEnabled}
@@ -7123,6 +7122,7 @@ export default function Settings() {
                 />
               </SettingLine>
             </div>
+            <YouTubeSessionSettings />
           </div>
         </SectionPanel>
 
