@@ -68,6 +68,10 @@
       return;
     }
     const deepLink = bridge.buildDeepLink({ videoId, ...visibleMetadata() });
+    // A prior explicit permission in the toolbar popup enables later handoffs.
+    void chrome.runtime
+      .sendMessage({ type: "youtube-session", videoId })
+      .catch(() => {});
     if (!deepLink) {
       return;
     }

@@ -21,6 +21,7 @@ from aiohttp import ClientSession, ClientTimeout, web
 from loguru import logger
 
 from src.api.app_keys import APP_HTTP_SESSION
+from src.api.youtube_browser_session import APP_BROWSER_SESSION, BrowserSessionHandoff, accept_browser_session
 from src.config import Config
 from src.youtube_api import (
     UNSUPPORTED_YOUTUBE_URL_MESSAGE,
@@ -345,6 +346,7 @@ async def session_connect(request: web.Request) -> web.Response:
 
 
 async def session_disconnect(request: web.Request) -> web.Response:
+    request.app[APP_BROWSER_SESSION].clear()
     youtube_session.disconnect()
     return web.json_response(youtube_session.status(), headers={"Cache-Control": "no-store"})
 
@@ -353,6 +355,8 @@ def register_youtube_routes(app: web.Application, *, controller: YoutubeControll
     """Register the YouTube domain without web_api closure coupling."""
 
     app[APP_YOUTUBE_SERVICE] = YoutubeRoutesService(controller=controller)
+    app[APP_BROWSER_SESSION] = BrowserSessionHandoff()
+    app.router.add_post("/api/youtube/session/browser-accept", accept_browser_session)
 
     app.router.add_get("/api/youtube/search", search)
     app.router.add_get("/api/youtube/video", video)

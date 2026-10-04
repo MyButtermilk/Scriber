@@ -153,17 +153,14 @@ Mic and recording:
 
 YouTube/file:
 
-- YouTube can reject extraction with a bot sign-in challenge. Explicit
-  temporary YouTube-only cookie import is available in Settings and the failed
-  transcript view, with loaded status distinct from successful authentication.
-  On 2026-10-04, video `BFKcC0VyuZA` still failed with stable `2026.08.19`
-  and nightly `2026.09.27.232945`: unauthenticated extraction requested sign-in;
-  a consented Chrome session reached "The page needs to be reloaded" with
-  default clients, and the nightly embedded/Safari probes offered no usable
-  media formats. No version bump is justified by this result. The related
-  upstream issue remains open: https://github.com/yt-dlp/yt-dlp/issues/17389.
-  Successful extraction and installed-app recovery for this video remain
-  unverified; the source import/retry plumbing is tested separately.
+- YouTube can require sign-in even when a PO token is generated. On 2026-10-04,
+  bgutil 2.0.1 generated a player token but `BFKcC0VyuZA` still returned
+  LOGIN_REQUIRED. A consented YouTube session plus the TV identity correction
+  from upstream PR 17723 and bounded EJS output recovered the complete 586-second
+  audio (Opus, 48 kHz, stereo). Scriber now includes these compatibility fixes
+  and an optional automatic extension handoff; manual import is an advanced
+  fallback. Extension permission/installed-app recovery must still be checked
+  in the release environment. Source probes do not imply a local installation.
 
 - Thumbnail handling was fixed and covered by browser smoke.
 - File tab drag/drop was fixed and covered by browser smoke.

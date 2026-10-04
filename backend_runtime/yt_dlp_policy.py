@@ -121,6 +121,10 @@ def apply_youtube_only_runtime_policy() -> None:
 
     disable_external_yt_dlp_plugins()
 
+    from backend_runtime.yt_dlp_compat import apply_compatibility_fixes
+
+    apply_compatibility_fixes()
+
     from yt_dlp import extractor
     from yt_dlp.extractor import lazy_extractors
     from yt_dlp.globals import LAZY_EXTRACTORS, extractors, plugin_ies, plugin_ies_overrides

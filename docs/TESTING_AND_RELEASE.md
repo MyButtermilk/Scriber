@@ -841,10 +841,15 @@ artifacts under test.
 
 Real file/YouTube workflow smoke, when credentials and network are available:
 
-For explicit YouTube sign-in recovery, run
-`scripts\project-python.cmd -m pytest tests/test_youtube_session.py tests/test_youtube_download.py tests/api/test_youtube_routes.py`.
+For YouTube sign-in recovery, run
+`scripts\project-python.cmd -m pytest tests/test_youtube_session.py tests/test_youtube_download.py tests/test_yt_dlp_compat.py tests/api/test_youtube_routes.py tests/api/test_youtube_browser_session.py`
+and `node --test browser-extension/chrome/tests/*.test.cjs`.
 Frontend cookie filtering and import/clear behavior are covered by
 `youtube-session.test.ts` and `YouTubeSessionSettings.test.tsx`.
+The browser handoff must wait for the optional session before starting a job;
+test denied permission, unavailable/starting Scriber, foreign origin, wrong
+video, missing app token, expired offer, replay, and clear/revocation. For the
+extension UI test, grant only the optional YouTube/local-Scriber permissions.
 Verify a consented real authenticated retry separately: an imported-cookie
 status alone is not successful extraction, and bot challenges may still need
 fresh cookies or an upstream YouTube fix. No local installation is implied by

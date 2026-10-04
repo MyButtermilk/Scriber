@@ -19465,8 +19465,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Not found"}, status=404)
         return await handler(request)
 
+    from src.api.youtube_browser_session import browser_session_middleware
+
     app = web.Application(
         middlewares=[
+            browser_session_middleware,
             cors_middleware,
             provider_replay_visibility_middleware,
             session_token_middleware,

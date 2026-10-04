@@ -2,13 +2,17 @@
 
 Last verified: 2026-09-18
 
-YouTube sign-in recovery uses explicit, temporary cookies.txt import through
-`src.youtube_session` and `/api/youtube/session`. Keep cookies out of logs,
-transcript/job persistence, disk files, and status responses. Filter foreign
-domains before frontend transmission and again in the backend; use HTTPS-only
-private extractor jars with a two-hour memory lifetime. No browser-wide
-credential extraction. A loaded jar is not proof of accepted authentication;
-real network recovery remains a separate verification step.
+YouTube sign-in recovery uses the Chrome extension's optional, YouTube-only
+cookie permission. Each video handoff offers a one-use RAM capability; the
+authenticated app accepts the matching video before the extension uploads.
+Keep this narrow extension-origin loopback lane separate from general API
+CORS/token authentication. Never put cookies or capabilities into deep links,
+logs, job persistence, files, or status responses. Filter domains before
+transmission and again in `src.youtube_session`; private HTTPS extractor jars
+expire after two hours. Manual cookies.txt import is an advanced fallback.
+`backend_runtime.yt_dlp_compat` corrects the pinned TV identity and disables
+unneeded EJS player-cache output without relaxing the hardened wrapper bounds.
+A loaded jar is not proof of accepted authentication; test real downloads.
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they

@@ -58,17 +58,9 @@ export function YouTubeSessionSettings() {
       <p className="text-[13px] font-semibold">{t("YouTube sign-in")}</p>
       <p className="text-[12px] text-muted-foreground">
         {t(
-          "If YouTube asks you to sign in, import an exported YouTube cookies.txt file, then retry the video. Only YouTube cookies are used, for up to two hours or until Scriber closes.",
+          "Start the video with the Scriber browser extension. Allow YouTube sign-in once in its toolbar popup; future videos use it automatically. The session stays on this computer for up to two hours or until Scriber closes.",
         )}
       </p>
-      <a
-        className="text-[12px] underline underline-offset-2"
-        href="https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies"
-        target="_blank"
-        rel="noreferrer"
-      >
-        {t("How to export YouTube sign-in")}
-      </a>
       <p className="text-[12px]" role="status">
         {status.isError
           ? t("YouTube sign-in status is unavailable.")
@@ -87,9 +79,6 @@ export function YouTubeSessionSettings() {
         }}
       />
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" size="sm" disabled={saving} onClick={() => input.current?.click()}>
-          {t("Import YouTube sign-in")}
-        </Button>
         {status.data?.connected && (
           <Button
             variant="ghost"
@@ -103,6 +92,12 @@ export function YouTubeSessionSettings() {
           </Button>
         )}
       </div>
+      <details className="text-[12px] text-muted-foreground">
+        <summary className="cursor-pointer">{t("Advanced: import a sign-in file")}</summary>
+        <Button className="mt-2" variant="outline" size="sm" disabled={saving} onClick={() => input.current?.click()}>
+          {t("Import YouTube sign-in")}
+        </Button>
+      </details>
       {error && (
         <p className="text-[12px] text-destructive" role="alert">
           {error}

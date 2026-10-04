@@ -110,8 +110,8 @@ continues automatically.
 #### Start directly from a YouTube page in Chrome
 
 The Manifest V3 extension is directly loadable from
-`browser-extension/chrome`; it does not need a Scriber API key or access to the
-local backend port.
+`browser-extension/chrome`; it does not need a Scriber API key. Optional
+YouTube sign-in uses a one-use connection to the local app.
 
 1. Install a Scriber build that contains the `scriber://` browser handoff.
 2. Open `chrome://extensions`, enable **Developer mode**, choose **Load
@@ -120,6 +120,14 @@ local backend port.
    video actions. The extension toolbar popup provides the same handoff.
 4. Confirm Chrome's **Open Scriber** prompt on first use. Scriber opens the
    queued transcript immediately and keeps showing progress through completion.
+
+If YouTube requires sign-in, open the extension's toolbar popup and start the
+video there. Allow its optional YouTube/local-Scriber permissions once. The
+extension then passes your YouTube session automatically before transcription,
+including later starts from the in-page button. No cookie export is needed.
+Cookies stay on this computer and in memory, for up to two hours or until
+Scriber closes. Clear them in Settings at any time. Declining the optional
+permission keeps the existing public-video handoff available.
 
 The link carries only the public YouTube video ID plus the visible title and
 channel. Scriber validates that exact contract in the desktop shell; the

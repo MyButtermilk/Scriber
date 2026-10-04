@@ -1,6 +1,13 @@
 import type { TranslationCatalog } from "@/i18n/types";
 
 export const settingsTranslations = {
+  "Start the video with the Scriber browser extension. Allow YouTube sign-in once in its toolbar popup; future videos use it automatically. The session stays on this computer for up to two hours or until Scriber closes.":
+    "Starte das Video über die Scriber-Browsererweiterung. Gib im Erweiterungssymbol einmal deine YouTube-Anmeldung frei; weitere Videos verwenden sie automatisch. Die Sitzung bleibt auf diesem Computer, höchstens zwei Stunden oder bis Scriber geschlossen wird.",
+  "Advanced: import a sign-in file": "Erweitert: Anmeldedatei importieren",
+  "YouTube requires sign-in. Start this video with the Scriber browser extension and allow YouTube sign-in once.":
+    "YouTube verlangt eine Anmeldung. Starte dieses Video über die Scriber-Browsererweiterung und gib dort einmal deine YouTube-Anmeldung frei.",
+  "YouTube rejected playback extraction. Open the video in your browser and start it again with the Scriber extension.":
+    "YouTube hat das Laden abgelehnt. Öffne das Video im Browser und starte es erneut über die Scriber-Erweiterung.",
   "YouTube rejected playback extraction. Try a fresh YouTube sign-in. If it still fails, an upstream YouTube fix is needed.":
     "YouTube hat das Laden des Videos abgelehnt. Versuche eine frisch exportierte YouTube-Anmeldung. Scheitert es weiterhin, ist eine Korrektur bei yt-dlp oder YouTube erforderlich.",
   "How to export YouTube sign-in": "Anleitung: YouTube-Anmeldung exportieren",

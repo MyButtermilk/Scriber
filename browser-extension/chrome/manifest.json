@@ -1,9 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Scriber für YouTube",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Startet die Transkription des aktuellen YouTube-Videos direkt in der lokalen Scriber-App.",
   "permissions": ["activeTab"],
+  "optional_permissions": ["cookies"],
+  "optional_host_permissions": [
+    "https://*.youtube.com/*",
+    "http://127.0.0.1:8765/*"
+  ],
+  "background": { "service_worker": "background.js" },
   "action": {
     "default_title": "Mit Scriber transkribieren",
     "default_popup": "popup.html",
