@@ -32,6 +32,7 @@ from websockets.protocol import State
 
 import src.pipeline as pipeline_module
 from src.config import Config
+from src.core.provider_errors import ProviderTransportError
 from src.mic_silence_stop import MicSilenceStopObserver
 from src.microphone import MicrophoneInput
 from src.pipeline import (
@@ -1270,9 +1271,21 @@ async def test_soniox_async_webm_upload_does_not_retry_as_wav_on_api_error():
 
     processor._encode_audio = encode_webm
 
-    with pytest.raises(RuntimeError, match="upload rejected"):
+    with pytest.raises(ProviderTransportError) as raised:
         await processor._transcribe_async(b"\0\0" * 160)
 
+    error = raised.value
+    assert error.provider == "soniox"
+    assert error.operation == "upload"
+    assert error.status == 415
+    assert error.diagnostic_metadata() == {
+        "provider_operation": "upload",
+        "status": 415,
+        "response_bytes": len(b"unsupported request"),
+    }
+    assert "unsupported request" not in str(error)
+    assert "unsupported request" not in repr(vars(error))
+    assert "upload rejected" not in str(error)
     assert len(session.post_calls) == 1
     assert session.post_calls[0][0] == "https://api.soniox.com/v1/files"
 
@@ -1292,9 +1305,17 @@ async def test_soniox_async_upload_uses_selected_eu_region():
 
     processor._encode_audio = encode_webm
 
-    with pytest.raises(RuntimeError, match="upload rejected"):
+    with pytest.raises(ProviderTransportError) as raised:
         await processor._transcribe_async(b"\0\0" * 160)
 
+    error = raised.value
+    assert error.provider == "soniox"
+    assert error.operation == "upload"
+    assert error.status == 415
+    assert "unsupported request" not in str(error)
+    assert "unsupported request" not in repr(vars(error))
+    assert "upload rejected" not in str(error)
+    assert len(session.post_calls) == 1
     assert session.post_calls[0][0] == "https://api.eu.soniox.com/v1/files"
 
 

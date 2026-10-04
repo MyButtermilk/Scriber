@@ -102,15 +102,15 @@ fn rotate_log(path: &Path) -> io::Result<()> {
             Err(error) => return Err(error),
         };
         let modified = metadata.modified()?;
-        if oldest_modified.map_or(true, |oldest| modified < oldest) {
+        if oldest_modified.is_none_or(|oldest| modified < oldest) {
             oldest_modified = Some(modified);
             target = archive;
         }
     }
-    // Reuse only the oldest slot, without shifting other archives. If a
-    // Windows reader blocks the active rename, retries reuse this vacant slot
-    // instead of repeatedly evicting the remaining history.
-    fs::remove_file(&target)?;
+    // Replace the oldest slot in the rename itself, without deleting it first.
+    // std::fs::rename replaces existing files (MoveFileExW with
+    // MOVEFILE_REPLACE_EXISTING on Windows). If a reader denies delete sharing
+    // on the active file, the failed rename leaves every archive intact.
     fs::rename(path, target)
 }
 
@@ -183,7 +183,9 @@ fn drain_output(mut reader: impl Read, mut sink: impl FnMut(&[u8])) {
 
 #[cfg(test)]
 mod tests {
-    use super::{archive_path, drain_output, startup_enabled, DiagnosticGate, LOG_ARCHIVE_COUNT};
+    use super::{
+        archive_path, drain_output, rotate_log, startup_enabled, DiagnosticGate, LOG_ARCHIVE_COUNT,
+    };
     use std::{fs, sync::Arc};
 
     #[test]
@@ -275,6 +277,31 @@ mod tests {
     }
 
     #[test]
+    fn rotation_preserves_every_archive_when_the_active_file_is_missing() {
+        let root =
+            std::env::temp_dir().join(format!("scriber-log-missing-{}", uuid::Uuid::new_v4()));
+        let path = root.join("tauri-shell.log");
+        fs::create_dir_all(&root).unwrap();
+        for index in 1..=LOG_ARCHIVE_COUNT {
+            fs::write(archive_path(&path, index), format!("old{index}")).unwrap();
+        }
+        for _ in 0..4 {
+            assert_eq!(
+                rotate_log(&path).unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+        }
+        for index in 1..=LOG_ARCHIVE_COUNT {
+            assert_eq!(
+                fs::read(archive_path(&path, index)).unwrap(),
+                format!("old{index}").as_bytes()
+            );
+        }
+        assert_eq!(fs::read_dir(&root).unwrap().count(), LOG_ARCHIVE_COUNT);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn oversized_writes_are_bounded_but_legacy_logs_are_preserved_whole() {
         let root =
             std::env::temp_dir().join(format!("scriber-log-limits-{}", uuid::Uuid::new_v4()));
@@ -331,8 +358,9 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn blocked_rotation_does_not_grow_logs_or_repeatedly_evict_archives() {
+    fn blocked_rotation_preserves_the_active_log_and_every_archive() {
         use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
         use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
 
         let root =
@@ -341,7 +369,7 @@ mod tests {
         let gate = DiagnosticGate::new(true);
         gate.append_with_limit(&path, b"full", 4).unwrap();
         for index in 1..=LOG_ARCHIVE_COUNT {
-            fs::write(archive_path(&path, index), b"old").unwrap();
+            fs::write(archive_path(&path, index), format!("old{index}")).unwrap();
         }
         let reader = fs::OpenOptions::new()
             .read(true)
@@ -349,10 +377,21 @@ mod tests {
             .open(&path)
             .unwrap();
         for _ in 0..4 {
-            assert!(gate.append_with_limit(&path, b"new", 4).is_err());
+            assert_eq!(
+                gate.append_with_limit(&path, b"new", 4)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(ERROR_SHARING_VIOLATION as i32)
+            );
         }
         assert_eq!(fs::read(&path).unwrap(), b"full");
-        assert_eq!(fs::read_dir(&root).unwrap().count(), LOG_ARCHIVE_COUNT);
+        for index in 1..=LOG_ARCHIVE_COUNT {
+            assert_eq!(
+                fs::read(archive_path(&path, index)).unwrap(),
+                format!("old{index}").as_bytes()
+            );
+        }
+        assert_eq!(fs::read_dir(&root).unwrap().count(), LOG_ARCHIVE_COUNT + 1);
         drop(reader);
         gate.append_with_limit(&path, b"new", 4).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"new");

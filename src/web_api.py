@@ -12310,7 +12310,7 @@ class ScriberWebController:
                 return
             rec.status = "failed"
             rec.step = "Failed"
-            rec.append_final_text(f"[Timeout] {self._provider_user_error(exc, provider=provider).message}")
+            rec.append_final_text("[Timeout] File transcription timed out. Please try again.")
             self._emit_workflow_event(
                 message="File transcription timed out",
                 event="api.job.failed",
