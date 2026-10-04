@@ -2026,9 +2026,9 @@ def test_native_recording_overlay_uses_fixed_size_state_layers() -> None:
         'invoke<OverlayEventPayload>("native_overlay_renderer_ready")'
     )
     assert "modeFromNativeOverlayState(snapshot)" in source
-    assert "let receivedNativeEvent = false;" in source
-    assert "receivedNativeEvent = true;" in source
-    assert "if (!disposed && !receivedNativeEvent)" in source
+    assert "const acceptNativeState = createNativeOverlayStateGate();" in source
+    assert "if (disposed || !acceptNativeState(event.payload)) return;" in source
+    assert "if (disposed || !acceptNativeState(snapshot)) return;" in source
     assert "let reconnectTimer: number | null = null;" in source
     assert "reconnectTimer = window.setTimeout(connect, 750);" in source
 
