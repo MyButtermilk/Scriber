@@ -8,7 +8,6 @@
     opening: "Öffne Scriber …",
     handedOff: "An Scriber übergeben",
     unavailable: "Kein Video erkannt",
-    connect: "Bitte im Scriber-Erweiterungssymbol fortfahren",
   };
   let scheduled = false;
   const stateTimers = new Set();
@@ -60,7 +59,7 @@
     }
   }
 
-  async function launchCurrentVideo(button) {
+  function launchCurrentVideo(button) {
     const videoId = bridge.extractVideoId(window.location.href);
     if (!videoId) {
       setButtonState(button, "unavailable");
@@ -70,18 +69,15 @@
     }
     const deepLink = bridge.buildDeepLink({ videoId, ...visibleMetadata() });
     setButtonState(button, "opening");
-    const permission = await chrome.runtime
-      .sendMessage({ type: "youtube-session-prepare" })
-      .catch(() => null);
-    if (permission && !permission.allowed) {
-      clearStateTimers();
-      setButtonState(button, "connect");
-      return;
-    }
     // A prior explicit permission in the toolbar popup enables later handoffs.
-    void chrome.runtime
-      .sendMessage({ type: "youtube-session", videoId })
-      .catch(() => {});
+    // Session transfer is optional and must not consume the click's activation.
+    try {
+      void chrome.runtime
+        .sendMessage({ type: "youtube-session", videoId })
+        .catch(() => {});
+    } catch {
+      // An extension update can invalidate this page's old content script.
+    }
     if (!deepLink) {
       return;
     }

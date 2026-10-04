@@ -20,7 +20,7 @@ from src.api.http_security import is_loopback_request
 from src.youtube_session import MAX_COOKIE_BYTES, youtube_session
 
 _PREFIX = "/api/youtube/browser-session/"
-_ORIGIN = re.compile(r"chrome-extension://[a-p]{32}\Z")
+EXTENSION_ORIGIN = "chrome-extension://ilbdnbhdihacgkaedacmndeabbiondob"
 _SECRET = re.compile(r"[a-f0-9]{64}\Z")
 _VIDEO = re.compile(r"[A-Za-z0-9_-]{11}\Z")
 
@@ -32,6 +32,8 @@ class _Offer:
     deadline: float
     completed: asyncio.Event
     accepted: bool = False
+    revision: int | None = None
+    connected: bool = False
 
 
 class BrowserSessionHandoff:
@@ -39,12 +41,16 @@ class BrowserSessionHandoff:
         self.offers: dict[str, _Offer] = {}
 
     def clear(self) -> None:
+        for offer in self.offers.values():
+            offer.completed.set()
         self.offers.clear()
 
     def _prune(self) -> None:
         self.offers = {key: offer for key, offer in self.offers.items() if offer.deadline > time.monotonic()}
 
     def offer(self, origin: str, secret: str, video: str) -> bool:
+        if origin != EXTENSION_ORIGIN:
+            return False
         self._prune()
         key = hashlib.sha256(secret.encode()).hexdigest()
         if existing := self.offers.get(key):
@@ -64,9 +70,10 @@ class BrowserSessionHandoff:
             if offers:
                 offer = offers[-1]
                 offer.accepted = True
+                offer.revision = youtube_session.revision
                 try:
                     await asyncio.wait_for(offer.completed.wait(), upload_timeout)
-                    return True
+                    return offer.connected
                 except TimeoutError:
                     offer.deadline = 0
                     return False
@@ -80,11 +87,13 @@ class BrowserSessionHandoff:
         offer = self.offers.get(key)
         if not offer or offer.origin != origin or not offer.accepted or offer.completed.is_set():
             return False
-        youtube_session.connect(content)
-        offer.completed.set()
+        try:
+            offer.connected = youtube_session.connect(content, if_revision=offer.revision)
+        finally:
+            offer.completed.set()
         # Retain a bounded tombstone until expiry; re-offering must not revive
         # an already consumed capability.
-        return True
+        return offer.connected
 
 
 APP_BROWSER_SESSION = web.AppKey("youtube_browser_session", BrowserSessionHandoff)
@@ -96,7 +105,7 @@ async def browser_session_middleware(request: web.Request, handler):
         return await handler(request)
     origin = request.headers.get("Origin", "")
     if (
-        not _ORIGIN.fullmatch(origin)
+        origin != EXTENSION_ORIGIN
         or not is_loopback_request(request)
         or request.host.split(":", 1)[0] != "127.0.0.1"
         or request.path not in {_PREFIX + "offer", _PREFIX + "upload"}

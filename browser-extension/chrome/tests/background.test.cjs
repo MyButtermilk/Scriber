@@ -6,7 +6,7 @@ const path = require("node:path");
 const { webcrypto } = require("node:crypto");
 const session = require("../session.js");
 
-function harness(permission = true) {
+function harness(permission = true, cookieName = "SID") {
   let listener;
   const requests = [];
   const cookieReads = [];
@@ -32,7 +32,7 @@ function harness(permission = true) {
             {
               domain: ".youtube.com",
               path: "/",
-              name: "SID",
+              name: cookieName,
               value: "private-session",
             },
           ];
@@ -106,19 +106,26 @@ test("denied optional permission and foreign senders never read cookies or conne
   assert.equal(h.cookieReads.length, 0);
 });
 
-test("first in-page click opens permission UI before creating a failed app job", async () => {
+test("anonymous cookies do not offer a replacement for the app's current session", async () => {
+  const h = harness(true, "VISITOR_INFO1_LIVE");
+  assert.equal((await h.call()).connected, false);
+  assert.equal(h.openedPopup, false);
+  assert.equal(h.cookieReads.length, 1);
+  assert.equal(h.requests.length, 0);
+});
+
+test("an in-page click without permission never forces the permission popup", async () => {
   const h = harness(false);
   assert.equal(
-    (await h.call(h.sender, "youtube-session-prepare")).allowed,
+    (
+      await h.call({
+        ...h.sender,
+        url: "https://www.youtube.com/watch?v=BFKcC0VyuZA",
+      })
+    ).connected,
     false,
   );
-  assert.equal(h.openedPopup, true);
+  assert.equal(h.openedPopup, false);
   assert.equal(h.cookieReads.length, 0);
   assert.equal(h.requests.length, 0);
-  const connected = harness();
-  assert.equal(
-    (await connected.call(connected.sender, "youtube-session-prepare")).allowed,
-    true,
-  );
-  assert.equal(connected.openedPopup, false);
 });

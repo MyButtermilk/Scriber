@@ -132,16 +132,21 @@ YouTube sign-in uses a one-use connection to the local app.
 4. Confirm Chrome's **Open Scriber** prompt on first use. Scriber opens the
    queued transcript immediately and keeps showing progress through completion.
 
-With extension **0.2.0 or later**, open its toolbar popup and start the
+With extension **0.2.1 or later**, open its toolbar popup and start the
 video there. Allow its optional YouTube/local-Scriber permissions once. The
 extension then passes your YouTube session automatically before transcription,
 including later starts from the in-page button. No cookie export is needed.
 Cookies stay on this computer and in memory, for up to two hours or until
 Scriber closes. Clear them in Settings at any time. Declining the optional
-permission keeps the existing public-video handoff available.
+permission keeps the existing public-video handoff available, including the
+in-page button. Anonymous visitor cookies never replace an existing sign-in.
+Rapid video handoffs are queued while session acceptance and job creation finish.
 
 The Store listing was verified at 0.1.0 on 2026-10-04. The new automatic session
-handoff requires the prepared 0.2.0 extension update to be published as well.
+handoff requires the corrected 0.2.1 extension update to be published as well.
+Until that version is available, use the private sign-in window in Scriber.
+Unpacked builds can send video links; session transfer accepts only the official
+Store extension ID.
 
 The link carries only the public YouTube video ID plus the visible title and
 channel. Scriber validates that exact contract in the desktop shell; the

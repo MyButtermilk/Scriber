@@ -18,12 +18,18 @@ type LoginStatus = {
   attempt: number;
 };
 
-export function YouTubeSessionSettings({ onConnected }: { onConnected?: () => void | Promise<void> }) {
+export function YouTubeSessionSettings({
+  onConnected,
+  recoveryKey,
+}: {
+  onConnected?: () => void | Promise<void>;
+  recoveryKey?: string;
+}) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const input = useRef<HTMLInputElement>(null);
   const pending = useRef(false);
-  const ownAttempt = useRef<number | null>(null);
+  const ownAttempt = useRef<{ id: number; recoveryKey?: string } | null>(null);
   const mounted = useRef(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -46,10 +52,10 @@ export function YouTubeSessionSettings({ onConnected }: { onConnected?: () => vo
   useEffect(() => {
     if (login.data?.state !== "connected") return;
     void queryClient.invalidateQueries({ queryKey: sessionKey });
-    if (ownAttempt.current !== login.data.attempt) return;
+    if (ownAttempt.current?.id !== login.data.attempt || ownAttempt.current.recoveryKey !== recoveryKey) return;
     ownAttempt.current = null;
     void onConnected?.();
-  }, [login.data, onConnected, queryClient]);
+  }, [login.data, onConnected, queryClient, recoveryKey]);
 
   async function startLogin() {
     if (pending.current) return;
@@ -60,7 +66,7 @@ export function YouTubeSessionSettings({ onConnected }: { onConnected?: () => vo
       const response = await apiRequest("POST", loginKey[0]);
       const result: LoginStatus = await response.json();
       if (!mounted.current) return;
-      ownAttempt.current = result.attempt;
+      ownAttempt.current = { id: result.attempt, recoveryKey };
       queryClient.setQueryData(loginKey, result);
     } catch {
       setError(t("The sign-in window could not be opened. Please try again."));
@@ -236,6 +242,9 @@ export function YouTubeSessionSettings({ onConnected }: { onConnected?: () => vo
       </Button>
       <p className="text-[12px] text-muted-foreground">
         {t("Confirm the installation in Chrome, then allow YouTube sign-in in the add-on when sending a video.")}
+      </p>
+      <p className="text-[12px] text-muted-foreground">
+        {t("Session sharing requires add-on version 0.2.1 or later. You can sign in above at any time.")}
       </p>
       <details className="text-[12px] text-muted-foreground">
         <summary className="cursor-pointer">{t("Advanced: import a sign-in file")}</summary>

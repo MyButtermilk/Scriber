@@ -18,7 +18,14 @@ transmission and again in `src.youtube_session`; private HTTPS extractor jars
 expire after two hours. Manual cookies.txt import is an advanced fallback.
 The recovery UI links to the official Store ID `ilbdnbhdihacgkaedacmndeabbiondob`;
 users confirm installation in Chrome. Store 0.1.0 lacks the new cookie handoff;
-publish and validate extension 0.2.0 before promising that shortcut in a release.
+publish and validate extension 0.2.1 before promising that shortcut in a release.
+Cookie permission must never gate the in-page video deep link. Session uploads
+accept only the official Store extension origin, require a non-empty account
+cookie, and compare the revision captured at app acceptance; manual import and
+disconnect revoke pending offers. Visitor cookies must not replace a sign-in or
+invalidate a private login. Bind automatic retries to both attempt and transcript
+identity. Queue observed video handoffs through acceptance and job creation.
+Distinguish browser/protocol timeouts from the five-minute sign-in timeout.
 `backend_runtime.yt_dlp_compat` corrects the pinned TV identity and disables
 unneeded EJS player-cache output without relaxing the hardened wrapper bounds.
 A loaded jar is not proof of accepted authentication; test real downloads.

@@ -80,3 +80,28 @@ def test_cookies_are_sent_only_to_youtube_over_https():
         request = Request(url)
         jar.add_cookie_header(request)
         assert request.get_header("Cookie") == expected
+
+
+@pytest.mark.parametrize("name,value", [("VISITOR_INFO1_LIVE", "visitor"), ("SID", "")])
+def test_anonymous_import_cannot_replace_an_authenticated_session(name, value):
+    session = YouTubeSession()
+    session.connect(cookies(".youtube.com\tTRUE\t/\tTRUE\t0\tSID\tprevious"))
+    revision = session.revision
+    with pytest.raises(YouTubeSessionError):
+        session.connect(cookies(f".youtube.com\tTRUE\t/\tTRUE\t0\t{name}\t{value}"))
+    assert session.revision == revision
+    assert session.snapshot()[0].value == "previous"
+
+
+def test_expired_auth_cookie_cannot_leave_a_connected_visitor_session(monkeypatch):
+    monkeypatch.setattr("src.youtube_session.time.time", lambda: 100.0)
+    session = YouTubeSession()
+    session.connect(
+        cookies(
+            ".youtube.com\tTRUE\t/\tTRUE\t200\tSID\tfixture",
+            ".youtube.com\tTRUE\t/\tTRUE\t0\tVISITOR_INFO1_LIVE\tvisitor",
+        )
+    )
+    monkeypatch.setattr("src.youtube_session.time.time", lambda: 201.0)
+    assert session.status() == {"connected": False}
+    assert session.snapshot() == ()

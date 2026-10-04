@@ -33,15 +33,16 @@ async function transfer(videoId) {
     }
   }
   try {
+    content = ScriberYouTubeSession.cookieFile(
+      await chrome.cookies.getAll({ url: "https://www.youtube.com/" }),
+    );
+    if (!content) return false;
     let offered = false;
     while (Date.now() < deadline) {
       if (!offered) {
         const response = await post("offer", { secret, videoId });
         if (response?.ok) {
           offered = true;
-          content = ScriberYouTubeSession.cookieFile(
-            await chrome.cookies.getAll({ url: "https://www.youtube.com/" }),
-          );
         }
       } else {
         const response = await post("upload", { secret, cookies: content });
@@ -58,10 +59,7 @@ async function transfer(videoId) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
-  if (
-    sender.id !== chrome.runtime.id ||
-    !["youtube-session", "youtube-session-prepare"].includes(message?.type)
-  )
+  if (sender.id !== chrome.runtime.id || message?.type !== "youtube-session")
     return false;
   const source = sender.url || "";
   if (!(
@@ -69,22 +67,6 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     /^https:\/\/(www\.|m\.)?youtube\.com\//.test(source)
   ))
     return false;
-  if (message.type === "youtube-session-prepare") {
-    chrome.permissions.contains(ScriberYouTubeSession.permissions).then(
-      async (allowed) => {
-        if (!allowed) {
-          try {
-            await chrome.action.openPopup();
-          } catch {
-            /* The content button names the toolbar fallback. */
-          }
-        }
-        respond({ allowed });
-      },
-      () => respond({ allowed: false }),
-    );
-    return true;
-  }
   transfer(message.videoId).then(
     (connected) => respond({ connected }),
     () => respond({ connected: false }),

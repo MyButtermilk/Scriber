@@ -11,12 +11,24 @@
       "m.youtube.com",
       "music.youtube.com",
     ]);
+    const authNames = new Set([
+      "SID",
+      "SAPISID",
+      "__Secure-1PSID",
+      "__Secure-3PSID",
+      "__Secure-1PAPISID",
+      "__Secure-3PAPISID",
+    ]);
+    const selected = cookies.filter(
+      (cookie) =>
+        hosts.has(cookie.domain.toLowerCase().replace(/^\./, "")) &&
+        (!cookie.expirationDate || cookie.expirationDate * 1000 > Date.now()),
+    );
+    if (!selected.some((cookie) => authNames.has(cookie.name) && cookie.value))
+      return null;
     return (
       "# Netscape HTTP Cookie File\n" +
-      cookies
-        .filter((cookie) =>
-          hosts.has(cookie.domain.toLowerCase().replace(/^\./, "")),
-        )
+      selected
         .map((cookie) =>
           [
             cookie.httpOnly ? `#HttpOnly_${cookie.domain}` : cookie.domain,

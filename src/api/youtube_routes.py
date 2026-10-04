@@ -340,6 +340,7 @@ async def session_connect(request: web.Request) -> web.Response:
             raise ValueError
         await request.app[APP_YOUTUBE_LOGIN].cancel()
         youtube_session.connect(payload["cookies"])
+        request.app[APP_BROWSER_SESSION].clear()
     except ValueError:
         return web.json_response(
             {"message": "The YouTube sign-in file is invalid or contains no usable YouTube session."},

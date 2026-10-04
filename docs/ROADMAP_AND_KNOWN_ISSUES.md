@@ -161,7 +161,7 @@ YouTube/file:
   and an opt-in private Chrome/Edge sign-in window that needs no add-on, plus an
   optional automatic extension handoff; manual import is an advanced fallback.
   The UI links to the official Store; the live 0.1.0 extension must be updated
-  to the prepared 0.2.0 for automatic cookie handoff. Real Google sign-in and
+  to the corrected 0.2.1 for automatic cookie handoff. Real Google sign-in and
   extension permission/installed-app recovery must still be checked
   in the release environment. Source probes do not imply a local installation.
 

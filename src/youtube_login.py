@@ -23,7 +23,7 @@ from typing import Any
 import aiohttp
 
 from src.runtime.cancellation import await_with_delayed_cancellation
-from src.youtube_session import MAX_COOKIE_BYTES, YouTubeSession, youtube_session
+from src.youtube_session import AUTH_COOKIE_NAMES, MAX_COOKIE_BYTES, YouTubeSession, youtube_session
 
 
 class YouTubeLoginError(RuntimeError):
@@ -56,7 +56,7 @@ def signed_in_cookie_file(cookies: list[dict[str, Any]]) -> str | None:
             continue
         if expiry > 0 and expiry <= time.time():
             continue
-        signed_in |= name in {"SAPISID", "__Secure-1PAPISID", "__Secure-3PAPISID"} and bool(value)
+        signed_in |= name in AUTH_COOKIE_NAMES and bool(value)
         rows.append(
             "\t".join(
                 (
@@ -88,14 +88,17 @@ class _DevTools:
         payload: dict[str, Any] = {"id": self.sequence, "method": method, "params": params or {}}
         if session:
             payload["sessionId"] = session
-        async with asyncio.timeout(5):
-            await self.socket.send_json(payload)
-            while True:
-                response = await self.socket.receive_json()
-                if response.get("id") == self.sequence:
-                    if "error" in response:
-                        raise YouTubeLoginError("browser_unavailable")
-                    return response.get("result", {})
+        try:
+            async with asyncio.timeout(5):
+                await self.socket.send_json(payload)
+                while True:
+                    response = await self.socket.receive_json()
+                    if response.get("id") == self.sequence:
+                        if "error" in response:
+                            raise YouTubeLoginError("browser_unavailable")
+                        return response.get("result", {})
+        except TimeoutError:
+            raise YouTubeLoginError("browser_unavailable") from None
 
 
 async def _debug_endpoint(profile: Path, process: asyncio.subprocess.Process) -> str:
@@ -162,14 +165,17 @@ async def _collect_session(browser: Path, ready: Callable[[], None]) -> str:
         attached = await protocol.call("Target.attachToTarget", {"targetId": target["targetId"], "flatten": True})
         session_id = attached["sessionId"]
         ready()
-        async with asyncio.timeout(300):
-            while process.returncode is None:
-                result = await protocol.call(
-                    "Network.getCookies", {"urls": ["https://www.youtube.com/"]}, session=session_id
-                )
-                if content := signed_in_cookie_file(result.get("cookies", [])):
-                    return content
-                await asyncio.sleep(1)
+        try:
+            async with asyncio.timeout(300):
+                while process.returncode is None:
+                    result = await protocol.call(
+                        "Network.getCookies", {"urls": ["https://www.youtube.com/"]}, session=session_id
+                    )
+                    if content := signed_in_cookie_file(result.get("cookies", [])):
+                        return content
+                    await asyncio.sleep(1)
+        except TimeoutError:
+            raise YouTubeLoginError("timed_out") from None
         raise YouTubeLoginError("cancelled")
     finally:
 
@@ -245,8 +251,9 @@ class YouTubeLogin:
         except asyncio.CancelledError:
             self._state = "idle"
             raise
-        except TimeoutError:
-            self._state, self._error = "failed", "timed_out"
+        except YouTubeLoginError as exc:
+            self._state = "failed"
+            self._error = "timed_out" if str(exc) == "timed_out" else "browser_unavailable"
         except Exception:
             # Browser exceptions can contain credential data. Never log them.
             self._state, self._error = "failed", "browser_unavailable"

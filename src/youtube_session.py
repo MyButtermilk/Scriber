@@ -10,6 +10,9 @@ from http.cookiejar import Cookie
 from typing import Protocol
 
 MAX_COOKIE_BYTES = 64 * 1024
+AUTH_COOKIE_NAMES = frozenset(
+    {"SID", "SAPISID", "__Secure-1PSID", "__Secure-3PSID", "__Secure-1PAPISID", "__Secure-3PAPISID"}
+)
 _SESSION_SECONDS = 2 * 60 * 60
 _COOKIE_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
@@ -80,7 +83,7 @@ def _parse(content: str) -> tuple[Cookie, ...]:
         )
         if len(selected) > 200:
             raise YouTubeSessionError(invalid)
-    if not selected:
+    if not any(cookie.name in AUTH_COOKIE_NAMES and cookie.value for cookie in selected):
         raise YouTubeSessionError(invalid)
     return tuple(selected)
 
@@ -118,6 +121,8 @@ class YouTubeSession:
             if time.monotonic() >= self._deadline:
                 self._cookies = ()
             self._cookies = tuple(cookie for cookie in self._cookies if not cookie.is_expired())
+            if not any(cookie.name in AUTH_COOKIE_NAMES and cookie.value for cookie in self._cookies):
+                self._cookies = ()
             return tuple(copy.copy(cookie) for cookie in self._cookies)
 
     def status(self) -> dict[str, bool]:

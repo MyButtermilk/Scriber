@@ -99,6 +99,25 @@ describe("YouTube session recovery", () => {
     client.clear();
   });
 
+  it("does not give an earlier video's sign-in attempt to the next video's callback", async () => {
+    const { client, onConnected: first, rerender } = setup();
+    const second = vi.fn();
+    request.mockResolvedValueOnce({ json: async () => ({ ...idle, state: "waiting", attempt: 4 }) });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in to YouTube" }));
+    await screen.findByRole("button", { name: "Cancel sign-in" });
+    rerender(
+      <QueryClientProvider client={client}>
+        <YouTubeSessionSettings recoveryKey="next-video" onConnected={second} />
+      </QueryClientProvider>,
+    );
+    await act(async () => {
+      client.setQueryData(loginKey, { ...idle, state: "connected", attempt: 4 });
+    });
+    expect(first).not.toHaveBeenCalled();
+    expect(second).not.toHaveBeenCalled();
+    client.clear();
+  });
+
   it("waits for an explicit import, filters other sites, then allows clearing", async () => {
     request.mockReset();
     const client = new QueryClient({

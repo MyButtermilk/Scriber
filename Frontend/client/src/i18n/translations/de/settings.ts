@@ -930,4 +930,6 @@ export const settingsTranslations = {
   "Record diagnostic logs": "Diagnoseprotokolle aufzeichnen",
   "When disabled, Scriber stops recording diagnostic logs in the app and backend. Existing logs are kept. You can turn logging back on whenever you need to investigate a problem.":
     "Wenn ausgeschaltet, zeichnet Scriber keine Diagnoseprotokolle mehr in der App und im Hintergrunddienst auf. Vorhandene Protokolle bleiben erhalten. Für die Fehlersuche kannst du die Aufzeichnung jederzeit wieder einschalten.",
+  "Session sharing requires add-on version 0.2.1 or later. You can sign in above at any time.":
+    "Die Übernahme der Anmeldung benötigt Add-on-Version 0.2.1 oder neuer. Du kannst dich jederzeit oben direkt anmelden.",
 } satisfies TranslationCatalog;

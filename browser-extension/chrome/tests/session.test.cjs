@@ -34,3 +34,28 @@ test("optional permission stays limited to YouTube and the local Scriber endpoin
   );
   assert.deepEqual(manifest.permissions, ["activeTab"]);
 });
+
+test("visitor-only, empty and expired account cookies cannot replace an authenticated session", () => {
+  const cookie = {
+    domain: ".youtube.com",
+    path: "/",
+    name: "VISITOR_INFO1_LIVE",
+    value: "visitor",
+  };
+  assert.equal(session.cookieFile([cookie]), null);
+  assert.equal(
+    session.cookieFile([cookie, { ...cookie, name: "SID", value: "" }]),
+    null,
+  );
+  assert.equal(
+    session.cookieFile([cookie, { ...cookie, name: "SID", expirationDate: 1 }]),
+    null,
+  );
+  assert.equal(
+    session.cookieFile([
+      cookie,
+      { ...cookie, name: "SID", domain: ".google.com" },
+    ]),
+    null,
+  );
+});

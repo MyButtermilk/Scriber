@@ -934,7 +934,11 @@ export default function TranscriptDetail() {
                 }
               />
               {isFailedYoutubeTranscript && requiresYouTubeSignIn(rawFailureMessage) && (
-                <YouTubeSessionSettings onConnected={retryYoutubeTranscription} />
+                <YouTubeSessionSettings
+                  key={transcript.id}
+                  recoveryKey={transcript.id}
+                  onConnected={retryYoutubeTranscription}
+                />
               )}
               {transcript.type === "file" && transcript.resumeAvailable !== true && (
                 <FileTranscriptRetryButton key={transcript.id} transcriptId={id!} resumeAvailable={false} />

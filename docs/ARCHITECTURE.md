@@ -204,16 +204,24 @@ YouTube:
    and shutdown join owned-process cleanup. Cookies stay in memory; the empty
    default profile is removed best-effort after closure. Session revisions
    prevent a late window from replacing a newer import or disconnect. A UI-owned
-   attempt ID resumes the failed video once, while an unmounted view never does.
+   attempt ID and transcript identity resume the failed video once, while an
+   unmounted or repurposed view never does. Browser/protocol timeouts are distinct
+   from the five-minute user sign-in deadline.
    The recovery control also links to the official Chrome Store listing and
    leaves installation confirmation to Chrome.
 6. The optional browser extension can transfer the YouTube session automatically after
    its optional cookie/YouTube/local-Scriber permissions are explicitly granted
    in the toolbar popup. A short-lived, one-use offer is bound to the extension
-   origin and video. Only the authenticated app's browser-import handler can
+   official Store extension origin and video. Only the authenticated app's browser-import handler can
    accept it; the extension then posts cookies to the narrow loopback upload
    lane before extraction starts. Capabilities/cookies never enter deep links.
-   Both extension and backend filter foreign domains. Manual Netscape import
+   Upload also compares the session revision captured at acceptance, so a late
+   handoff cannot overwrite a newer import, sign-in or clear. Manual import and
+   clear revoke pending offers and wake their waiters. Both extension and backend
+   filter foreign domains and require a non-empty account cookie; anonymous
+   visitor cookies never replace a session. Missing optional permissions never
+   block a video deep link. The frontend queues observed video handoffs through
+   session acceptance and job creation. Manual Netscape import
    remains under advanced settings. `src.youtube_session` validates a bounded
    YouTube-only HTTPS cookie set and holds it in memory for at most two hours
    or until backend exit. Each caption/audio extractor gets a private copy.

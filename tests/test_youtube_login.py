@@ -94,7 +94,13 @@ async def test_sign_in_publishes_ram_session_but_never_overwrites_newer_choice(m
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "error,code", [(RuntimeError("private-secret"), "browser_unavailable"), (TimeoutError(), "timed_out")]
+    "error,code",
+    [
+        (RuntimeError("private-secret"), "browser_unavailable"),
+        (TimeoutError(), "browser_unavailable"),
+        (login.YouTubeLoginError("timed_out"), "timed_out"),
+        (login.YouTubeLoginError("private-secret"), "browser_unavailable"),
+    ],
 )
 async def test_failure_never_leaks_browser_exception(monkeypatch, error, code):
     monkeypatch.setattr(login, "find_login_browser", lambda: Path("fixture-chrome.exe"))
@@ -164,7 +170,7 @@ async def test_browser_protocol_uses_private_context_and_only_youtube_cookies(mo
     if outcome == "success":
         assert "fixture-session" in await collection
     elif outcome == "timeout":
-        with pytest.raises(TimeoutError):
+        with pytest.raises(login.YouTubeLoginError, match="^browser_unavailable$"):
             await collection
     else:
         await reading.wait()
