@@ -932,7 +932,7 @@ export default function TranscriptDetail() {
                 }
               />
               {transcript.type === "file" && transcript.resumeAvailable !== true && (
-                <FileTranscriptRetryButton key={transcript.id} transcriptId={id!} />
+                <FileTranscriptRetryButton key={transcript.id} transcriptId={id!} resumeAvailable={false} />
               )}
               {technicalFailureMessage && (
                 <p className="text-xs text-muted-foreground px-1">

@@ -154,7 +154,7 @@ YouTube/file:
 - File history preserves fixed-size icons and bounds compact summary labels.
   Failed File records offer explicit transcription retry in list/grid and
   detail views: linked podcast episodes requeue their durable source, while
-  uploaded files reopen file selection for a new attempt. Detail views instead
+  uploaded files reopen file selection for a new attempt. Recovery actions instead
   offer Resume when the backend confirms retained checkpoint/source eligibility,
   preserving completed provider parts without asking for another upload.
   Summary failures retry only the summary, including failed replacement

@@ -14,12 +14,12 @@ vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast }) }));
 vi.mock("@/lib/file-upload-store", () => ({ startFileUploadBatch: vi.fn() }));
 vi.mock("wouter", () => ({ useLocation: () => ["/file", navigate] }));
 
-function mount() {
+function mount(props: { resumeAvailable?: boolean } = { resumeAvailable: false }) {
   return render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <LocaleProvider>
         <div onClick={() => navigate("old-record")}>
-          <FileTranscriptRetryButton transcriptId={"a".repeat(32)} />
+          <FileTranscriptRetryButton transcriptId={"a".repeat(32)} {...props} />
         </div>
       </LocaleProvider>
     </QueryClientProvider>,
@@ -107,6 +107,20 @@ describe("File transcript retry", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(startFileUploadBatch).not.toHaveBeenCalled();
     expect(button).toBeEnabled();
+  });
+
+  it("does not offer a fresh upload when checkpoint eligibility cannot be checked", async () => {
+    vi.mocked(fetchWithTimeout).mockImplementation(async (url) => {
+      if (String(url).startsWith("/api/podcasts/")) return new Response(JSON.stringify({ episode: null }));
+      throw new Error("Network unavailable");
+    });
+    mount({});
+    const button = screen.getByRole("button", { name: "Retry transcription" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Retry failed" })));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(startFileUploadBatch).not.toHaveBeenCalled();
   });
 
   it("does not move the user back to a transcript after they leave during upload", async () => {

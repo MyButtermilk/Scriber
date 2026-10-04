@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RotateCcw } from "lucide-react";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
+import { FileTranscriptResumeButton } from "@/components/file-transcript-resume-button";
 import {
   Dialog,
   DialogContent,
@@ -17,13 +18,16 @@ import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { friendlyError, responseErrorMessage } from "@/lib/request-errors";
 import { startFileUploadBatch } from "@/lib/file-upload-store";
+import type { TranscriptDetailResponse } from "@/lib/api-types";
 
 export function FileTranscriptRetryButton({
   transcriptId,
   compact = false,
+  resumeAvailable,
 }: {
   transcriptId: string;
   compact?: boolean;
+  resumeAvailable?: boolean;
 }) {
   const { t } = useI18n();
   const { toast } = useToast();
@@ -33,8 +37,24 @@ export function FileTranscriptRetryButton({
   const fileInput = useRef<HTMLInputElement>(null);
   const [chooseFileOpen, setChooseFileOpen] = useState(false);
   const [state, setState] = useState<"idle" | "pending" | "queued">("idle");
+  // History metadata does not include checkpoint eligibility. Share the detail
+  // cache and fail closed before offering a fresh, potentially paid upload.
+  const detailQuery = useQuery<TranscriptDetailResponse>({
+    queryKey: ["/api/transcripts", transcriptId],
+    enabled: resumeAvailable === undefined,
+    queryFn: async () => {
+      const response = await fetchWithTimeout(apiUrl(`/api/transcripts/${encodeURIComponent(transcriptId)}`), {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error(await responseErrorMessage(response));
+      return response.json();
+    },
+    staleTime: 10_000,
+  });
+  const canResume = resumeAvailable ?? detailQuery.data?.resumeAvailable;
   const podcastQuery = useQuery<{ episode: { id: string; status: string } | null }>({
     queryKey: ["/api/podcasts/transcripts", transcriptId],
+    enabled: canResume !== true,
     queryFn: async () => {
       const response = await fetchWithTimeout(apiUrl(`/api/podcasts/transcripts/${transcriptId}`), {
         credentials: "include",
@@ -53,6 +73,11 @@ export function FileTranscriptRetryButton({
     busy.current = true;
     setState("pending");
     try {
+      if (resumeAvailable === undefined) {
+        const detail = detailQuery.data ? { data: detailQuery.data, error: null } : await detailQuery.refetch();
+        if (detail.error || !detail.data) throw detail.error || new Error(t("Could not restart transcription."));
+        if (detail.data.resumeAvailable === true) return;
+      }
       // A failed lookup must not misclassify a podcast as an uploaded file.
       const lookup = podcastQuery.data ? { data: podcastQuery.data, error: null } : await podcastQuery.refetch();
       if (lookup.error || !lookup.data) throw lookup.error || new Error(t("Could not restart transcription."));
@@ -113,6 +138,16 @@ export function FileTranscriptRetryButton({
     }
   };
 
+  if (canResume === true) {
+    return (
+      <div className="contents" onClick={(event) => event.stopPropagation()}>
+        <FileTranscriptResumeButton key={transcriptId} transcriptId={transcriptId} />
+      </div>
+    );
+  }
+
+  const isLookupPending = podcastQuery.isPending || (resumeAvailable === undefined && detailQuery.isPending);
+
   return (
     <div className="contents" onClick={(event) => event.stopPropagation()}>
       <Button
@@ -121,8 +156,8 @@ export function FileTranscriptRetryButton({
         size="sm"
         className="min-w-0 max-w-full gap-1.5 rounded-full"
         onClick={retry}
-        disabled={state !== "idle" || podcastQuery.isPending || episodeAlreadyQueued}
-        aria-busy={state === "pending" || podcastQuery.isPending}
+        disabled={state !== "idle" || isLookupPending || episodeAlreadyQueued}
+        aria-busy={state === "pending" || isLookupPending}
         aria-label={state === "queued" || episodeAlreadyQueued ? t("Queued") : t("Retry transcription")}
         data-transcript-retry={transcriptId}
       >

@@ -79,7 +79,7 @@ describe("File transcription recovery", () => {
     history.length = 0;
     view.mode = "grid";
     request.mockReset();
-    request.mockResolvedValue({ ok: true, json: async () => ({ episode: null }) });
+    request.mockResolvedValue({ ok: true, json: async () => ({ episode: null, resumeAvailable: false }) });
   });
 
   it.each(["grid", "list"] as const)(
@@ -94,6 +94,23 @@ describe("File transcription recovery", () => {
   it("keeps transcription retry available when a failed record retains a pending summary marker", async () => {
     mount({ summaryStatus: "pending" });
     await waitFor(() => expect(screen.getByRole("button", { name: "Retry transcription" })).toBeEnabled());
+  });
+
+  it.each(["grid", "list"] as const)("resumes saved paid progress from %s without another upload", async (mode) => {
+    view.mode = mode;
+    request.mockResolvedValue({ ok: true, json: async () => ({ resumeAvailable: true }) });
+    mount({});
+    fireEvent.click(await screen.findByRole("button", { name: "Resume transcription" }));
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        "/api/transcripts/failed-file/resume-file",
+        { method: "POST", credentials: "include" },
+        60_000,
+      ),
+    );
+    expect(screen.queryByRole("button", { name: "Retry transcription" })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it("retries only the summary when transcription succeeded", async () => {
