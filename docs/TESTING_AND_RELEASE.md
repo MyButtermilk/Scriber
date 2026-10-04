@@ -356,7 +356,11 @@ real React/Vite File page in Chrome against `src.web_api.create_app`, the
 extracted File Transcription handler, the real transcript database, and a real
 `JobStore`. It requires two provider-bound queued jobs with separate owned
 sources, preserves the File page, opens a transcript, and checks actual browser
-back/forward mouse input. The synthetic File browser scenario additionally
+back/forward mouse input. It also seeds legacy File failures without a retained
+source, verifies German summary badges and fixed-size icons at 1280, 960, and
+390 px, retries an upload through the detail view into a new durable job, and
+preserves the original failed record. Optional `--evidence-dir` saves settled
+screenshots. The synthetic File browser scenario additionally
 holds two preparations, appends more files, leaves/reopens the queue, and checks
 long-filename containment at 1280, 960, and 390 px plus reduced motion.
 The same production browser run also

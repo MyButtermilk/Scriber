@@ -21,7 +21,7 @@ import ReactMarkdown from "react-markdown";
 import { QueryErrorState } from "@/components/ui/query-error-state";
 import { SummaryTableOfContents, TranscriptSummaryDocument } from "@/components/transcript-summary-document";
 import { TranscriptStopButton } from "@/components/transcript-stop-button";
-import { PodcastTranscriptRetryButton } from "@/components/podcast-transcript-retry-button";
+import { FileTranscriptRetryButton } from "@/components/file-transcript-retry-button";
 import { useAppScrollContainerRef } from "@/contexts/AppScrollContainerContext";
 import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -454,9 +454,13 @@ export default function TranscriptDetail() {
   const updatedAtMs = Date.parse(String(transcript?.updatedAt || ""));
   const isSummaryStep = summaryStepLower.includes("summariz");
   const isSummaryStepFresh = Number.isFinite(updatedAtMs) ? Date.now() - updatedAtMs < 3 * 60 * 1000 : true;
-  const isSummaryInProgress = !hasSummary && (summaryStatus === "pending" || (isSummaryStep && isSummaryStepFresh));
+  const isSummaryInProgress =
+    !isFailedTranscript &&
+    summaryStatus !== "failed" &&
+    !hasSummary &&
+    (summaryStatus === "pending" || (isSummaryStep && isSummaryStepFresh));
   const isSummaryStepStale = !hasSummary && summaryStatus !== "failed" && isSummaryStep && !isSummaryStepFresh;
-  const isSummaryFailed = !hasSummary && summaryStatus === "failed";
+  const isSummaryFailed = summaryStatus === "failed";
   const summaryFailureMessage = friendlyRequestMessage(
     String(transcript?.summaryError || "").trim(),
     t("Summary generation failed."),
@@ -861,9 +865,6 @@ export default function TranscriptDetail() {
               (transcript.status === "failed" || transcript.status === "stopped") && (
                 <FileTranscriptResumeButton key={transcript.id} transcriptId={transcript.id} />
               )}
-            {transcript.status === "failed" && transcript.type === "file" && transcript.resumeAvailable !== true && (
-              <PodcastTranscriptRetryButton transcriptId={id!} />
-            )}
             {showHeaderSummaryAction && (
               <div className="hidden md:block">
                 <SummarizeButton
@@ -930,6 +931,9 @@ export default function TranscriptDetail() {
                     : undefined
                 }
               />
+              {transcript.type === "file" && transcript.resumeAvailable !== true && (
+                <FileTranscriptRetryButton key={transcript.id} transcriptId={id!} resumeAvailable={false} />
+              )}
               {technicalFailureMessage && (
                 <p className="text-xs text-muted-foreground px-1">
                   {t("Technical details")}: {technicalFailureMessage}
