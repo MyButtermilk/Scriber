@@ -54,11 +54,17 @@ describe("File transcript retry", () => {
     await waitFor(() => expect(button).toBeEnabled());
     fireEvent.click(button);
     fireEvent.click(button);
-    expect(fetch).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
     expect(fetch.mock.calls[1][0]).toBe(`/api/podcasts/episodes/${"b".repeat(32)}/queue`);
     expect(fetch.mock.calls[1][1]?.method).toBe("POST");
     finish(new Response("{}", { status: 202 }));
     expect(await screen.findByRole("button", { name: "Queued" })).toBeDisabled();
+  });
+
+  it("keeps history mounting free of detail and podcast requests until explicit recovery", () => {
+    mount({});
+    expect(screen.getByRole("button", { name: "Retry transcription" })).toBeEnabled();
+    expect(fetchWithTimeout).not.toHaveBeenCalled();
   });
 
   it("opens file selection for an ordinary upload and admits one new attempt without opening the old card", async () => {

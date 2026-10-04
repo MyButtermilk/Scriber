@@ -100,6 +100,8 @@ describe("File transcription recovery", () => {
     view.mode = mode;
     request.mockResolvedValue({ ok: true, json: async () => ({ resumeAvailable: true }) });
     mount({});
+    expect(request).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Retry transcription" }));
     fireEvent.click(await screen.findByRole("button", { name: "Resume transcription" }));
     await waitFor(() =>
       expect(request).toHaveBeenCalledWith(

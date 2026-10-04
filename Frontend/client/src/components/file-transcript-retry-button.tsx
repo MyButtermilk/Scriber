@@ -37,11 +37,11 @@ export function FileTranscriptRetryButton({
   const fileInput = useRef<HTMLInputElement>(null);
   const [chooseFileOpen, setChooseFileOpen] = useState(false);
   const [state, setState] = useState<"idle" | "pending" | "queued">("idle");
-  // History metadata does not include checkpoint eligibility. Share the detail
-  // cache and fail closed before offering a fresh, potentially paid upload.
+  // History metadata does not include checkpoint eligibility. Read full detail
+  // only after explicit recovery; scrolling must retain metadata-only loading.
   const detailQuery = useQuery<TranscriptDetailResponse>({
     queryKey: ["/api/transcripts", transcriptId],
-    enabled: resumeAvailable === undefined,
+    enabled: false,
     queryFn: async () => {
       const response = await fetchWithTimeout(apiUrl(`/api/transcripts/${encodeURIComponent(transcriptId)}`), {
         credentials: "include",
@@ -54,7 +54,7 @@ export function FileTranscriptRetryButton({
   const canResume = resumeAvailable ?? detailQuery.data?.resumeAvailable;
   const podcastQuery = useQuery<{ episode: { id: string; status: string } | null }>({
     queryKey: ["/api/podcasts/transcripts", transcriptId],
-    enabled: canResume !== true,
+    enabled: false,
     queryFn: async () => {
       const response = await fetchWithTimeout(apiUrl(`/api/podcasts/transcripts/${transcriptId}`), {
         credentials: "include",
@@ -65,11 +65,9 @@ export function FileTranscriptRetryButton({
     staleTime: 10_000,
   });
 
-  const episodeAlreadyQueued = Boolean(podcastQuery.data?.episode && podcastQuery.data.episode.status !== "failed");
-
   const retry = async (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
-    if (busy.current || state === "queued" || episodeAlreadyQueued) return;
+    if (busy.current || state === "queued") return;
     busy.current = true;
     setState("pending");
     try {
@@ -79,14 +77,17 @@ export function FileTranscriptRetryButton({
         if (detail.data.resumeAvailable === true) return;
       }
       // A failed lookup must not misclassify a podcast as an uploaded file.
-      const lookup = podcastQuery.data ? { data: podcastQuery.data, error: null } : await podcastQuery.refetch();
+      const lookup = await podcastQuery.refetch();
       if (lookup.error || !lookup.data) throw lookup.error || new Error(t("Could not restart transcription."));
       const episode = lookup.data.episode;
       if (!episode) {
         setChooseFileOpen(true);
         return;
       }
-      if (episode.status !== "failed") return;
+      if (episode.status !== "failed") {
+        setState("queued");
+        return;
+      }
       const response = await fetchWithTimeout(apiUrl(`/api/podcasts/episodes/${episode.id}/queue`), {
         method: "POST",
         credentials: "include",
@@ -156,8 +157,6 @@ export function FileTranscriptRetryButton({
     );
   }
 
-  const isLookupPending = podcastQuery.isPending || (resumeAvailable === undefined && detailQuery.isPending);
-
   return (
     <div className="contents" onClick={(event) => event.stopPropagation()}>
       <Button
@@ -166,14 +165,14 @@ export function FileTranscriptRetryButton({
         size="sm"
         className="min-w-0 max-w-full gap-1.5 rounded-full"
         onClick={retry}
-        disabled={state !== "idle" || isLookupPending || episodeAlreadyQueued}
-        aria-busy={state === "pending" || isLookupPending}
-        aria-label={state === "queued" || episodeAlreadyQueued ? t("Queued") : t("Retry transcription")}
+        disabled={state !== "idle"}
+        aria-busy={state === "pending"}
+        aria-label={state === "queued" ? t("Queued") : t("Retry transcription")}
         data-transcript-retry={transcriptId}
       >
         <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
         <span className="min-w-0 truncate">
-          {state === "queued" || episodeAlreadyQueued
+          {state === "queued"
             ? t("Queued")
             : state === "pending"
               ? t("Retrying…")
