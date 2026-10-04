@@ -189,6 +189,7 @@ def qualification_evidence(
     api: API = gh_json,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     evidence: dict[str, Any] = {
         "schemaVersion": 1,
@@ -198,13 +199,29 @@ def qualification_evidence(
         "sourceRunId": 0,
         "sourceRunAttempt": 0,
     }
-    deadline = monotonic() + 120
+    deadline = monotonic() + (1200 if operation == "qualify" else 120)
 
     def request(endpoint: str) -> dict[str, Any]:
         remaining = deadline - monotonic()
         if remaining <= 0:
             raise GateError("qualification_verification_timeout")
         return api(endpoint, min(30, remaining))
+
+    def require_clear_main_quality() -> None:
+        while True:
+            try:
+                _require_clear_main_quality(request, head_sha=head_sha, now=now())
+                return
+            except GateError as error:
+                # The main push and qualification run share gates but can finish
+                # in either order. Only this read-only contract may wait; tag and
+                # signing verification still reject pending or failed evidence.
+                if operation != "qualify" or str(error) != "main_quality_not_completed":
+                    raise
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise GateError("qualification_verification_timeout") from None
+                sleep(min(5, remaining))
 
     try:
         if (
@@ -311,7 +328,7 @@ def qualification_evidence(
                     qualifying=operation == "qualify",
                 )
             )
-        _require_clear_main_quality(request, head_sha=head_sha, now=checked_at)
+        require_clear_main_quality()
         evidence.update(
             _verify(
                 request,
@@ -331,7 +348,7 @@ def qualification_evidence(
         # A delayed main push run can appear while source/release identities
         # are rechecked. Make main discovery the final state read, so absence
         # in the first snapshot cannot authorize signing after it becomes visible.
-        _require_clear_main_quality(request, head_sha=head_sha, now=now())
+        require_clear_main_quality()
         if now() - _timestamp(evidence["sourceCreatedAt"]) > timedelta(hours=24):
             raise GateError("qualification_expired_during_final_checks")
         evidence.update(status="success", reason="same_sha_pre_tag_qualification", sourceWorkflow=WORKFLOW)

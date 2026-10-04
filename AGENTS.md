@@ -576,6 +576,9 @@ Packaging and scripts:
   and the pre-signing boundary revalidate its run/attempt/provenance and jobs;
   missing, failed, pending, stale or post-tag evidence cannot fall back to local
   checks. Existing signing, quality, installer and publication gates remain mandatory.
+  The read-only qualification contract waits up to 20 minutes for a matching
+  main push run that is still pending; real failures remain immediate blockers.
+  Tag/signing verification itself never waits away pending or failed evidence.
   Planning may
   select canonical main quality evidence for the identical SHA, under 24 hours
   old, with immutable reusable-workflow provenance. Missing evidence starts

@@ -129,6 +129,52 @@ def test_qualification_contract_can_validate_its_own_running_run(tmp_path):
     assert github.check(tmp_path)["reason"] == "qualification_not_successful"
 
 
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancelled", "provenance-changed", "timeout"])
+def test_qualification_waits_for_parallel_main_without_ignoring_failures(tmp_path, outcome):
+    github = GitHub()
+    github.source.update(status="in_progress", conclusion=None)
+    github.jobs.pop()
+    main = deepcopy(github.source)
+    main.update(id=400, path=SOURCE_WORKFLOW, event="push")
+    github.main_runs = [main]
+    original = github.api
+    elapsed = 0.0
+    sleeps = []
+
+    def api(endpoint, timeout):
+        if "/runs/400/jobs?" in endpoint:
+            return {"jobs": [{**job, "run_id": 400} for job in github.jobs], "total_count": len(github.jobs)}
+        return original(endpoint, timeout)
+
+    def sleep(seconds):
+        nonlocal elapsed
+        sleeps.append(seconds)
+        elapsed += seconds
+        if outcome == "timeout":
+            return
+        main.update(status="completed", conclusion=outcome)
+        if outcome == "provenance-changed":
+            main.update(conclusion="success", referenced_workflows=[])
+
+    result = github.check(tmp_path, "qualify", run_id=SOURCE_ID, api=api, sleep=sleep, monotonic=lambda: elapsed)
+    assert sleeps and all(0 < seconds <= 5 for seconds in sleeps)
+    if outcome == "success":
+        assert result["status"] == "success"
+        assert len(result["jobs"]) == 6
+    else:
+        assert result["status"] == "failure"
+        assert (
+            result["reason"]
+            == {
+                "failure": "matching_main_run_unsuccessful",
+                "cancelled": "matching_main_run_unsuccessful",
+                "provenance-changed": "source_workflow_provenance_unavailable",
+                "timeout": "qualification_verification_timeout",
+            }[outcome]
+        )
+    assert elapsed == (1200 if outcome == "timeout" else 5)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
