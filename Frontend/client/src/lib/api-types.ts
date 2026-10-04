@@ -960,6 +960,7 @@ export interface TrayTranscriptItem {
   createdAt?: string;
   preview: string;
   contentAvailable: boolean;
+  contentUnavailable?: boolean;
 }
 
 export type FileTranscribeResponse = TranscriptHistoryItem;

@@ -176,6 +176,7 @@ it("renders bounded safe previews, disables empty content, and excludes invalid 
     response([
       item("safe", "  Hello\n\t<b>&World</b>\u202e " + "😀".repeat(100)),
       item("empty", "", false),
+      { ...item("unavailable", "", false), contentUnavailable: true },
       { ...item("unfinished", "Unfinished text"), status: "processing" },
       item("../bad", "Unsafe ID"),
       item("safe", "Duplicate"),
@@ -192,9 +193,15 @@ it("renders bounded safe previews, disables empty content, and excludes invalid 
     expect(safe.querySelector("b")).toBeNull();
     expect(safe.textContent).not.toContain("\u202e");
     expect(view.getByRole("button", { name: /Empty transcript/ }).hasAttribute("disabled")).toBe(true);
+    const unavailable = view.getByRole("button", { name: /Transcript unavailable\. Refresh recent transcripts\./ });
+    expect(unavailable.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(unavailable);
+    expect(mocks.action).not.toHaveBeenCalled();
     expect(view.queryByText("Unfinished text")).toBeNull();
     expect(view.queryByText("Unsafe ID")).toBeNull();
     expect(view.queryByText("Duplicate")).toBeNull();
+    fireEvent.click(safe);
+    await waitFor(() => expect(mocks.action).toHaveBeenCalledWith("copy_transcript:safe"));
   } finally {
     view.unmount();
   }

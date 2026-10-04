@@ -4173,7 +4173,7 @@ async def test_start_listening_does_not_wait_for_overlay_shell_ipc(monkeypatch):
     overlay_started = threading.Event()
     overlay_release = threading.Event()
 
-    def slow_overlay_show() -> None:
+    def slow_overlay_show(*, owner_id=None) -> None:
         overlay_started.set()
         assert overlay_release.wait(timeout=2.0)
 

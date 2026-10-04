@@ -78,6 +78,7 @@ impl Drop for FallbackNotificationWorkerReservation {
 struct OverlayState {
     revision: u64,
     preview_id: Option<String>,
+    owner_id: Option<String>,
     mode: String,
     visible: bool,
     cursor_events_ignored: bool,
@@ -93,6 +94,7 @@ impl Default for OverlayState {
         Self {
             revision: 0,
             preview_id: None,
+            owner_id: None,
             mode: "hidden".to_string(),
             visible: false,
             cursor_events_ignored: true,
@@ -108,6 +110,7 @@ impl OverlayState {
     fn transition(&mut self, mode: &str, visible: bool) {
         self.revision = self.revision.saturating_add(1);
         self.preview_id = None;
+        self.owner_id = None;
         self.mode = mode.to_string();
         self.visible = visible;
     }
@@ -487,6 +490,10 @@ fn show_overlay(payload: &Value) -> Result<Value, String> {
             .unwrap_or("recording"),
     )?;
     let preview_id = overlay_preview_id(payload, "previewId")?;
+    let owner_id = overlay_preview_id(payload, "ownerId")?;
+    if preview_id.is_some() && owner_id.is_some() {
+        return Err("overlay cannot have both preview and backend owners".to_string());
+    }
     let preview = preview_id.is_some();
     // Tray state is asynchronous. A hotkey worker must not replace a backend-owned
     // recording/transcribing window merely because its tray snapshot was stale.
@@ -495,7 +502,7 @@ fn show_overlay(payload: &Value) -> Result<Value, String> {
         snapshot["previewApplied"] = json!(false);
         return Ok(snapshot);
     }
-    let mut snapshot = show_overlay_mode(mode, preview_id)?;
+    let mut snapshot = show_overlay_mode(mode, preview_id, owner_id)?;
     if preview {
         snapshot["previewApplied"] = json!(true);
     }
@@ -511,12 +518,20 @@ fn overlay_preview_id(payload: &Value, field: &str) -> Result<Option<String>, St
                 .and_then(|raw| uuid::Uuid::parse_str(raw).ok())
                 .filter(|id| !id.is_nil())
                 .map(|id| id.to_string())
-                .ok_or_else(|| "invalid overlay preview identity".to_string())
+                .ok_or_else(|| "invalid overlay identity".to_string())
         })
         .transpose()
 }
 
 fn hide_overlay_if_current(payload: &Value) -> Result<Value, String> {
+    if let Some(expected) = overlay_preview_id(payload, "expectedOwnerId")? {
+        // Backend finalization overlaps a successor's initializing window.
+        // Its session check can still see the older session during setup, so
+        // compare native ownership under the same mutation lane as the hide.
+        if !update_state(|state| state.owner_id.as_deref() == Some(expected.as_str())) {
+            return Ok(status_payload());
+        }
+    }
     if let Some(expected) = overlay_preview_id(payload, "expectedPreviewId")? {
         // This comparison and the hide share the mutation lane. In particular,
         // a lost HTTP response cannot hide a recording that Python already owns.
@@ -551,7 +566,11 @@ fn prepare_overlay_mode(_mode: String) -> Result<Value, String> {
 }
 
 #[cfg(not(test))]
-fn show_overlay_mode(mode: String, preview_id: Option<String>) -> Result<Value, String> {
+fn show_overlay_mode(
+    mode: String,
+    preview_id: Option<String>,
+    owner_id: Option<String>,
+) -> Result<Value, String> {
     let app = overlay_app_handle()?;
     let window = ensure_overlay_window(&app, &mode)?;
     ensure_overlay_positioned(&window).map_err(|err| format!("overlay position failed: {err}"))?;
@@ -560,6 +579,7 @@ fn show_overlay_mode(mode: String, preview_id: Option<String>) -> Result<Value, 
     let event_payload = update_state(|state| {
         state.transition(&mode, true);
         state.preview_id = preview_id;
+        state.owner_id = owner_id;
         if state.mode == "recording" {
             state.last_rms = 0.0;
         }
@@ -616,10 +636,15 @@ fn overlay_mutation_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[cfg(test)]
-fn show_overlay_mode(mode: String, preview_id: Option<String>) -> Result<Value, String> {
+fn show_overlay_mode(
+    mode: String,
+    preview_id: Option<String>,
+    owner_id: Option<String>,
+) -> Result<Value, String> {
     update_state(|state| {
         state.transition(&mode, true);
         state.preview_id = preview_id;
+        state.owner_id = owner_id;
     });
     Ok(status_payload())
 }
@@ -923,6 +948,7 @@ fn status_payload() -> Value {
         "renderer": "tauri-webview",
         "windowLabel": OVERLAY_WINDOW_LABEL,
         "revision": state.revision,
+        "ownerId": state.owner_id,
         "available": overlay_runtime_available(),
         "mode": state.mode,
         "requestedVisible": state.visible,
@@ -1144,6 +1170,50 @@ mod tests {
         assert_eq!(retained["visible"], true);
         hide_overlay().unwrap();
         assert!(show_overlay(&json!({"previewId": "not-an-id"})).is_err());
+    }
+
+    #[test]
+    fn backend_cleanup_cannot_hide_a_successor_during_initialization() {
+        let _lane = overlay_mutation_lock();
+        hide_overlay().unwrap();
+        let first = uuid::Uuid::new_v4().to_string();
+        let second = uuid::Uuid::new_v4().to_string();
+        show_overlay(&json!({"mode": "transcribing", "ownerId": first})).unwrap();
+        for mode in ["initializing", "recording"] {
+            let successor = show_overlay(&json!({"mode": mode, "ownerId": second})).unwrap();
+            let retained = hide_overlay_if_current(&json!({"expectedOwnerId": first})).unwrap();
+            assert_eq!(retained["mode"], mode);
+            assert_eq!(retained["visible"], true);
+            assert_eq!(retained["ownerId"], second);
+            assert_eq!(retained["revision"], successor["revision"]);
+        }
+        let hidden = hide_overlay_if_current(&json!({"expectedOwnerId": second})).unwrap();
+        assert_eq!(hidden["visible"], false);
+        assert!(hidden["ownerId"].is_null());
+        assert!(hide_overlay_if_current(&json!({"expectedOwnerId": "invalid"})).is_err());
+        assert!(show_overlay(&json!({"ownerId": "invalid"})).is_err());
+    }
+
+    #[test]
+    fn backend_hide_retry_preserves_a_new_shell_preview_and_unowned_shutdown_still_hides() {
+        let _lane = overlay_mutation_lock();
+        hide_overlay().unwrap();
+        let owner = uuid::Uuid::new_v4().to_string();
+        show_overlay(&json!({"mode": "recording", "ownerId": owner})).unwrap();
+        hide_overlay_if_current(&json!({"expectedOwnerId": owner})).unwrap();
+        // The hide's reply was lost; another hotkey has already shown a preview.
+        let preview = show_overlay(
+            &json!({"mode": "initializing", "previewId": uuid::Uuid::new_v4().to_string()}),
+        )
+        .unwrap();
+        let retained = hide_overlay_if_current(&json!({"expectedOwnerId": owner})).unwrap();
+        assert_eq!(retained["visible"], true);
+        assert_eq!(retained["revision"], preview["revision"]);
+        assert!(retained["ownerId"].is_null());
+        assert_eq!(
+            hide_overlay_if_current(&json!({})).unwrap()["visible"],
+            false
+        );
     }
 
     #[test]

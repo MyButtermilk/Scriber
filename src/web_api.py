@@ -6295,7 +6295,14 @@ class ScriberWebController:
                 meta={"attempt": attempts, "provider_replay": False},
             )
             return False
-        category = classify_error_message(str(error))
+        # Sanitized provider errors intentionally omit reason phrases. Preserve
+        # their authoritative HTTP classification without changing the retry
+        # policy (notably rate limits) or bypassing the durable fence above.
+        category = (
+            provider_user_error(error.provider, error).category
+            if isinstance(error, ProviderTransportError)
+            else classify_error_message(str(error))
+        )
         if not persistence_retry and not is_retryable(category):
             return False
         if attempts >= self._job_max_attempts:
@@ -8085,7 +8092,14 @@ class ScriberWebController:
             try:
                 self._mark_hot_path(session_id, f"{marker_prefix}_started")
                 async with self._overlay_lock:
-                    if name != "initializing" and session_id is not None and self._session_id not in {None, session_id}:
+                    # A successor can abort while its initializing window is
+                    # owned natively but _session_id still names its predecessor.
+                    # Session-bound hides carry the authoritative native fence.
+                    if (
+                        name not in {"initializing", "hide"}
+                        and session_id is not None
+                        and self._session_id not in {None, session_id}
+                    ):
                         return
                     response = await asyncio.to_thread(command)
                 if isinstance(response, dict) and response.get("success") is not True:
@@ -8143,26 +8157,33 @@ class ScriberWebController:
     def _show_initializing_overlay_async(self, *, session_id: str | None = None) -> None:
         self._schedule_overlay_command(
             "initializing",
-            show_initializing_overlay,
+            lambda: show_initializing_overlay(owner_id=session_id),
             session_id=session_id,
         )
 
     def _show_recording_overlay_async(self, *, session_id: str | None = None) -> None:
         self._schedule_overlay_command(
             "recording",
-            show_recording_overlay,
+            lambda: show_recording_overlay(owner_id=session_id),
             session_id=session_id,
         )
 
     def _show_transcribing_overlay_async(self, *, session_id: str | None = None) -> None:
         self._schedule_overlay_command(
             "transcribing",
-            show_transcribing_overlay,
+            lambda: show_transcribing_overlay(owner_id=session_id),
             session_id=session_id,
         )
 
     def _hide_recording_overlay_async(self, *, session_id: str | None = None) -> None:
-        self._schedule_overlay_command("hide", hide_recording_overlay, session_id=session_id)
+        # A successor's initializing overlay is shown before _session_id changes.
+        # The native owner fence must therefore accompany the queued hide even
+        # after the dispatch-time controller check accepted the older session.
+        self._schedule_overlay_command(
+            "hide",
+            lambda: hide_recording_overlay(expected_owner_id=session_id),
+            session_id=session_id,
+        )
 
     def _load_transcripts_from_db(self) -> None:
         """Initialize database-backed history without loading all metadata into RAM."""

@@ -9,6 +9,7 @@ from loguru import logger
 
 from src import pipeline, web_api
 from src.core.provider_errors import ProviderTransportError
+from src.data.job_store import JobStatus, JobStore, JobType
 from src.runtime.provider_http import ProviderHttpTransport
 
 
@@ -97,3 +98,42 @@ def test_legacy_diagnostic_callback_cannot_abort_provider_request():
         raise RuntimeError("optional diagnostic callback failed")
 
     ProviderHttpTransport._emit_marker(SimpleNamespace(marker=marker), "request_started", 100)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["soniox", "modulate"])
+@pytest.mark.parametrize(
+    "status,retryable", [(500, True), (504, True), (503, True), (408, True), (429, False), (401, False)]
+)
+@pytest.mark.parametrize("uncertain_commit", [False, True])
+async def test_transport_status_retry_preserves_policy_and_durable_fence(
+    tmp_path, provider, status, retryable, uncertain_commit
+):
+    store = JobStore(db_path=tmp_path / "retry.db")
+    controller = object.__new__(web_api.ScriberWebController)
+    record = web_api.TranscriptRecord(
+        id="a" * 32, title="Retry", date="Today", duration="--:--", status="processing", type="file", language="auto"
+    )
+    job = store.enqueue(transcript_id=record.id, job_type=JobType.FILE)
+    assert store.mark_running(job.id)
+    if uncertain_commit:
+        assert store.mark_provider_request_may_be_committed(job.id)
+    controller._job_store = store
+    controller._job_ids_by_transcript = {record.id: job.id}
+    controller._job_max_attempts = 3
+    controller._retry_delay_seconds = Mock(return_value=5)
+    controller._schedule_retry_scan = Mock()
+    controller._emit_workflow_event = Mock()
+    try:
+        scheduled = await controller._schedule_retry_if_allowed(
+            record, ProviderTransportError(provider=provider, operation="upload", status=status)
+        )
+        expected = retryable and not uncertain_commit
+        assert scheduled is expected
+        persisted = store.get(job.id)
+        assert persisted is not None
+        assert persisted.status == (JobStatus.QUEUED if expected else JobStatus.RUNNING)
+        assert bool(persisted.next_retry_at) is expected
+        assert controller._schedule_retry_scan.call_count == int(expected)
+    finally:
+        store.close()

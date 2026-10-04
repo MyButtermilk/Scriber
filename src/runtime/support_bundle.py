@@ -13,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from src.runtime.log_clear_state import clear_offset_for_path, load_clear_offsets
+from src.runtime.log_io import open_log_reader
 from src.runtime.paths import data_dir, logs_dir, repo_root, settings_path, support_bundles_dir
 from src.version import app_version
 
@@ -177,10 +178,12 @@ def redact_text(text: str) -> str:
 
 
 def _read_tail(path: Path, *, max_bytes: int = _MAX_LOG_BYTES, start_offset: int = 0) -> str:
-    size = path.stat().st_size
-    start_offset = max(0, min(start_offset, size))
-    readable_size = size - start_offset
-    with path.open("rb") as handle:
+    with open_log_reader(path) as handle:
+        # Rotation may replace the path after opening. Measure the generation
+        # actually held by this reader, not the replacement active file.
+        size = os.fstat(handle.fileno()).st_size
+        start_offset = max(0, min(start_offset, size))
+        readable_size = size - start_offset
         if readable_size > max_bytes:
             handle.seek(size - max_bytes - 1)
             starts_on_line = handle.read(1) == b"\n"

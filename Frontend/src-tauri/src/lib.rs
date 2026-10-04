@@ -2230,7 +2230,11 @@ fn handle_shell_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
     }
 
     if let Some(transcript_id) = item_id.strip_prefix(MENU_ITEM_COPY_TRANSCRIPT_PREFIX) {
-        copy_recent_transcript_from_shell(app, transcript_id);
+        let app = app.clone();
+        let transcript_id = transcript_id.to_string();
+        tauri::async_runtime::spawn_blocking(move || {
+            copy_recent_transcript_from_shell(&app, &transcript_id);
+        });
         return;
     }
 
@@ -3512,6 +3516,23 @@ fn copy_text_to_clipboard<R: Runtime>(app: &AppHandle<R>, text: &str) -> Result<
     copy_text_to_clipboard_with_owner(owner.0 as _, text)
 }
 
+#[cfg(any(windows, test))]
+fn retry_clipboard_open(
+    mut try_open: impl FnMut() -> bool,
+    mut wait: impl FnMut(Duration),
+) -> bool {
+    const ATTEMPTS: usize = 10;
+    for attempt in 0..ATTEMPTS {
+        if try_open() {
+            return true;
+        }
+        if attempt + 1 < ATTEMPTS {
+            wait(Duration::from_millis(20));
+        }
+    }
+    false
+}
+
 #[cfg(windows)]
 fn copy_text_to_clipboard_with_owner(
     owner: windows_sys::Win32::Foundation::HWND,
@@ -3537,7 +3558,9 @@ fn copy_text_to_clipboard_with_owner(
 
         // EmptyClipboard makes this window the clipboard owner. Passing NULL
         // leaves no owner and causes SetClipboardData to fail on Windows.
-        if OpenClipboard(owner) == 0 {
+        // Clipboard history/RDP can hold the clipboard briefly. Only retry
+        // acquisition, on the copy worker; never repeat EmptyClipboard/Set.
+        if !retry_clipboard_open(|| OpenClipboard(owner) != 0, std::thread::sleep) {
             let _ = GlobalFree(handle);
             return Err("could not open clipboard".to_string());
         }
@@ -7504,6 +7527,29 @@ mod tests {
             super::validated_tray_copy_content(&serde_json::json!({}), "mic-1"),
             Err("transcript_unavailable")
         );
+    }
+
+    #[test]
+    fn clipboard_open_retries_transient_contention_with_a_strict_wait_limit() {
+        for (unavailable_attempts, expected_success, expected_attempts) in
+            [(0, true, 1), (3, true, 4), (usize::MAX, false, 10)]
+        {
+            let mut attempts = 0;
+            let mut waits = Vec::new();
+            let opened = super::retry_clipboard_open(
+                || {
+                    attempts += 1;
+                    attempts > unavailable_attempts
+                },
+                |delay| waits.push(delay),
+            );
+            assert_eq!(opened, expected_success);
+            assert_eq!(attempts, expected_attempts);
+            assert_eq!(
+                waits,
+                vec![Duration::from_millis(20); expected_attempts - 1]
+            );
+        }
     }
 
     #[cfg(windows)]

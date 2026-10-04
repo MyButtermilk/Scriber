@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import threading
 from collections import OrderedDict
@@ -14,6 +15,7 @@ from typing import Any, TypeGuard
 from src.core.logging_setup import diagnostic_logging_enabled
 from src.core.rest_contracts import REST_API_VERSION
 from src.runtime.log_clear_state import clear_offset_for_path, load_clear_offsets, record_clear_state
+from src.runtime.log_io import open_log_reader
 from src.runtime.paths import data_dir, logs_dir, repo_root
 from src.runtime.support_bundle import is_sensitive_key, redact_text
 
@@ -34,6 +36,8 @@ _PUBLIC_META_KEYS = {
     "channels",
     "chars",
     "count",
+    "dropped_records",
+    "dropped_writes",
     "enabled",
     "engine",
     "error_type",
@@ -50,6 +54,7 @@ _PUBLIC_META_KEYS = {
     "mode",
     "method",
     "model",
+    "os_error",
     "post_processed",
     "provider",
     "provider_error_code",
@@ -69,6 +74,7 @@ _PUBLIC_META_KEYS = {
     "download_only",
     "to_status",
     "total",
+    "write_failures",
 }
 _PUBLIC_NUMERIC_META_KEY_RE = re.compile(r"(?:_ms|Ms|_count|Count|_chars|Chars|_bytes|Bytes|_hz|Hz)$")
 _CORRELATION_ID_RE = re.compile(r"(?:tr_)?([0-9a-f]{32})")
@@ -256,11 +262,11 @@ def _candidate_log_files(*, limit: int | None = _MAX_FILES) -> list[Path]:
 
 
 def _read_tail(path: Path, *, start_offset: int = 0) -> tuple[str, bool]:
-    size = path.stat().st_size
-    start_offset = max(0, min(start_offset, size))
-    readable_size = size - start_offset
-    truncated = readable_size > _MAX_BYTES_PER_FILE
-    with path.open("rb") as handle:
+    with open_log_reader(path) as handle:
+        size = os.fstat(handle.fileno()).st_size
+        start_offset = max(0, min(start_offset, size))
+        readable_size = size - start_offset
+        truncated = readable_size > _MAX_BYTES_PER_FILE
         if truncated:
             handle.seek(size - _MAX_BYTES_PER_FILE - 1)
             starts_on_line = handle.read(1) == b"\n"

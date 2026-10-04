@@ -1,3 +1,5 @@
+import pytest
+
 from src import native_overlay
 
 
@@ -8,6 +10,7 @@ def _response(
     visible: bool = False,
     native_visible: bool | None = None,
     cursor_events_ignored: bool | None = None,
+    owner_id: str | None = None,
 ):
     if native_visible is None:
         native_visible = visible
@@ -21,6 +24,7 @@ def _response(
             "visible": visible,
             "nativeVisible": native_visible,
             "cursorEventsIgnored": cursor_events_ignored,
+            "ownerId": owner_id,
         },
     }
 
@@ -208,6 +212,96 @@ def test_overlay_audio_level_uses_nonblocking_native_pump(monkeypatch):
     native_overlay.RecordingOverlay().update_audio_level(0.125)
 
     assert published == [0.125]
+
+
+def test_hide_retry_keeps_the_original_backend_owner_after_lost_response(monkeypatch):
+    owner = "2b0a50af-e600-4eb9-bff0-b62e3794b721"
+    responses = iter(
+        [
+            _response(success=False),
+            _response(success=True, mode="initializing", visible=True),
+            _response(success=True, mode="initializing", visible=True),
+        ]
+    )
+    calls = []
+
+    def fake_call(command, payload=None, **_kwargs):
+        calls.append((command, payload))
+        return next(responses)
+
+    monkeypatch.setattr(native_overlay, "_call_overlay_response", fake_call)
+
+    response = native_overlay._hide_overlay(expected_owner_id=owner)
+
+    assert response["payload"]["visible"] is True
+    assert calls == [
+        ("overlayHide", {"expectedOwnerId": owner}),
+        ("overlayStatus", None),
+        ("overlayHide", {"expectedOwnerId": owner}),
+    ]
+
+
+def test_show_retry_keeps_the_backend_owner_after_lost_response(monkeypatch):
+    owner = "2b0a50af-e600-4eb9-bff0-b62e3794b721"
+    responses = iter(
+        [
+            _response(success=False),
+            _response(success=True, mode="hidden", visible=False),
+            _response(success=True, mode="initializing", visible=True),
+        ]
+    )
+    calls = []
+
+    def fake_call(command, payload=None, **_kwargs):
+        calls.append((command, payload))
+        return next(responses)
+
+    monkeypatch.setattr(native_overlay, "_call_overlay_response", fake_call)
+
+    native_overlay._show_overlay_mode("initializing", owner_id=owner)
+
+    assert calls == [
+        ("overlayShow", {"mode": "initializing", "ownerId": owner}),
+        ("overlayStatus", None),
+        ("overlayShow", {"mode": "initializing", "ownerId": owner}),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("observed_owner", "retry_needed"),
+    [
+        (None, True),
+        ("574b9ce0-cceb-4733-8f7c-cfbfbb3c6967", True),
+        ("2b0a50af-e600-4eb9-bff0-b62e3794b721", False),
+    ],
+    ids=["shell-preview", "foreign-session", "same-session-canonical-uuid"],
+)
+def test_show_reconciliation_requires_the_same_backend_owner(monkeypatch, observed_owner, retry_needed):
+    owner = "2b0a50afe6004eb9bff0b62e3794b721"
+    responses = iter(
+        [
+            _response(success=False),
+            _response(success=True, mode="initializing", visible=True, owner_id=observed_owner),
+            _response(success=True, mode="initializing", visible=True, owner_id="2b0a50af-e600-4eb9-bff0-b62e3794b721"),
+        ]
+    )
+    calls = []
+
+    def fake_call(command, payload=None, **_kwargs):
+        calls.append((command, payload))
+        return next(responses)
+
+    monkeypatch.setattr(native_overlay, "_call_overlay_response", fake_call)
+
+    native_overlay._show_overlay_mode("initializing", owner_id=owner)
+
+    expected = [
+        ("overlayShow", {"mode": "initializing", "ownerId": owner}),
+        ("overlayStatus", None),
+    ]
+    if retry_needed:
+        expected.append(("overlayShow", {"mode": "initializing", "ownerId": owner}))
+    assert calls == expected
 
 
 def test_overlay_ipc_deadlines_cover_bounded_ui_dispatch(monkeypatch):

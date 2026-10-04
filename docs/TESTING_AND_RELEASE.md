@@ -279,14 +279,20 @@ primary instance receives both the queued request and restore signal.
 
 Popup and recent-transcript regressions span the native shell, renderer, and
 durable store. Run Rust library tests for preview ownership/revisions, native
-rotation, and clipboard payload validation; run `native-overlay-state.test.ts`
+rotation with real active-file/archive sharing locks, and bounded clipboard-open
+retries without touching the user's clipboard; run `native-overlay-state.test.ts`
 and `TrayPanel.test.tsx` for renderer ordering, every-show refresh, obsolete
 responses, and visible-entry copy IDs. Python gates include
 `tests/data/test_transcript_artifact_store.py`,
 `tests/api/test_transcript_routes.py`, and `tests/test_file_job_diagnostics.py`.
 Logging changes also require the File/Podcast route and job tests plus
 `tests/runtime/test_debug_logs.py`, `tests/runtime/test_support_bundle.py`, and
-`tests/test_logging_opt_out.py`. Use temporary stores and mocked providers.
+`tests/test_logging_opt_out.py` and `tests/runtime/test_log_clear_state.py`.
+`tests/test_live_mic_continuation.py` and `tests/test_native_overlay.py` cover
+successor initialization, canceled startup, and owner-aware lost-response
+reconciliation. A corrupt canonical head must disable only its own tray entry;
+healthy neighbors remain usable and copying still validates the selected head.
+Use temporary stores and mocked providers.
 These gates do not prove Explorer/WebView focus or clipboard behavior in an
 installed build. A live shell smoke must identify the tested binary and avoid
 forwarding its actions to an already-running installation through the

@@ -2375,13 +2375,20 @@ class TranscriptArtifactStore:
             ).fetchall()
             items = []
             for row in rows:
-                content = self._tray_content(conn, row["id"], preview=True)
-                normalized = self._normalize_tray_preview(content)
-                if not normalized:
-                    # A bounded prefix can be whitespace/control-only while
-                    # later content is usable. Only this unusual case needs a
-                    # full read; normal history never materializes long text.
-                    normalized = self._normalize_tray_preview(self._tray_content(conn, row["id"], preview=False))
+                unavailable = False
+                try:
+                    content = self._tray_content(conn, row["id"], preview=True)
+                    normalized = self._normalize_tray_preview(content)
+                    if not normalized:
+                        # A bounded prefix can be whitespace/control-only while
+                        # later content is usable. Only this unusual case needs a
+                        # full read; normal history never materializes long text.
+                        normalized = self._normalize_tray_preview(self._tray_content(conn, row["id"], preview=False))
+                except ArtifactNotFound:
+                    # Keep other rows usable without substituting a stale legacy
+                    # projection for this record's missing or mismatched head.
+                    normalized = ""
+                    unavailable = True
                 preview = normalized if len(normalized) <= 72 else normalized[:71].rstrip() + "…"
                 items.append(
                     {
@@ -2393,6 +2400,7 @@ class TranscriptArtifactStore:
                         "createdAt": row["created_at"],
                         "preview": preview,
                         "contentAvailable": bool(normalized),
+                        "contentUnavailable": unavailable,
                     }
                 )
             return {"items": items}

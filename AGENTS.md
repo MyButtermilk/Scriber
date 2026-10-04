@@ -49,8 +49,12 @@ the user explicitly asks for a temporary investigation note.
 - Native lifecycle revisions order overlay events and renderer-ready snapshots.
   A hotkey preview has a UUID owner, is admitted only while hidden, and failure
   cleanup must compare that owner under the native mutation lane. It must never
-  hide a later backend transition. Log lifecycle changes and dispatch outcomes,
-  not RMS frames, transcript content, or raw window identifiers.
+  hide a later backend transition. Backend shows carry the recording-session
+  owner too; finalization and startup cancellation hide only that owner. A
+  successor can already be initializing before the controller's active session
+  changes, so native ownership remains authoritative during this overlap. Log
+  lifecycle changes and dispatch outcomes, not RMS frames, transcript content,
+  or raw window identifiers.
 
 ## Repository Map
 

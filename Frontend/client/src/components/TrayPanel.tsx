@@ -92,6 +92,7 @@ function transcriptTypeLabel(type: TranscriptType | string | undefined, t: Trans
 }
 
 function compactTranscriptTitle(item: TrayTranscriptItem, t: Translate): string {
+  if (item.contentUnavailable) return t("Transcript unavailable. Refresh recent transcripts.");
   // Render only a bounded plain-text label. React escapes markup and ampersands;
   // stripping controls also prevents bidi overrides and embedded menu shortcuts.
   const preview = String(item.preview || "")

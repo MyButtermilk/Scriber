@@ -1,11 +1,45 @@
 import json
+import os
 import zipfile
+from contextlib import contextmanager
 
 import pytest
 
 from src.runtime import support_bundle
 from src.runtime.log_clear_state import record_clear_state
 from src.runtime.support_bundle import create_support_bundle, redact_mapping, redact_text
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows delete-sharing contract")
+@pytest.mark.parametrize("reader_name", ["support", "debug"])
+def test_log_tail_readers_allow_rotation_and_read_the_open_generation(monkeypatch, tmp_path, reader_name):
+    from src.runtime import debug_logs
+
+    reader_module = support_bundle if reader_name == "support" else debug_logs
+    active = tmp_path / "latest.log"
+    archive = tmp_path / "latest.1.log"
+    original = "retained generation with more bytes\n"
+    # The production tail preserves bytes; avoid Windows text-mode newline
+    # translation when constructing the exact generation being asserted.
+    active.write_bytes(original.encode("utf-8"))
+    open_reader = support_bundle.open_log_reader
+
+    @contextmanager
+    def rotate_while_reading(path):
+        with open_reader(path) as handle:
+            assert not os.get_inheritable(handle.fileno())
+            # A plain Python open on Windows blocks this rename. The reader
+            # must retain the old file while a new active generation is made.
+            os.replace(active, archive)
+            active.write_text("new\n", encoding="utf-8")
+            yield handle
+
+    monkeypatch.setattr(reader_module, "open_log_reader", rotate_while_reading)
+    result = reader_module._read_tail(active)
+    text = result if reader_name == "support" else result[0]
+    assert text == original
+    assert archive.read_text(encoding="utf-8") == original
+    assert active.read_text(encoding="utf-8") == "new\n"
 
 
 def test_redaction_helpers_hide_sensitive_values():

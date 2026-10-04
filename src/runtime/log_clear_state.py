@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from src.core.rest_contracts import REST_API_VERSION
+from src.runtime.log_io import open_log_reader
 from src.runtime.paths import logs_dir
 
 CLEAR_STATE_FILENAME = "debug-log-clear-state.json"
@@ -162,7 +163,7 @@ def _safe_non_negative_int(value: Any) -> int | None:
 def _tail_fingerprint(path: Path, *, end_offset: int) -> str:
     end = max(0, int(end_offset))
     start = max(0, end - _CLEAR_FINGERPRINT_BYTES)
-    with path.open("rb") as handle:
+    with open_log_reader(path) as handle:
         handle.seek(start)
         payload = handle.read(end - start)
     return hashlib.sha256(payload).hexdigest()

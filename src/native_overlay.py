@@ -12,6 +12,7 @@ import threading
 import time
 from collections.abc import Callable
 from typing import Any
+from uuid import UUID
 
 from loguru import logger
 
@@ -67,6 +68,7 @@ def _overlay_state_matches(
     *,
     mode: str,
     visible: bool,
+    owner_id: str | None = None,
 ) -> bool:
     if response.get("success") is not True:
         return False
@@ -75,6 +77,14 @@ def _overlay_state_matches(
         return False
     if str(payload.get("mode") or "") != mode or payload.get("visible") is not visible:
         return False
+    if owner_id is not None:
+        # Rust canonicalizes UUIDs; controller session IDs use compact hex.
+        # A same-mode shell preview is not proof this backend show was applied.
+        try:
+            if payload.get("ownerId") != str(UUID(owner_id)):
+                return False
+        except ValueError, TypeError, AttributeError:
+            return False
 
     # Logical renderer state is not proof that the native always-on-top window
     # completed its transition. A transparent HWND can remain hit-testable after
@@ -85,32 +95,34 @@ def _overlay_state_matches(
     return native_visible is False
 
 
-def _show_overlay_mode(mode: str) -> dict[str, Any]:
+def _show_overlay_mode(mode: str, *, owner_id: str | None = None) -> dict[str, Any]:
     """Make a show transition durable across a transient pipe response loss.
 
     Windows error 233 can occur after Rust has already applied the command but
     before Python receives its response. Reconcile the authoritative native
     state first, then retry only when the transition did not take effect.
     """
-    response = _call_overlay_response("overlayShow", {"mode": mode})
+    payload = {"mode": mode, **({"ownerId": owner_id} if owner_id is not None else {})}
+    response = _call_overlay_response("overlayShow", payload)
     if response.get("success") is True:
         return response
     status = _call_overlay_response("overlayStatus")
-    if _overlay_state_matches(status, mode=mode, visible=True):
+    if _overlay_state_matches(status, mode=mode, visible=True, owner_id=owner_id):
         return status
-    return _call_overlay_response("overlayShow", {"mode": mode})
+    return _call_overlay_response("overlayShow", payload)
 
 
-def _hide_overlay() -> dict[str, Any]:
+def _hide_overlay(*, expected_owner_id: str | None = None) -> dict[str, Any]:
     """Hide once, then reconcile a response lost after native application."""
 
-    response = _call_overlay_response("overlayHide", log_failure=False)
+    payload = {"expectedOwnerId": expected_owner_id} if expected_owner_id is not None else None
+    response = _call_overlay_response("overlayHide", payload, log_failure=False)
     if response.get("success") is True:
         return response
     status = _call_overlay_response("overlayStatus", log_failure=False)
     if _overlay_state_matches(status, mode="hidden", visible=False):
         return status
-    retry = _call_overlay_response("overlayHide", log_failure=False)
+    retry = _call_overlay_response("overlayHide", payload, log_failure=False)
     if retry.get("success") is not True:
         logger.debug(
             "Tauri overlay command overlayHide failed after reconciliation: {} {}",
@@ -190,24 +202,24 @@ class RecordingOverlay:
             return _hide_overlay()
         return None
 
-    def show(self) -> dict[str, Any] | None:
+    def show(self, *, owner_id: str | None = None) -> dict[str, Any] | None:
         if _tauri_overlay_enabled():
-            return _show_overlay_mode("recording")
+            return _show_overlay_mode("recording", owner_id=owner_id)
         return None
 
-    def show_initializing(self) -> dict[str, Any] | None:
+    def show_initializing(self, *, owner_id: str | None = None) -> dict[str, Any] | None:
         if _tauri_overlay_enabled():
-            return _show_overlay_mode("initializing")
+            return _show_overlay_mode("initializing", owner_id=owner_id)
         return None
 
-    def show_transcribing(self) -> dict[str, Any] | None:
+    def show_transcribing(self, *, owner_id: str | None = None) -> dict[str, Any] | None:
         if _tauri_overlay_enabled():
-            return _show_overlay_mode("transcribing")
+            return _show_overlay_mode("transcribing", owner_id=owner_id)
         return None
 
-    def hide(self) -> dict[str, Any] | None:
+    def hide(self, *, expected_owner_id: str | None = None) -> dict[str, Any] | None:
         if _tauri_overlay_enabled():
-            return _hide_overlay()
+            return _hide_overlay(expected_owner_id=expected_owner_id)
         return None
 
     def update_audio_level(self, rms: float) -> None:
@@ -231,23 +243,23 @@ def get_overlay(on_stop: Callable[[], None] | None = None) -> RecordingOverlay:
     return _overlay
 
 
-def show_recording_overlay() -> dict[str, Any] | None:
-    return get_overlay().show()
+def show_recording_overlay(*, owner_id: str | None = None) -> dict[str, Any] | None:
+    return get_overlay().show(owner_id=owner_id)
 
 
-def show_initializing_overlay() -> dict[str, Any] | None:
-    return get_overlay().show_initializing()
+def show_initializing_overlay(*, owner_id: str | None = None) -> dict[str, Any] | None:
+    return get_overlay().show_initializing(owner_id=owner_id)
 
 
-def show_transcribing_overlay() -> dict[str, Any] | None:
+def show_transcribing_overlay(*, owner_id: str | None = None) -> dict[str, Any] | None:
     if _overlay:
-        return _overlay.show_transcribing()
+        return _overlay.show_transcribing(owner_id=owner_id)
     return None
 
 
-def hide_recording_overlay() -> dict[str, Any] | None:
+def hide_recording_overlay(*, expected_owner_id: str | None = None) -> dict[str, Any] | None:
     if _overlay:
-        return _overlay.hide()
+        return _overlay.hide(expected_owner_id=expected_owner_id)
     return None
 
 

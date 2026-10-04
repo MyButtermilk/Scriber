@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import pytest_asyncio
 
-from src import database, web_api
+from src import database, native_overlay, web_api
 from src.api.live_mic_routes import LiveMicStartCommand
 from src.gemini_realtime_stt import GeminiTranscribeLiveSTTService
 
@@ -190,6 +190,81 @@ async def test_capture_restarts_before_old_provider_finishes_and_late_text_stays
         call.kwargs.get("session_id") == first_record.id
         for call in ctl._hide_recording_overlay_async.call_args_list[prior_hide_count:]
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_successor", [False, True], ids=["old-finalizer", "successor-cancel"])
+async def test_old_finalizer_hide_is_owner_bound_while_successor_is_still_initializing(
+    continuation, monkeypatch, cancel_successor
+):
+    ctl = continuation.controller
+    loop = asyncio.get_running_loop()
+    calls = []
+    old_hide_dispatched = asyncio.Event()
+    old_session_id = None
+
+    def record_shell_command(command, payload=None, **_kwargs):
+        calls.append((command, payload))
+        if command == "overlayHide" and old_session_id is not None:
+            loop.call_soon_threadsafe(old_hide_dispatched.set)
+        return {"success": True}
+
+    monkeypatch.setattr(native_overlay, "_tauri_overlay_enabled", lambda: True)
+    monkeypatch.setattr(native_overlay, "_overlay", native_overlay.RecordingOverlay())
+    monkeypatch.setattr(native_overlay, "_call_overlay_response", record_shell_command)
+    for method in (
+        "_show_initializing_overlay_async",
+        "_show_recording_overlay_async",
+        "_show_transcribing_overlay_async",
+        "_hide_recording_overlay_async",
+    ):
+        monkeypatch.setattr(ctl, method, getattr(web_api.ScriberWebController, method).__get__(ctl))
+
+    first, first_record = await continuation.start("Erster Gedanke.")
+    first_stop = continuation.stop()
+    await asyncio.wait_for(first.capture_stopped.wait(), 2)
+    await asyncio.gather(*list(ctl._overlay_tasks))
+    old_session_id = first_record.id
+
+    successor_preparing = asyncio.Event()
+    successor_release = asyncio.Event()
+    continuation.cleanup_gates.append(successor_release)
+
+    async def pause_successor_setup():
+        successor_preparing.set()
+        await successor_release.wait()
+
+    monkeypatch.setattr(ctl, "_pause_idle_mic_prewarm_for_capture", pause_successor_setup)
+    successor_start = asyncio.create_task(ctl.start_listening())
+    try:
+        await asyncio.wait_for(successor_preparing.wait(), 2)
+        await asyncio.gather(*list(ctl._overlay_tasks))
+        successor_show = calls[-1]
+        assert successor_show[0] == "overlayShow"
+        assert successor_show[1]["mode"] == "initializing"
+        assert successor_show[1]["ownerId"] != old_session_id
+        # The old session is still current until the successor pipeline exists.
+        assert ctl._session_id == old_session_id
+        calls_before_completion = len(calls)
+        if cancel_successor:
+            successor_stop = continuation.stop()
+            successor_release.set()
+            await asyncio.wait_for(successor_start, 2)
+            await asyncio.wait_for(successor_stop, 2)
+            await asyncio.gather(*list(ctl._overlay_tasks))
+            assert ctl._session_id == old_session_id
+            assert len(continuation.pipelines) == 1
+            assert ("overlayHide", {"expectedOwnerId": successor_show[1]["ownerId"]}) in calls[calls_before_completion:]
+        else:
+            first.provider_gate.set()
+            await asyncio.wait_for(old_hide_dispatched.wait(), 2)
+            assert ("overlayHide", {"expectedOwnerId": old_session_id}) in calls[calls_before_completion:]
+    finally:
+        successor_release.set()
+        first.provider_gate.set()
+        await asyncio.wait_for(successor_start, 2)
+        await asyncio.wait_for(first_stop, 2)
+        await asyncio.gather(*list(ctl._overlay_tasks))
 
 
 @pytest.mark.asyncio

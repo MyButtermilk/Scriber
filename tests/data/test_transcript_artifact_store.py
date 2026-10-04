@@ -298,7 +298,8 @@ def test_tray_does_not_treat_a_long_empty_prefix_as_an_empty_transcript(artifact
     assert item["contentAvailable"] is True
 
 
-def test_tray_current_head_must_belong_to_the_selected_transcript(artifact_store):
+@pytest.mark.parametrize("broken_head", ["missing", "mismatched"])
+def test_tray_isolates_a_broken_head_but_copy_still_requires_the_selected_artifact(artifact_store, broken_head):
     _prepare_tray_history(artifact_store)
     attempt = _ready_commit(artifact_store)
     result = artifact_store.commit_canonical_artifact(
@@ -309,16 +310,37 @@ def test_tray_current_head_must_belong_to_the_selected_transcript(artifact_store
         duration="00:03",
     )
     with sqlite3.connect(artifact_store._db_path) as conn:
-        conn.execute(
-            "UPDATE canonical_transcript_artifacts SET transcript_id = 'transcript-2' WHERE id = ?",
-            (result.artifact.id,),
-        )
+        conn.execute("UPDATE transcripts SET content = 'stale projection' WHERE id = 'transcript-1'")
+        conn.execute("UPDATE transcripts SET status = 'completed', content = 'Healthy text' WHERE id = 'transcript-2'")
+        conn.execute("INSERT INTO transcripts (id, status, content) VALUES ('empty', 'completed', '')")
+        if broken_head == "missing":
+            conn.execute(
+                "UPDATE canonical_transcript_heads SET artifact_id = 'missing-artifact' WHERE transcript_id = ?",
+                ("transcript-1",),
+            )
+        else:
+            conn.execute(
+                "UPDATE canonical_transcript_artifacts SET transcript_id = 'transcript-2' WHERE id = ?",
+                (result.artifact.id,),
+            )
     from src.data.transcript_artifact_store import ArtifactNotFound
 
-    with pytest.raises(ArtifactNotFound):
-        artifact_store.list_recent_for_tray()
+    recent = {item["id"]: item for item in artifact_store.list_recent_for_tray()["items"]}
+    assert set(recent) == {"transcript-1", "transcript-2", "empty"}
+    assert recent["transcript-1"]["contentAvailable"] is False
+    assert recent["transcript-1"]["contentUnavailable"] is True
+    assert recent["transcript-1"]["preview"] == ""
+    assert recent["transcript-2"]["preview"] == "Healthy text"
+    assert recent["transcript-2"]["contentAvailable"] is True
+    assert recent["transcript-2"]["contentUnavailable"] is False
+    assert recent["empty"]["preview"] == ""
+    assert recent["empty"]["contentAvailable"] is False
+    assert recent["empty"]["contentUnavailable"] is False
+    assert "stale projection" not in repr(recent)
     with pytest.raises(ArtifactNotFound):
         artifact_store.read_for_tray_copy("transcript-1")
+    assert artifact_store._connect().in_transaction is False
+    assert artifact_store.read_for_tray_copy("transcript-2")["content"] == "Healthy text"
 
 
 def test_tray_read_snapshot_remains_consistent_when_a_writer_deletes_the_row(artifact_store, monkeypatch):

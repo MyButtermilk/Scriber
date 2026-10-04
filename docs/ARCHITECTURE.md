@@ -1144,9 +1144,14 @@ status/cause metadata instead of arbitrary exception text.
 
 Python's two primary logs rotate at 5 MiB with three retained archives each;
 native backend, shell and crash logs use the same threshold and archive count.
-Those are nominal limits: a single oversized Python record may exceed the
-threshold, and existing oversized native logs are preserved once as an archive
-until normal eviction. Clear boundaries follow rotated file contents. Support
+When Windows readers block rotation, bounded append preserves new records up to
+twice the normal limit. Further writes are counted rather than growing files
+without bound; one safe notice and a recovery summary report degraded logging.
+Python records larger than the normal limit are omitted and counted. File-sink
+I/O errors never trigger Loguru's raw-record stderr dump. Existing oversized
+logs remain intact until normal archive eviction. Debug, support and clear-state
+fingerprint readers share deletion on Windows, so internal inspection does not
+block rotation. Clear boundaries follow rotated file contents. Support
 bundles select recent bounded tails and decode structured logs through the
 public allowlist. Historical plain-text logs still rely on pattern redaction;
 that is not a guarantee that arbitrary old transcript text or third-party SDK
