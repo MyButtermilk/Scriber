@@ -74,7 +74,7 @@ export function FileTranscriptRetryButton({
     setState("pending");
     try {
       if (resumeAvailable === undefined) {
-        const detail = detailQuery.data ? { data: detailQuery.data, error: null } : await detailQuery.refetch();
+        const detail = await detailQuery.refetch();
         if (detail.error || !detail.data) throw detail.error || new Error(t("Could not restart transcription."));
         if (detail.data.resumeAvailable === true) return;
       }
@@ -116,6 +116,16 @@ export function FileTranscriptRetryButton({
     busy.current = true;
     setState("pending");
     try {
+      // The dialog can remain open while a history/detail refresh discovers
+      // retained progress. Never admit a new upload from stale eligibility.
+      const eligibility = await detailQuery.refetch();
+      if (eligibility.error || !eligibility.data) {
+        throw eligibility.error || new Error(t("Could not restart transcription."));
+      }
+      if (eligibility.data.resumeAvailable === true) {
+        setChooseFileOpen(false);
+        return;
+      }
       const result = await startFileUploadBatch([file], {
         getServerProcessingText: (selected) => ({ key: "Preparing {{file}}…", values: { file: selected.name } }),
       });

@@ -14,9 +14,13 @@ vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast }) }));
 vi.mock("@/lib/file-upload-store", () => ({ startFileUploadBatch: vi.fn() }));
 vi.mock("wouter", () => ({ useLocation: () => ["/file", navigate] }));
 
-function mount(props: { resumeAvailable?: boolean } = { resumeAvailable: false }) {
+function mount(props: { resumeAvailable?: boolean } = { resumeAvailable: false }, cachedEligibility?: boolean) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (cachedEligibility !== undefined) {
+    client.setQueryData(["/api/transcripts", "a".repeat(32)], { resumeAvailable: cachedEligibility });
+  }
   return render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <QueryClientProvider client={client}>
       <LocaleProvider>
         <div onClick={() => navigate("old-record")}>
           <FileTranscriptRetryButton transcriptId={"a".repeat(32)} {...props} />
@@ -31,6 +35,9 @@ describe("File transcript retry", () => {
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, "en");
     window.history.replaceState({}, "", "/file");
     vi.mocked(fetchWithTimeout).mockReset();
+    vi.mocked(fetchWithTimeout).mockImplementation(
+      async () => new Response(JSON.stringify({ resumeAvailable: false })),
+    );
     vi.mocked(startFileUploadBatch).mockReset();
   });
   it("queues the exact linked episode once and disables repeated clicks", async () => {
@@ -74,7 +81,7 @@ describe("File transcript retry", () => {
     expect(startFileUploadBatch).toHaveBeenCalledExactlyOnceWith([file], {
       getServerProcessingText: expect.any(Function),
     });
-    expect(fetchWithTimeout).toHaveBeenCalledTimes(1);
+    expect(fetchWithTimeout).toHaveBeenCalledTimes(2);
   });
 
   it("allows the same file to be selected again after an upload failure", async () => {
@@ -121,6 +128,53 @@ describe("File transcript retry", () => {
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Retry failed" })));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(startFileUploadBatch).not.toHaveBeenCalled();
+  });
+
+  it("rechecks cached negative eligibility before offering a new paid attempt", async () => {
+    vi.mocked(fetchWithTimeout).mockImplementation(
+      async (url) =>
+        new Response(
+          JSON.stringify(String(url).startsWith("/api/podcasts/") ? { episode: null } : { resumeAvailable: true }),
+        ),
+    );
+    mount({}, false);
+    const button = screen.getByRole("button", { name: "Retry transcription" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    expect(await screen.findByRole("button", { name: "Resume transcription" })).toBeEnabled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(startFileUploadBatch).not.toHaveBeenCalled();
+  });
+
+  it("does not trust cached negative eligibility after its recheck fails", async () => {
+    vi.mocked(fetchWithTimeout).mockImplementation(async (url) => {
+      if (String(url).startsWith("/api/podcasts/")) return new Response(JSON.stringify({ episode: null }));
+      throw new Error("Network unavailable");
+    });
+    mount({}, false);
+    const button = screen.getByRole("button", { name: "Retry transcription" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Retry failed" })));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(startFileUploadBatch).not.toHaveBeenCalled();
+  });
+
+  it("rechecks eligibility after file selection before admitting another upload", async () => {
+    vi.mocked(fetchWithTimeout)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ episode: null })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ resumeAvailable: true })));
+    mount();
+    const button = screen.getByRole("button", { name: "Retry transcription" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    await screen.findByRole("dialog");
+    fireEvent.change(screen.getByLabelText("Original audio or video file"), {
+      target: { files: [new File(["fixture"], "recording.mp4")] },
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(startFileUploadBatch).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it("does not move the user back to a transcript after they leave during upload", async () => {
