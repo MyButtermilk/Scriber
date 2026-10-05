@@ -115,6 +115,58 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 ## Implemented Performance Work
 
+### Shared UI and history read paths (2026-10-05)
+
+The Live Mic, YouTube, and File histories keep stable item-key callbacks, and
+the shared virtualizer keeps its row-key callback until the row model changes.
+A real TanStack Virtualizer/JSDOM test with 10,000 items counted 10,054 key
+lookups for one scroll before the change. The regression ceiling is now fewer
+than 100, allowing visible-row measurement while preventing a complete-history
+recalculation. Changed result sets still replace their keys and visible rows.
+
+Completed Markdown summaries, speaker-formatted transcripts, and prepared HTML
+documents have memoized render boundaries. Copying a 200-section summary no
+longer invokes the Markdown parser again; changed summary text still renders.
+Initial settings/device discovery, active-Meeting preload, and history preload
+now run independently. History pages remain sequential with frame yields and
+query-owned abort signals. Cancellation prevents subsequent pages and late
+settings-cache publication. A deferred-response test proves the Mic/YouTube
+histories can warm while settings and Meeting reads remain unresolved.
+
+Date and number formatting reuses up to 32 instances of each Intl formatter,
+keyed by locale and plain option values. The cache holds no formatted text.
+Getter/prototype-based options bypass it, invalid options retain native errors,
+and window focus resets date instances to re-resolve the default time zone.
+`cd Frontend; npm run benchmark:formatters` compares 5,000 synthetic rows with
+fresh versus reused formatters. Linux/Node 26.5.0 medians: 524.065 ms versus
+29.587 ms (17.7x). A construction-count test requires only two number formatter
+instances for 2,000 calls across German and English, including fresh option
+objects and reordered properties.
+
+SQLite history indexes now include the `id DESC` pagination tie-breaker and
+`status`, avoiding large sorts for equal timestamps and allowing counts to read
+the covering index rather than transcript bodies. Existing app-owned indexes
+are replaced once in the schema transaction; unchanged definitions are reused.
+Punctuation-only search reads the already-normalized visible summary text from
+FTS. Missing/mismatched FTS rows retain a lazy projection fallback; hidden HTML
+attributes and script contents remain unsearchable.
+
+`python scripts/diagnostics/benchmark_history_reads.py` uses a temporary database,
+checks result equivalence, and reports timings plus SQLite VM steps. With 5,000
+synthetic equal-timestamp rows, Python 3.14.7 / SQLite 3.53.1 on Linux:
+
+| Operation | Before | After |
+| --- | ---: | ---: |
+| History page plus total | 11.448 ms | 0.781 ms |
+| Approximate SQLite steps for that page | 229,100 | 55,000 |
+| Literal `%` search across HTML summaries | 926.368 ms | 37.186 ms |
+
+Tests cap the equivalent history fixture at 60,000 VM steps and require zero
+HTML projections for indexed punctuation searches. VM instructions alone do
+not describe the latter win: joining FTS adds SQLite work but removes expensive
+Python HTML parsing. These are synthetic local measurements, not installed
+Windows latency targets or an aggregate application speedup.
+
 ### Meeting playback and review (2026-10-05)
 
 Saved Meeting playback prepares a balanced interval index once per segment

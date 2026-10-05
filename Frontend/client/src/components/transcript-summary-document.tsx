@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -96,7 +97,9 @@ function measureTocPath(
   };
 }
 
-export function TranscriptSummaryDocument({ prepared }: TranscriptSummaryDocumentProps) {
+export const TranscriptSummaryDocument = memo(function TranscriptSummaryDocument({
+  prepared,
+}: TranscriptSummaryDocumentProps) {
   const { t } = useI18n();
   if (!prepared.html) {
     return (
@@ -109,7 +112,7 @@ export function TranscriptSummaryDocument({ prepared }: TranscriptSummaryDocumen
   return (
     <div className="summary-document" data-summary-format="html" dangerouslySetInnerHTML={{ __html: prepared.html }} />
   );
-}
+});
 
 export function SummaryTableOfContents({
   outline,

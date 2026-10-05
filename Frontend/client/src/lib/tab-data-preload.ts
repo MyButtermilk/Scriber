@@ -32,11 +32,25 @@ export function preloadPrimaryTabData(queryClient: QueryClient): () => void {
 }
 
 async function warmPrimaryTabData(queryClient: QueryClient, isCancelled: () => boolean) {
+  if (isCancelled()) return;
+  // Settings/device discovery, active Meeting state, and history are independent.
+  // Keep history requests sequential and yield between them, but do not let a
+  // slow device or Meeting response block every primary tab's history cache.
+  await Promise.all([
+    warmSettings(queryClient, isCancelled),
+    warmActiveMeeting(queryClient, isCancelled),
+    warmTranscriptHistories(queryClient, isCancelled),
+  ]);
+}
+
+async function warmSettings(queryClient: QueryClient, isCancelled: () => boolean) {
   const bootstrap = await loadSettingsBootstrap().catch(() => null);
-  if (bootstrap) {
+  if (bootstrap && !isCancelled()) {
     queryClient.setQueryData(["/api/settings"], bootstrap.settings);
   }
+}
 
+async function warmActiveMeeting(queryClient: QueryClient, isCancelled: () => boolean) {
   if (!isCancelled()) {
     await queryClient
       .prefetchQuery({
@@ -57,18 +71,21 @@ async function warmPrimaryTabData(queryClient: QueryClient, isCancelled: () => b
       })
       .catch(() => undefined);
   }
+}
 
+async function warmTranscriptHistories(queryClient: QueryClient, isCancelled: () => boolean) {
   for (const type of PRIMARY_HISTORY_TYPES) {
     if (isCancelled()) return;
     await queryClient
       .prefetchInfiniteQuery({
         queryKey: transcriptHistoryQueryKey(type, ""),
-        queryFn: async ({ pageParam }) =>
+        queryFn: async ({ pageParam, signal }) =>
           fetchTranscriptHistoryPage<TranscriptHistoryItem>({
             type,
             q: "",
             offset: typeof pageParam === "number" ? pageParam : 0,
             pageSize: TRANSCRIPT_HISTORY_PAGE_SIZE,
+            signal,
           }),
         initialPageParam: 0,
         getNextPageParam: (lastPage: TranscriptHistoryPage<TranscriptHistoryItem>) => {

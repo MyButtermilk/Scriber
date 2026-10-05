@@ -72,6 +72,98 @@ def test_save_transcript_propagates_storage_failure(monkeypatch):
         database.save_transcript({"id": "must-fail"})
 
 
+def test_punctuation_search_reuses_indexed_visible_text_and_falls_back_for_missing_rows(monkeypatch, tmp_path):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")
+    try:
+        database.init_database()
+        for record_id, summary in (
+            ("visible", "<p>Margin 10% &amp; growth</p>"),
+            ("hidden", '<p title="10%">No marker</p><script>10%</script>'),
+        ):
+            database.save_transcript(
+                {
+                    "id": record_id,
+                    "title": record_id,
+                    "type": "file",
+                    "status": "completed",
+                    "summary": summary,
+                    "summaryFormat": "html",
+                }
+            )
+        conn = database._get_connection()
+        projections = []
+
+        def project(value, summary_format):
+            projections.append(value)
+            return database.summary_visible_text(value, summary_format)
+
+        conn.create_function("scriber_summary_text", 2, project, deterministic=True)
+        result = database.search_transcript_metadata("%", transcript_type="file", limit=1)
+        assert [item["id"] for item in result["items"]] == ["visible"]
+        assert result["total"] == 1
+        assert projections == []  # no HTML parser calls on the read path
+        conn.execute("DELETE FROM transcripts_fts WHERE id = 'visible'")
+        conn.commit()
+        assert database.search_transcript_metadata("%", transcript_type="file", limit=1) == result
+        assert len(projections) == 2  # count and page, only for the missing row
+    finally:
+        database._close_all_connections()
+
+
+def test_history_indexes_migrate_once_and_bound_tied_timestamp_pagination(monkeypatch, tmp_path):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")
+    try:
+        database.init_database()
+        conn = database._get_connection()
+        for name, columns in (
+            ("idx_transcripts_created_at", "created_at DESC"),
+            ("idx_transcripts_type_created_at", "type, created_at DESC"),
+        ):
+            conn.execute(f"DROP INDEX {name}")
+            conn.execute(f"CREATE INDEX {name} ON transcripts({columns})")
+        conn.executemany(
+            "INSERT INTO transcripts(id,title,date,duration,status,type,language,created_at,updated_at) "
+            "VALUES (?,?, '', '', ?, 'mic', 'en', '2026-10-05', '2026-10-05')",
+            [(f"row-{i:05}", f"Row {i}", "recording" if i % 5 == 0 else "completed") for i in range(5_000)],
+        )
+        database._ensure_history_indexes(conn)
+        statements = []
+        conn.set_trace_callback(statements.append)
+        database._ensure_history_indexes(conn)
+        conn.set_trace_callback(None)
+        assert not any(statement.startswith(("DROP", "CREATE")) for statement in statements)
+        ticks = 0
+
+        def progress():
+            nonlocal ticks
+            ticks += 1
+            return 0
+
+        conn.set_progress_handler(progress, 100)
+        page = database.load_transcript_metadata_page(transcript_type="mic", limit=50, offset=10)
+        conn.set_progress_handler(None, 0)
+        expected = [f"row-{i:05}" for i in reversed(range(5_000)) if i % 5 != 0]
+        assert page["total"] == len(expected)
+        assert [item["id"] for item in page["items"]] == expected[10:60]
+        # SQLite VM steps, not elapsed time: count stays linear but the page
+        # must not sort all 4,000 completed rows sharing an import timestamp.
+        # Measured on SQLite 3.53: ~55k after migration vs ~229k before.
+        assert ticks < 600, f"{ticks * 100} VM steps exceeded the 60,000-step budget"
+        plan = [
+            row[3]
+            for row in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT id FROM transcripts WHERE type = 'mic' "
+                "AND status NOT IN ('processing','recording') ORDER BY created_at DESC, id DESC LIMIT 50"
+            )
+        ]
+        assert not any("TEMP B-TREE" in step for step in plan)
+        assert any("COVERING INDEX" in step for step in plan)
+    finally:
+        database._close_all_connections()
+
+
 def test_terminal_transcript_transition_preserves_first_terminal_winner(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")

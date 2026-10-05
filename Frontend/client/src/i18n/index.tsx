@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { AppLocale, TranslationValues } from "@/i18n/types";
+import { dateFormatter, numberFormatter, resetDateFormatters } from "./formatters";
 
 export type { AppLocale, TranslationValues } from "@/i18n/types";
 
@@ -131,7 +132,7 @@ export function localizeLegacyDateLabel(locale: AppLocale, value: string): strin
     const day = Number(isoDateMatch[3]);
     const date = new Date(year, month - 1, day);
     if (date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day) {
-      return new Intl.DateTimeFormat(LOCALE_TAGS[locale], { dateStyle: "medium" }).format(date);
+      return dateFormatter(LOCALE_TAGS[locale], { dateStyle: "medium" }).format(date);
     }
   }
   return translate(locale, source);
@@ -150,7 +151,7 @@ export function getLocaleTag(locale: AppLocale = currentLocale): string {
 }
 
 export function formatNumberNow(value: number, options?: Intl.NumberFormatOptions): string {
-  return new Intl.NumberFormat(getLocaleTag(), options).format(value);
+  return numberFormatter(getLocaleTag(), options).format(value);
 }
 
 interface I18nContextValue {
@@ -167,6 +168,10 @@ interface I18nContextValue {
 const I18nContext = createContext<I18nContextValue | null>(null);
 
 export function LocaleProvider({ children }: { children: ReactNode }) {
+  useEffect(() => {
+    window.addEventListener("focus", resetDateFormatters);
+    return () => window.removeEventListener("focus", resetDateFormatters);
+  }, []);
   const [locale, setLocaleState] = useState<AppLocale>(() => preferredLocale());
 
   const setLocale = useCallback((nextLocale: AppLocale) => {
@@ -219,7 +224,7 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
   const formatDate = useCallback(
     (value: Date | number | string, options?: Intl.DateTimeFormatOptions) => {
       const date = value instanceof Date ? value : new Date(value);
-      return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat(LOCALE_TAGS[locale], options).format(date);
+      return Number.isNaN(date.getTime()) ? "" : dateFormatter(LOCALE_TAGS[locale], options).format(date);
     },
     [locale],
   );
@@ -227,8 +232,7 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
   const formatLegacyDate = useCallback((value: string) => localizeLegacyDateLabel(locale, value), [locale]);
 
   const formatNumber = useCallback(
-    (value: number, options?: Intl.NumberFormatOptions) =>
-      new Intl.NumberFormat(LOCALE_TAGS[locale], options).format(value),
+    (value: number, options?: Intl.NumberFormatOptions) => numberFormatter(LOCALE_TAGS[locale], options).format(value),
     [locale],
   );
 

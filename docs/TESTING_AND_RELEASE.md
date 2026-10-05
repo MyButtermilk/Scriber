@@ -245,6 +245,18 @@ edit-version handling, and pointer/focus prefetch deduplication. The component
 test replaces virtualizer geometry because JSDOM has no layout; installed
 WebView scrolling still belongs to the browser/Windows smoke gate.
 
+Shared UI performance: `npm run benchmark:formatters` compares cached and fresh
+Intl date/number formatting. Frontend tests cover construction counts, locale
+and option changes, bounded eviction, summary parser reuse, virtual-history
+scroll work, changed row keys, independent idle preloads, and cancellation.
+
+History read performance: `python scripts/diagnostics/benchmark_history_reads.py`
+uses only a disposable SQLite database. Run `python -m pytest
+tests/test_database_search.py tests/test_summary_html.py -q` for migration,
+pagination, visible-text equivalence, and deterministic read-work budgets.
+The normal browser smoke covers primary-tab switching and transcript actions;
+use `--browser` to select Chromium on non-Windows development environments.
+
 YouTube browser handoff extension (from the repository root):
 
 ```powershell

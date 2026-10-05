@@ -21,6 +21,7 @@ import { TranscriptSummaryRetryButton } from "@/components/transcript-summary-re
 import { FileTranscriptRetryButton } from "@/components/file-transcript-retry-button";
 import { TranscriptStopButton } from "@/components/transcript-stop-button";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
+import { transcriptHistoryItemKey } from "@/lib/virtual-transcript-history-layout";
 import { ErrorShake } from "@/components/ui/error-shake";
 import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
 import {
@@ -814,7 +815,7 @@ export default function FileTranscribe() {
           <VirtualTranscriptHistory
             items={completedItems}
             viewMode={viewMode}
-            getItemKey={(item) => item.id}
+            getItemKey={transcriptHistoryItemKey}
             hasMore={transcriptsQuery.hasNextPage}
             isLoadingMore={transcriptsQuery.isFetchingNextPage}
             onLoadMore={() => transcriptsQuery.fetchNextPage()}

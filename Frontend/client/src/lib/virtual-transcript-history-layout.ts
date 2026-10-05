@@ -13,3 +13,7 @@ export function calculateHistoryScrollMargin(containerTop: number, scrollElement
 export function calculateHistoryRowTranslateY(virtualRowStart: number, scrollMargin: number) {
   return virtualRowStart - scrollMargin;
 }
+
+export function transcriptHistoryItemKey(item: { id: string }): string {
+  return item.id;
+}

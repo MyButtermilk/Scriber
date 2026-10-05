@@ -9,6 +9,7 @@ import { PageIntro } from "@/components/page-intro";
 import { TranscriptionHistoryToolbar } from "@/components/transcription-history-toolbar";
 import { TranscriptHistoryPanel } from "@/components/transcript-history-panel";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
+import { transcriptHistoryItemKey } from "@/lib/virtual-transcript-history-layout";
 import { EmptyState } from "@/components/ui/empty-state";
 import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { useLocation } from "wouter";
@@ -1292,7 +1293,7 @@ export default function LiveMic() {
             <VirtualTranscriptHistory
               items={transcripts}
               viewMode={viewMode}
-              getItemKey={(item) => item.id}
+              getItemKey={transcriptHistoryItemKey}
               getItemGroup={getTranscriptHistoryGroup}
               estimateListRowHeight={108}
               estimateGridRowHeight={230}

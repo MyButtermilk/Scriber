@@ -171,6 +171,16 @@ export function VirtualTranscriptHistory<TItem>({
     };
   }, []);
 
+  const getRowKey = useCallback(
+    (index: number) => {
+      const row = rows[index];
+      if (!row) return index;
+      if (row.kind === "group") return `group-${row.group.key}`;
+      return row.items.map(({ item, index: itemIndex }) => getItemKey(item, itemIndex)).join("|");
+    },
+    [rows, getItemKey],
+  );
+
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: rows.length,
     getScrollElement: () => scrollElement,
@@ -181,12 +191,7 @@ export function VirtualTranscriptHistory<TItem>({
     },
     overscan: 6,
     scrollMargin,
-    getItemKey: (index) => {
-      const row = rows[index];
-      if (!row) return index;
-      if (row.kind === "group") return `group-${row.group.key}`;
-      return row.items.map(({ item, index: itemIndex }) => getItemKey(item, itemIndex)).join("|");
-    },
+    getItemKey: getRowKey,
   });
 
   useEffect(() => {

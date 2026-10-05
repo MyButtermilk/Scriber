@@ -129,6 +129,26 @@ def _close_all_connections():
 atexit.register(_close_all_connections)
 
 
+def _ensure_history_indexes(conn: sqlite3.Connection) -> None:
+    # Include the pagination tie-breaker and status filter. COUNT can then use
+    # the small covering index without reading transcript/summary payload pages.
+    indexes = {
+        "idx_transcripts_created_at": (("created_at", 1), ("id", 1), ("status", 0)),
+        "idx_transcripts_type_created_at": (("type", 0), ("created_at", 1), ("id", 1), ("status", 0)),
+    }
+    for name, columns in indexes.items():
+        existing = tuple(
+            (row["name"], row["desc"]) for row in conn.execute(f"PRAGMA index_xinfo({name})") if row["key"]
+        )
+        if existing == columns:
+            continue
+        # These names are app-owned constants. Replace the legacy index once,
+        # in the schema transaction; do not retain redundant write-time indexes.
+        conn.execute(f"DROP INDEX IF EXISTS {name}")
+        definition = ", ".join(f"{column} {'DESC' if descending else 'ASC'}" for column, descending in columns)
+        conn.execute(f"CREATE INDEX {name} ON transcripts({definition})")
+
+
 def init_database() -> None:
     """Initialize the database schema."""
     with _get_connection() as conn:
@@ -189,16 +209,7 @@ def init_database() -> None:
             """
         )
 
-        # PERFORMANCE: Index on created_at for faster ORDER BY queries
-        # Impact: 50-100ms improvement for 1000+ transcripts
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_transcripts_created_at
-            ON transcripts(created_at DESC)
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_transcripts_type_created_at
-            ON transcripts(type, created_at DESC)
-        """)
+        _ensure_history_indexes(conn)
         # Full-text index for fast transcript search.
         conn.execute(
             """
@@ -792,19 +803,26 @@ def search_transcript_metadata(
                 # Punctuation-only searches are literal substrings. LIKE would
                 # interpret a searched percent sign as an SQL wildcard.
                 literal = q.lower()
+                # FTS stores exactly the visible-text projection computed on
+                # writes. Reuse it instead of parsing every HTML summary twice
+                # per keystroke/search. Preserve repair tolerance for missing or
+                # mismatched legacy FTS rows with a lazy per-row fallback.
+                search_from = "FROM transcripts t LEFT JOIN transcripts_fts f ON f.rowid = t.rowid AND f.id = t.id "
+                search_summary = "COALESCE(f.summary, scriber_summary_text(t.summary, t.summary_format))"
                 total_sql = (
-                    "SELECT COUNT(*) AS c FROM transcripts t "
-                    "WHERE (instr(LOWER(t.title), ?) > 0 OR instr(LOWER(t.content), ?) > 0 OR "
-                    "instr(LOWER(scriber_summary_text(t.summary, t.summary_format)), ?) > 0 OR "
+                    "SELECT COUNT(*) AS c "
+                    + search_from
+                    + "WHERE (instr(LOWER(t.title), ?) > 0 OR instr(LOWER(t.content), ?) > 0 OR "
+                    f"instr(LOWER({search_summary}), ?) > 0 OR "
                     "instr(LOWER(t.channel), ?) > 0) " + ("AND t.type = ?" if transcript_type else "")
                 )
                 rows_sql = (
                     "SELECT t.id, t.title, t.date, t.duration, t.status, t.type, t.language, t.step, "
                     "t.source_url, t.channel, t.thumbnail_url, t.created_at, t.updated_at, t.preview, "
                     "t.summary_format, t.summary_status, t.summary_error, t.summary_updated_at "
-                    "FROM transcripts t "
-                    "WHERE (instr(LOWER(t.title), ?) > 0 OR instr(LOWER(t.content), ?) > 0 OR "
-                    "instr(LOWER(scriber_summary_text(t.summary, t.summary_format)), ?) > 0 OR "
+                    + search_from
+                    + "WHERE (instr(LOWER(t.title), ?) > 0 OR instr(LOWER(t.content), ?) > 0 OR "
+                    f"instr(LOWER({search_summary}), ?) > 0 OR "
                     "instr(LOWER(t.channel), ?) > 0) "
                     + ("AND t.type = ? " if transcript_type else "")
                     + "ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?"

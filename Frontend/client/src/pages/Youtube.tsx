@@ -23,6 +23,7 @@ import { TranscriptHistoryPanel } from "@/components/transcript-history-panel";
 import { TranscriptSummaryRetryButton } from "@/components/transcript-summary-retry-button";
 import { friendlyError, responseErrorMessage } from "@/lib/request-errors";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
+import { transcriptHistoryItemKey } from "@/lib/virtual-transcript-history-layout";
 import {
   prependTranscriptHistoryItem,
   transcriptHistoryQueryKey,
@@ -1045,7 +1046,7 @@ export default function Youtube() {
           <VirtualTranscriptHistory
             items={recentVideos}
             viewMode={viewMode}
-            getItemKey={(item) => item.id}
+            getItemKey={transcriptHistoryItemKey}
             hasMore={transcriptsQuery.hasNextPage}
             isLoadingMore={transcriptsQuery.isFetchingNextPage}
             onLoadMore={() => transcriptsQuery.fetchNextPage()}

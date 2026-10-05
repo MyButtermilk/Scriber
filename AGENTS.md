@@ -2157,6 +2157,18 @@ Already implemented and should not be regressed:
   `npm run benchmark:meeting-review` reports informational CPU timings and
   index construction cost; it is not an installed Windows latency claim.
 - Paginated transcript endpoints and virtualized history lists.
+- Shared history virtualizers and the Live Mic/YouTube/File callers keep stable
+  item-key functions; scrolling must not reconstruct every loaded row's key.
+  Completed summary renderers skip unrelated UI updates but invalidate when
+  content or locale changes. Intl formatter caches are bounded to 32 instances
+  per kind, retain no rendered text, and reset date formatters on window focus.
+- Idle settings/device, active-Meeting, and history preloads are independent;
+  keep history requests sequential/frame-yielded, forward query abort signals,
+  and suppress late settings publication after cancellation.
+- Transcript history indexes include the ID tie-breaker and status for ordered,
+  covering reads. Migrate only their app-owned definitions once. Punctuation
+  search reuses FTS visible-summary text with a fallback for missing/mismatched
+  index rows; preserve literal substring semantics and hidden-HTML exclusion.
 - Meeting detail assembly validates existence once and reuses its SQLite
   connection for related collections instead of repeating helper lookups.
 - The native 10-ms Meeting Mic/System/AEC relay reuses decode, clean-output,
