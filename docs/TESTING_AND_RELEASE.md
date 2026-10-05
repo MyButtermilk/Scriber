@@ -237,6 +237,14 @@ npm test
 npm run build
 ```
 
+Meeting review performance: `npm run benchmark:meeting-review` (from
+`Frontend`) compares the indexed playback lookup with its linear reference,
+including construction cost. `npm test` includes the deterministic timestamp
+read and transcript-render ceilings, randomized overlap equivalence, current
+edit-version handling, and pointer/focus prefetch deduplication. The component
+test replaces virtualizer geometry because JSDOM has no layout; installed
+WebView scrolling still belongs to the browser/Windows smoke gate.
+
 YouTube browser handoff extension (from the repository root):
 
 ```powershell

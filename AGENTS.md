@@ -2147,6 +2147,15 @@ Already implemented and should not be regressed:
   provider replay evidence.
 - Canvas/RAF waveform drawing instead of per-frame React state.
 - Buffered transcript appends for long live sessions.
+- Saved Meeting playback reuses `createReviewPlaybackLookup` per segment
+  snapshot; preserve canonical/alignment/start-time priority and stable ties.
+  Do not build the interval index for live previews without saved playback audio.
+  Keep transcript edit/undo callbacks and virtualizer item keys stable, and
+  avoid whole-transcript scans on playback ticks. `Meetings.test.tsx` gates zero
+  row renders within an unchanged active segment; the timeline tests gate at
+  most 64 timestamp reads per seek on 12,000 overlapping synthetic segments.
+  `npm run benchmark:meeting-review` reports informational CPU timings and
+  index construction cost; it is not an installed Windows latency claim.
 - Paginated transcript endpoints and virtualized history lists.
 - Meeting detail assembly validates existence once and reuses its SQLite
   connection for related collections instead of repeating helper lookups.

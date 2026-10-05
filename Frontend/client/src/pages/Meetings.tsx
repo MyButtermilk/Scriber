@@ -107,7 +107,7 @@ import {
 } from "@/components/meeting/SpeakerAttendeeAssignments";
 import { saveWorkspaceMeetingNote, useMeetingNotesAutosave } from "@/components/meeting/useMeetingNotesAutosave";
 import {
-  activeReviewSegmentId,
+  createReviewPlaybackLookup,
   matchingReviewSegmentIds,
   nextReviewMatchId,
   reviewTimeRangeBounds,
@@ -528,12 +528,14 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
     setEditingId("");
     setDraft("");
   };
+  const segmentIndexes = useMemo(() => new Map(segments.map((segment, index) => [segment.id, index])), [segments]);
+  const getItemKey = useCallback((index: number) => segments[index]?.id ?? index, [segments]);
   const virtualizer = useVirtualizer({
     count: segments.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 88,
     overscan: 8,
-    getItemKey: (index) => segments[index]?.id ?? index,
+    getItemKey,
   });
   const scrollToLatest = useCallback(() => {
     if (segments.length === 0) return;
@@ -543,8 +545,8 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
   }, [segments.length, virtualizer]);
   const scrollToSegment = useCallback(
     (segmentId: string) => {
-      const index = segments.findIndex((segment) => segment.id === segmentId);
-      if (index < 0) return;
+      const index = segmentIndexes.get(segmentId);
+      if (index === undefined) return;
       programmaticScrollRef.current = true;
       virtualizer.scrollToIndex(index, { align: "center" });
       window.requestAnimationFrame(() => {
@@ -553,7 +555,7 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
         });
       });
     },
-    [segments, virtualizer],
+    [segmentIndexes, virtualizer],
   );
   useEffect(() => {
     if (!isLive) setFollowLatest(true);
@@ -2245,6 +2247,15 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         description: t(error.message),
       }),
   });
+  const mutateSegment = segmentEditMutation.mutate;
+  const saveSegment = useCallback(
+    (segment: DisplayMeetingSegment, text: string) => mutateSegment({ segment, action: "edit", text }),
+    [mutateSegment],
+  );
+  const undoSegment = useCallback(
+    (segment: DisplayMeetingSegment) => mutateSegment({ segment, action: "undo" }),
+    [mutateSegment],
+  );
   const recoveryMutation = useMutation({
     mutationFn: async ({
       id,
@@ -2559,11 +2570,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       reviewFiltersActive ? groupedSegments.filter((segment) => reviewMatchIdSet.has(segment.id)) : groupedSegments,
     [groupedSegments, reviewFiltersActive, reviewMatchIdSet],
   );
-  const activePlaybackSegmentId = useMemo(
-    () => activeReviewSegmentId(groupedSegments, playbackMeetingTimeMs),
-    [groupedSegments, playbackMeetingTimeMs],
+  const reviewMatchIndex = useMemo(
+    () => (reviewMatchId ? reviewMatchIds.indexOf(reviewMatchId) : -1),
+    [reviewMatchId, reviewMatchIds],
   );
-  const reviewMatchIndex = reviewMatchId ? reviewMatchIds.indexOf(reviewMatchId) : -1;
+  const canEditVisibleTranscript = useMemo(
+    () => detail?.state === "ready" && visibleTranscriptSegments.every((segment) => segment.revision === "canonical"),
+    [detail?.state, visibleTranscriptSegments],
+  );
   const reviewSpeakers = useMemo(() => {
     const speakers = new Map<string, string>();
     groupedSegments.forEach((segment) => {
@@ -2603,7 +2617,10 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         })
       : t("Not generated");
   const analysis = analysisOutput?.payload;
-  const hasCanonicalTranscript = Boolean(detail?.segments.some((segment) => segment.revision === "canonical"));
+  const hasCanonicalTranscript = useMemo(
+    () => liveSegments.some((segment) => segment.revision === "canonical"),
+    [liveSegments],
+  );
   const outputsStale = Boolean(
     detail?.outputs.some(
       (output) =>
@@ -2624,13 +2641,21 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   };
   const playbackMix = detail?.audioAssets.find((asset) => asset.kind === "playback_mix") ?? null;
   const hasPlayableAudio = Boolean(playbackMix);
-  const playbackMixOriginMs = meetingPlaybackOriginMs(detail?.audioAssets, "mix");
-  const fallbackPlaybackMixEndMs = liveSegments.reduce(
-    (endMs, segment) => Math.max(endMs, segment.endMs),
-    playbackMixOriginMs,
+  // Live preview has no saved playback mix. Avoid rebuilding an unused index
+  // for every incoming websocket segment on that path.
+  const lookupPlaybackSegment = useMemo(
+    () => (hasPlayableAudio ? createReviewPlaybackLookup(liveSegments) : () => null),
+    [hasPlayableAudio, liveSegments],
   );
-  const playbackMixEndMs =
-    playbackMix?.durationMs == null ? fallbackPlaybackMixEndMs : playbackMixOriginMs + playbackMix.durationMs;
+  const activePlaybackSegmentId = lookupPlaybackSegment(playbackMeetingTimeMs);
+  const playbackMixOriginMs = meetingPlaybackOriginMs(detail?.audioAssets, "mix");
+  const playbackMixEndMs = useMemo(
+    () =>
+      playbackMix?.durationMs == null
+        ? liveSegments.reduce((endMs, segment) => Math.max(endMs, segment.endMs), playbackMixOriginMs)
+        : playbackMixOriginMs + playbackMix.durationMs,
+    [liveSegments, playbackMix?.durationMs, playbackMixOriginMs],
+  );
   const reviewTimelineMarkers = useMemo(() => {
     const matchingSegments = reviewFiltersActive
       ? groupedSegments.filter((segment) => reviewMatchIdSet.has(segment.id))
@@ -4591,15 +4616,12 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                             onPlay={playSegment}
                             canAssignSpeakers={!OPEN_STATES.has(detail.state)}
                             onAssignSpeaker={focusSpeakerAssignment}
-                            canEdit={
-                              detail.state === "ready" &&
-                              visibleTranscriptSegments.every((segment) => segment.revision === "canonical")
-                            }
+                            canEdit={canEditVisibleTranscript}
                             savingSegmentId={
                               segmentEditMutation.isPending ? (segmentEditMutation.variables?.segment.id ?? "") : ""
                             }
-                            onSave={(segment, text) => segmentEditMutation.mutate({ segment, action: "edit", text })}
-                            onUndo={(segment) => segmentEditMutation.mutate({ segment, action: "undo" })}
+                            onSave={saveSegment}
+                            onUndo={undoSegment}
                           />
                         )}
                       </div>

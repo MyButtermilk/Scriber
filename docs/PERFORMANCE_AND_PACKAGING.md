@@ -115,6 +115,37 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 ## Implemented Performance Work
 
+### Meeting playback and review (2026-10-05)
+
+Saved Meeting playback prepares a balanced interval index once per segment
+snapshot. Time updates and arbitrary forward/backward seeks skip intervals
+outside the playhead; canonical/live priority, alignment quality, latest start,
+stable input-order ties, and half-open end boundaries match the linear lookup.
+Overlapping intervals still require checking the overlapping candidates. No
+index is built while a Meeting has no saved playback mix, so live WebSocket
+segment arrivals do not pay this preparation cost.
+
+Stable edit/undo callbacks let the memoized transcript skip unrelated playback
+ticks. Virtualizer item keys retain their identity between transcript changes,
+Follow uses an ID-to-row index, and duration/editability/search-position scans
+are memoized. User-visible row updates and correction-version checks remain
+covered by component tests. Pointer/focus prefetch is also tested for in-flight
+deduplication and fresh-cache reuse.
+
+`cd Frontend; npm run benchmark:meeting-review` runs a synthetic two-hour,
+12,000-segment timeline with overlapping turns and 2,000 seeks, checking each
+answer against the original linear lookup before timing. One Linux/Node 26.5.0
+run measured median lookup batches of 55.299 ms linear versus 1.828 ms indexed
+(30.25x), plus 1.876 ms to build the index. These are local CPU measurements,
+not installed Windows/WebView latency or a whole-app speedup.
+
+CI runs deterministic regression ceilings through the ordinary frontend suite:
+at most 64 timestamp reads per seek on that long timeline, and zero transcript
+renders for 20 playback ticks within the same segment. The latter test fails
+with 20 renders on the original PR #83 implementation. Wall-clock timings are
+informational, not a noisy CI gate. Revisit these budgets only with correctness
+and timing evidence, lowering ceilings when a cheaper implementation wins.
+
 ### Startup and backend readiness (2026-09-18)
 
 The main, tray, and recording-overlay bootstrap overlaps initial locale loading
