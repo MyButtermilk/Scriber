@@ -2159,6 +2159,16 @@ Already implemented and should not be regressed:
   lease, applies duration-scaled provider budgets, and deduplicates cross-track
   echo with a timeline sweep instead of all mic-by-system pairs.
 - Coalesced `history_updated` events.
+- Live Meeting `meeting_segment` merges are linear: one scan plus binary-search
+  insertion, with the stable full sort only for unsorted input or comparator
+  ties. `meeting-segment-merge.test.ts` proves equivalence with
+  replace/append-then-sort and holds a deterministic `startMs`-read ceiling
+  for a 3,000-event stream; lower that ceiling when work drops, never raise it
+  to admit a regression. Measured 2026-10-05 on 6,000 segments: about 2.3x less
+  merge time than the former per-event copy-and-sort.
+- Meeting library rows prefetch their detail on pointer enter and keyboard
+  focus with the detail query's own 30-second stale time; never prefetch the
+  selected Meeting or one pending discard.
 - Chunked/offloaded upload writes and export/cleanup work where practical.
 - JobStore and latency metrics store connection reuse.
 - App-owned aiohttp provider connection reuse with DNS caching and bounded

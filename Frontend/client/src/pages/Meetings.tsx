@@ -947,6 +947,8 @@ function ActionItems({
   );
 }
 
+const MEETING_DETAIL_STALE_TIME_MS = 30_000;
+
 async function fetchJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetchWithTimeout(apiUrl(path), { credentials: "include", signal }, 15_000);
   if (!response.ok) throw new Error(`Request failed (${response.status})`);
@@ -1456,11 +1458,24 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     selectedCalendarEventId,
   ]);
   const deletingSelectedMeeting = Boolean(selectedId && meetingPendingDelete?.id === selectedId);
+  // Pointer/focus intent prefetch: the detail request overlaps the user's click
+  // instead of starting after navigation. A fresh cache entry is not refetched.
+  const prefetchMeetingDetail = useCallback(
+    (meetingId: string) => {
+      if (!meetingId || meetingId === selectedId || meetingId === meetingPendingDelete?.id) return;
+      void queryClient.prefetchQuery({
+        queryKey: ["/api/meetings", meetingId],
+        queryFn: ({ signal }) => fetchJson<MeetingDetail>(`/api/meetings/${meetingId}`, signal),
+        staleTime: MEETING_DETAIL_STALE_TIME_MS,
+      });
+    },
+    [meetingPendingDelete?.id, queryClient, selectedId],
+  );
   const detailQuery = useQuery<MeetingDetail>({
     queryKey: ["/api/meetings", selectedId],
     queryFn: ({ signal }) => fetchJson(`/api/meetings/${selectedId}`, signal),
     enabled: Boolean(selectedId && !deletingSelectedMeeting),
-    staleTime: 30_000,
+    staleTime: MEETING_DETAIL_STALE_TIME_MS,
     refetchInterval: (query) => meetingDetailRefetchInterval(query.state.data?.state, meetingWsConnected),
   });
   const deliveriesQuery = useQuery<{
@@ -3002,6 +3017,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 <button
                   type="button"
                   onClick={() => setLocation(`/meetings/${meeting.id}`)}
+                  onPointerEnter={() => prefetchMeetingDetail(meeting.id)}
+                  onFocus={() => prefetchMeetingDetail(meeting.id)}
                   className="min-w-0 flex-1 rounded-[10px] px-2 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-primary"
                 >
                   <div className="flex items-center justify-between gap-2">

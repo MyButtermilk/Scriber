@@ -69,16 +69,60 @@ function hasNewerMeetingSummary(
   return current.some((candidate) => isOlderMeetingSummary(incoming, candidate));
 }
 
+function compareMeetingSegments(left: MeetingSegment, right: MeetingSegment): number {
+  return left.startMs - right.startMs || left.sequence - right.sequence || left.id.localeCompare(right.id);
+}
+
+/**
+ * Merge one websocket segment into the cached transcript.
+ *
+ * Every live segment of a long Meeting arrives through this function, so it
+ * must stay linear: one scan plus a binary-search insertion instead of a full
+ * re-sort per event. Unsorted input or comparator ties fall back to the stable
+ * full sort so the result is always identical to replace/append-then-sort.
+ */
 export function mergeMeetingSegment(current: MeetingSegment[], incoming: MeetingSegment): MeetingSegment[] {
-  if (incoming.revision === "live" && current.some((item) => item.revision === "canonical")) {
+  let index = -1;
+  let hasCanonical = false;
+  let sorted = true;
+  let previousStartMs = Number.NEGATIVE_INFINITY;
+  for (let position = 0; position < current.length; position += 1) {
+    const item = current[position];
+    if (item.revision === "canonical") hasCanonical = true;
+    if (index < 0 && item.id === incoming.id) index = position;
+    if (sorted) {
+      // Cheap numeric check first; the full comparator (and localeCompare) runs only on ties.
+      const startMs = item.startMs;
+      if (
+        startMs < previousStartMs ||
+        (startMs === previousStartMs && compareMeetingSegments(current[position - 1], item) > 0)
+      ) {
+        sorted = false;
+      }
+      previousStartMs = startMs;
+    }
+  }
+  if (incoming.revision === "live" && hasCanonical) {
     return current;
   }
-  const index = current.findIndex((item) => item.id === incoming.id);
+  if (sorted) {
+    const next = current.slice();
+    if (index >= 0) next.splice(index, 1);
+    let low = 0;
+    let high = next.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (compareMeetingSegments(next[middle], incoming) <= 0) low = middle + 1;
+      else high = middle;
+    }
+    if (low === 0 || compareMeetingSegments(next[low - 1], incoming) !== 0) {
+      next.splice(low, 0, incoming);
+      return next;
+    }
+  }
   const next =
     index >= 0 ? current.map((item, itemIndex) => (itemIndex === index ? incoming : item)) : [...current, incoming];
-  next.sort(
-    (left, right) => left.startMs - right.startMs || left.sequence - right.sequence || left.id.localeCompare(right.id),
-  );
+  next.sort(compareMeetingSegments);
   return next;
 }
 
