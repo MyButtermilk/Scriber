@@ -2440,8 +2440,14 @@ async def test_real_release_database_lock_does_not_strand_stop(monkeypatch, tmp_
             assert recorder.stop_count == 1
             return
         if request_end == "cancel":
+            # Observe the cancellation already requested above. wait_for would
+            # inject another cancellation on slow Windows CI and translate the
+            # expected CancelledError into TimeoutError, obscuring settlement.
+            # This is a lifecycle assertion, not a two-second latency budget.
+            done, _ = await asyncio.wait({request_task}, timeout=10)
+            assert request_task in done, "Meeting stop did not settle after releasing the database lock"
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(request_task, 2)
+                await request_task
         elif request_end == "response":
             assert (await asyncio.wait_for(request_task, 2)).status == 202
         await asyncio.wait_for(finalizer_started.wait(), 2)
