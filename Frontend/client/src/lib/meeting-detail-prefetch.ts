@@ -39,9 +39,14 @@ export function createMeetingDetailPrefetch(
     void client
       .prefetchQuery({
         queryKey,
-        queryFn: ({ signal }) => {
+        queryFn: async ({ signal }) => {
           request.owned = true;
-          return fetchDetail(id, signal);
+          const before = client.getQueryData<MeetingDetail>(queryKey);
+          const detail = await fetchDetail(id, signal);
+          // Live events and edits may update this cache while the HTTP snapshot
+          // is in flight. Never replace those newer changes with speculation.
+          const current = client.getQueryData<MeetingDetail>(queryKey);
+          return current && current !== before ? current : detail;
         },
         staleTime,
       })

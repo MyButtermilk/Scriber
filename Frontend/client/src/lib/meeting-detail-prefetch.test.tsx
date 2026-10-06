@@ -2,6 +2,7 @@ import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { MeetingDetail } from "./api-types";
 import { createMeetingDetailPrefetch } from "./meeting-detail-prefetch";
+import { applyMeetingSegmentEvent } from "./meeting-cache";
 
 let client: QueryClient;
 let prefetch: ReturnType<typeof createMeetingDetailPrefetch>;
@@ -106,4 +107,24 @@ it("reuses fresh data and cancels pending dwell on cleanup", async () => {
   prefetch.dispose();
   await vi.advanceTimersByTimeAsync(150);
   expect(fetchDetail).not.toHaveBeenCalled();
+});
+
+it("preserves a live segment received after a stale detail prefetch starts", async () => {
+  const detail = { id: "a", state: "recording", segments: [] } as unknown as MeetingDetail;
+  client.setQueryData(["/api/meetings", "a"], detail, { updatedAt: Date.now() - 60_000 });
+  prefetch.enter("a", "pointer");
+  await vi.advanceTimersByTimeAsync(150);
+  expect(requests).toHaveLength(1);
+  const segment = {
+    id: "live-1",
+    startMs: 0,
+    endMs: 1000,
+    sequence: 1,
+    revision: "live",
+    text: "New live words",
+  } as MeetingDetail["segments"][number];
+  applyMeetingSegmentEvent(client, "a", segment);
+  requests[0].finish();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(client.getQueryData<MeetingDetail>(["/api/meetings", "a"])?.segments).toEqual([segment]);
 });

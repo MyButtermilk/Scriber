@@ -2266,6 +2266,8 @@ Already implemented and should not be regressed:
   speculative request active, cancel unused owned requests on leave, and retain
   requests adopted by navigation or observed elsewhere. Never cancel an existing
   consumer's request or prefetch the selected Meeting or one pending discard.
+  A speculative response must retain cache updates received while it was in
+  flight, including live segments and edits, instead of restoring its stale snapshot.
   Review matching uses one pass; build the membership set only for active
   filters and reuse visible rows for timeline matches. Unfiltered previous/next
   navigation still needs the ordered IDs.
