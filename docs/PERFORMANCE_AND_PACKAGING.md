@@ -115,6 +115,378 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 ## Implemented Performance Work
 
+### Slider drafts and stable history boundaries (2026-10-06)
+
+The Visualizer-bars control now owns its drag state and saved-value reference.
+Pointer movement updates only the count label and slider. A release uses the
+existing authenticated, serialized Settings write queue; errors restore the last
+saved count only if no newer drag has superseded that commit. Returning to the
+saved value while an earlier write is pending still queues the return value.
+Bootstrap values, normalization, locale and overlay-style changes remain live.
+
+`VirtualTranscriptHistory` now has a memo boundary. Live Mic, YouTube and File
+provide stable row-render callbacks and the query's stable next-page function.
+Unrelated search drafts, source inputs and upload UI updates therefore skip the
+visible-row pass and leave the pagination observer connected. Item snapshots,
+copy/delete/retry feedback, layout changes, scrolling and resizing still update
+through their existing props, context or internal state.
+
+Exact regression counts against `5789414`:
+
+| Workload | Before | After |
+| --- | ---: | ---: |
+| Settings-wide tooltip renders, 20 slider movements | 440 | 0 |
+| Visible-row render-function calls, 20 unrelated inputs with 10,000 loaded items | 140 | 0 |
+| Live Mic virtualizer hook calls, 20 search keystrokes | 20 | 0 |
+
+All three budget tests fail on the preceding implementation. Slider tests also
+cover one write on commit, failed-write rollback, newer-draft preservation and
+returning to the saved value behind a pending write. The virtualizer tests keep
+real scroll and replacement-result checks; the real Live Mic page test confirms
+that switching list/grid still updates the virtualizer.
+
+A production Chromium comparison (Linux, three runs of 60 search events per
+build, synthetic backend with 240 records) measured Live Mic history-search
+processing at **2.75 → 2.50 ms** median of run medians, with CDP script CPU
+**2.962 → 2.906 ms/event**. This small timing difference is informational and
+not evidence of a broad latency improvement. Separate committed-fiber tracking
+showed approximately **124 → 70 host-fiber identity changes/event**; these are
+not actual DOM-mutation counts. The deterministic work budgets above are the
+regression gates. Reproduce using
+`python scripts/diagnostics/benchmark_frontend_interactions.py --dist <build>
+--scenario live-mic-history-search --runs 3 --events 60` for each revision.
+The diagnostic also supports File and YouTube history-search inputs. No
+installed Windows or physical slider latency claim is made.
+
+### Typing and live-stream render isolation (2026-10-06)
+
+Frequently changing text no longer re-renders whole pages. Settings keeps
+custom vocabulary, the summary and live-cleanup prompts, and both custom
+OpenRouter model codes in `lib/text-draft-store.ts` stores; a keystroke updates
+only the subscribed field. Loads, resets, rollback and canonicalization write
+the store, while blur saves and "Use" read it. Vocabulary autosave keeps its
+650-ms debounce and the localized-default prompt replacement still rechecks
+every change, now through store subscriptions. Live Mic interim/final text,
+status, warnings and the elapsed clock live in the memoized `LiveMicStage`;
+history query, search and cards stay in the page. The Meetings page still owns
+each note queue, pagehide flush and autosave delay, but only
+`MeetingNotesEditor` subscribes to the draft. The chat question is a page-owned
+store read by `MeetingChatComposer`, so it survives view switches and is
+cleared on Meeting change or a successful answer as before.
+
+Component tests use exact spy counts and fail against the previous code:
+
+| Interaction | Before | After |
+| --- | ---: | ---: |
+| Settings-wide tooltip renders, 24 vocabulary keystrokes | 528 | 0 |
+| Settings-wide tooltip renders, 48 prompt keystrokes | 1,056 | 0 |
+| Settings-wide tooltip renders, 11 custom-model keystrokes | 242 | 0 |
+| Live Mic history-toolbar renders, 20 interim events + clock + final | 22 | 0 |
+| Live Mic stage renders, 13 history-search keystrokes | 13 | 0 |
+| Notes autosave-owner renders, 24 keystrokes | 24 | 0 |
+| Meetings `useI18n` calls, 19 question keystrokes | 114 | 19 |
+
+Informational Chromium timings used production builds of `79b812a` and this
+change in headless Chromium 151 on a Linux 5-vCPU Xeon container: five runs of
+60 events, median of run medians. "In-page" spans synthetic input or WebSocket
+dispatch through handlers, the React commit and the following task; it measures
+input/event processing, not time until pixels are displayed. "Script CPU" is
+CDP `ScriptDuration` over the window divided by events, including harness
+overhead. Fiber changes come from a separate instrumented run and count
+committed fibers whose props/state identity changed. They approximate
+re-rendered work; they are not exact render invocations or DOM mutations.
+
+| Event | In-page | Script CPU | Component fibers | Host fibers |
+| --- | ---: | ---: | ---: | ---: |
+| Settings vocabulary keystroke | 21.7 → 0.7 ms | 18.95 → 0.50 ms | 2,051 → 2.0 | 2,130 → 1.0 |
+| Live Mic interim transcript | 2.1 → 0.7 ms | 2.61 → 0.91 ms | 59.0 → 1.0 | 150.5 → 21.4 |
+| Live-Meeting note keystroke | 3.2 → 0.8 ms | 3.61 → 0.74 ms | 88.2 → 5.2 | 203.5 → 6.5 |
+
+Settings run medians varied from 17.65 to 41.6 ms before and 0.5 to 1.9 ms
+after. The Meeting fixture had 400 live segments. Exploratory three-run checks
+showed the same 2,051 component fiber changes per keystroke for the summary
+prompt and a custom model field before, and two to three afterwards. The chat
+composer has deterministic coverage only. Setup adds one small store per field
+and one subscription per mounted field; no network, storage or cache behavior
+changed. In paired dev-server smoke runs the Settings tab transition took
+1,669.4 ms on the baseline and 1,473.0 ms on this change; one earlier
+full-route candidate run took 2,569.7 ms, above the 2,000-ms smoke budget.
+The paired repeat passed without changing that budget, but does not establish
+the cause of the outlier. These are not installed WebView2 or whole-app latency
+results.
+
+Remaining candidates after the follow-up above: history search still renders
+its toolbar and page shell. API keys, Azure fields, speaker rename and the
+voice-enrollment name still re-render all of Settings. YouTube/File progress events
+refetch every loaded history page; with four pages loaded, 20 synthetic
+progress events caused 80 page requests. That path needs an exact row-patch
+contract before it can change.
+
+### Live Meeting projection and row rendering (2026-10-06)
+
+Meeting transcript rows now have their own memo boundaries. Editing passes
+the draft only to the active row, and playback callbacks depend on the Meeting
+identity and audio assets rather than every detail update. Unchanged segment
+display objects survive live updates. A page-local projector checks unchanged
+array positions first and uses weak segment keys for reordered rows; it resolves
+labels again when speaker metadata or locale changes. Immutable query snapshots
+remain authoritative for text, timing, edits and live/canonical revisions.
+
+Deterministic component tests reproduce the former unnecessary work:
+
+| Interaction with three visible rows | Before | After |
+| --- | ---: | ---: |
+| Row renders across 20 correction keystrokes | 60 | 20 |
+| Existing visible row renders after an offscreen live append | 3 | 0 |
+| Row renders crossing a playback segment boundary | 3 | 2 |
+
+`npm run benchmark:meeting-display` validates complete output equivalence for
+100 single-segment updates to a 12,000-segment synthetic snapshot. On Linux /
+Node 26.5.0, nine-run medians after three warmups were **62.069 → 23.935 ms**
+for display projection, with **1,200,000 → 100** new display objects. The initial
+projection costs **0.787 → 2.245 ms**; the extra bookkeeping pays back on
+subsequent updates. Tests gate one label resolution and one new display object
+for one changed segment, plus no recopying of unchanged transcript bodies.
+Timings are informational CPU measurements, not installed Windows latency or
+whole-Meeting render time. Other derived arrays and cache work remain outside
+this benchmark.
+
+### Review follow-up: stale Settings and speculative work (2026-10-06)
+
+Idle Settings preload now awaits only the settings resource. Its publication
+requires both a current bootstrap generation and the exact unchanged query
+state observed before the read. This closes the pre-existing race where a save
+was replaced by old settings after slow microphone discovery. State identity
+also protects independent writes sharing a millisecond timestamp. Microphone
+failures have a device-specific localized toast; simultaneous primary Settings
+failure produces only the primary error. Failed/stalled tray-opened listener
+setup has a bounded initial shortcut/history fallback with unmount cleanup.
+
+Meeting detail prefetch requires 150 ms of pointer/focus dwell, keeps only the
+latest candidate and one speculative request, and cancels unused owned requests.
+Navigation and other query observers retain ownership of their requests. The
+component fixture crossing ten rows without dwelling now makes zero requests;
+focused tests cover cancellation, ignored aborts, cache reuse and navigation.
+Review filtering performs one traversal instead of four filters plus a map,
+avoids the unfiltered membership set, and reuses filtered rows for timeline
+markers. Ordered IDs remain available for unfiltered previous/next navigation.
+
+The submitted review's synthetic timings were not reproduced on an installed
+Windows build and are not treated as startup KPIs. Large-database cold-cache
+index migration timing and React commit profiling for long live Meetings remain
+measurement tasks. The proposed concurrent overlay-creation race is not
+established: hotkey and shell-IPC overlay creation dispatch onto the same UI
+thread as setup. No speculative migration or overlay lifecycle changes were made.
+
+### App startup and tray work (2026-10-06)
+
+Main and tray WebViews request initial native backend access alongside locale
+and module loading. Their React access gate reuses the same bounded promise;
+an already completed lookup no longer adds a loader render and mount-time IPC
+round trip. The localized shell does not wait for this request, and the overlay
+does not request it. Health checks retain fresh access lookup for backend
+restarts. Rust starts the background supervisor after atomic launch configuration
+and overlay app-handle registration, before constructing the hidden overlay and
+reconciling autostart. Single-instance exclusion still precedes backend effects.
+
+Tray status subscriptions survive access readiness and subscribe before reading
+the initial snapshot. Revisions reject delayed snapshots after newer events;
+a bounded fallback permits the initial read when listener setup stalls. Native
+unchanged status skips icon/menu/event work, and one app-wide emission replaces
+duplicate delivery to the tray. Shortcut labels refresh on opening instead of
+on every recording/update event. Entering Recent Transcripts reuses an ongoing
+read, while each native opening still forces fresh history and copying still
+resolves the selected ID against durable backend content.
+
+Compared with commit `52a3b22d`, the same deterministic component fixtures reduce
+hotkey queries for 100 status events from 100 to 0 and history reads when entering
+Recent Transcripts during its opening fetch from 2 to 1. The startup fixture
+uses a simulated 200-ms module load and 120-ms access lookup to verify overlap,
+not an installed Windows latency claim. Chromium smoke covers the main and
+Settings routes; installed cold-start timing and native tray interaction still
+require the Windows release smoke.
+
+### Progress updates and write amplification (2026-10-06)
+
+Transcript saves compare the actual FTS projection after the parent write has
+acquired its transaction lock. Unchanged title, content, channel and visible
+summary skip FTS delete/reinsert/tokenization. The comparison still projects
+HTML summaries; it does not cache or trust a stale in-memory copy. Changed,
+missing or mismatched FTS rows take the existing repair path. Parent lifecycle
+fields and terminal compare-and-set semantics remain durable and transactional.
+
+`python scripts/diagnostics/benchmark_transcript_writes.py` uses a disposable
+database and a preserved unconditional-index-write reference. For 25 progress
+saves on one synthetic 20,000-word transcript, Python 3.14.7 / SQLite 3.53.1 on
+Linux (median of five batches): 432.504 ms before, 48.884 ms after. SQLite's
+logical change counter, including FTS shadow tables, drops from 9,437 to 25 in
+the recorded batch; this is not a count of physical disk writes. Regression
+tests require only one parent-row change per metadata-only save, and cover
+terminal transitions, all indexed fields, missing/corrupt rows, summary format
+changes, equivalent HTML projections and rollback after projection failure.
+
+The upload store preserves its snapshot and skips subscriber notifications when
+a patch changes no field. A synthetic 10,000-event upload now publishes 100
+distinct percentage changes plus the server-processing transition. Reaching a
+rounded 100% before all bytes arrive does not hide that transition or completion.
+The File page partitions history only when its data changes, preserving the
+virtualizer's input while upload/copy state updates. Copy feedback with 10,000
+loaded records previously read 20,003 statuses; the gate now permits fewer than
+10 visible-card reads and requires the same row-array identity. Changed history
+still moves completed records out of the processing group.
+
+The summary scroll regression fixture keeps all 512 headings and the same
+ten-read budget, but locates its asserted links by their navigation targets
+rather than repeatedly calculating accessible names for the whole document.
+This removes the observed CI test-runner timeout without increasing time limits.
+These figures describe synthetic workloads, not installed Windows latency.
+
+### Long-file stitching and summary scrolling (2026-10-06)
+
+Timed file-transcript merging now retires the sorted prefix whose words end
+strictly before the next part starts. Later boundaries only scan and sort the
+remaining tail. Long/nested intervals stay in that tail; timestamp ties,
+speaker evidence, clipped-word repairs, and conflicting-word warnings retain
+the previous algorithm's behavior. Immutable words are reused when no speaker
+rewrite is needed. Alignment normalizes each input word once, keeps just two
+score rows, and uses byte-sized traceback moves. The overlap alignment still
+has quadratic cell count; this does not impose a new truncation or word limit.
+
+`python scripts/diagnostics/benchmark_transcription_merge.py` compares the
+preserved reference algorithm against the candidate and asserts identical
+words and warnings. Python 3.14.7 on Linux, median of five runs:
+
+| Synthetic workload | Before | After |
+| --- | ---: | ---: |
+| Timed merge: 160 parts, 17,276 input / 16,004 output words | 400.459 ms | 127.233 ms |
+| Traced Python peak allocations: 300 × 300 alignment cells | 1,544,768 bytes | 154,318 bytes |
+| Heading geometry reads per scroll: 512-section summary | 512 | at most 10 |
+
+Merge tests compare 160 deterministic randomized overlap cases with the old
+implementation, including long intervals, ties, missing speakers and conflicting
+recognition. The long fixture must stay below 600,000 timestamp reads (previously
+4,144,904); dense alignment must stay below 400,000 traced bytes. Timing is
+informational and excludes provider calls, decoding and installed-app latency.
+
+The summary contents navigator retains heading elements and binary-searches
+their current viewport positions. It avoids repeated whole-document lookups
+and reads fresh geometry so font/layout changes remain visible. Headings in
+tables or generated snapshot grids use the original document-order scan.
+Tests cover forward/backward jumps, bottom-of-document selection, tied/missing
+headings, replacement summaries, layout shifts and explicit navigation targets.
+
+### Settings and log-console rendering (2026-10-06)
+
+Settings consumes shared bootstrap resources independently: persisted values
+make the page visible as soon as their response is decoded. Microphone discovery
+and native autostart update their own controls later; a device failure no longer
+hides or prevents initialization of saved settings. Idle preloading still shares
+these requests and the 15-second complete-snapshot cache. Invalidating settings
+also detaches the in-flight snapshot, and a generation guard prevents older
+requests from repopulating the cache after a save or forced refresh. Late results
+and errors after leaving the page are ignored.
+
+The Debug Console retains virtualizer key callbacks for unchanged results and
+calculates level counts once per log snapshot. Log-message render boundaries
+reuse unchanged metadata; stable copy callbacks and row-local copy feedback
+avoid invalidating every visible message. Raw structured JSON is serialized and
+mounted only when its disclosure is opened, and copying reuses that string.
+
+The real TanStack virtualizer/JSDOM regression fixture with 1,200 records counted
+2,412 key calls for an unchanged refresh before the change; both refresh and
+scroll now pass a ceiling of fewer than 100 calls. Twenty unrelated parent
+renders previously read the instrumented context field 60 times and now read it
+zero times. Closed raw JSON previously serialized once on initial render and now
+serializes zero times. All three gates fail against the preceding implementation.
+Deferred-resource tests prove Settings becomes usable while both secondary
+requests remain pending, without relying on a wall-clock speedup estimate.
+These checks measure frontend work, not native log-write throughput or installed
+Windows startup latency. Diagnostic writer, redaction, and opt-out behavior is
+unchanged.
+
+### Shared UI and history read paths (2026-10-05)
+
+The Live Mic, YouTube, and File histories keep stable item-key callbacks, and
+the shared virtualizer keeps its row-key callback until the row model changes.
+A real TanStack Virtualizer/JSDOM test with 10,000 items counted 10,054 key
+lookups for one scroll before the change. The regression ceiling is now fewer
+than 100, allowing visible-row measurement while preventing a complete-history
+recalculation. Changed result sets still replace their keys and visible rows.
+
+Completed Markdown summaries, speaker-formatted transcripts, and prepared HTML
+documents have memoized render boundaries. Copying a 200-section summary no
+longer invokes the Markdown parser again; changed summary text still renders.
+Initial settings/device discovery, active-Meeting preload, and history preload
+now run independently. History pages remain sequential with frame yields and
+query-owned abort signals. Cancellation prevents subsequent pages and late
+settings-cache publication. A deferred-response test proves the Mic/YouTube
+histories can warm while settings and Meeting reads remain unresolved.
+
+Date and number formatting reuses up to 32 instances of each Intl formatter,
+keyed by locale and plain option values. The cache holds no formatted text.
+Getter/prototype-based options bypass it, invalid options retain native errors,
+and window focus resets date instances to re-resolve the default time zone.
+`cd Frontend; npm run benchmark:formatters` compares 5,000 synthetic rows with
+fresh versus reused formatters. Linux/Node 26.5.0 medians: 524.065 ms versus
+29.587 ms (17.7x). A construction-count test requires only two number formatter
+instances for 2,000 calls across German and English, including fresh option
+objects and reordered properties.
+
+SQLite history indexes now include the `id DESC` pagination tie-breaker and
+`status`, avoiding large sorts for equal timestamps and allowing counts to read
+the covering index rather than transcript bodies. Existing app-owned indexes
+are replaced once in the schema transaction; unchanged definitions are reused.
+Punctuation-only search reads the already-normalized visible summary text from
+FTS. Missing/mismatched FTS rows retain a lazy projection fallback; hidden HTML
+attributes and script contents remain unsearchable.
+
+`python scripts/diagnostics/benchmark_history_reads.py` uses a temporary database,
+checks result equivalence, and reports timings plus SQLite VM steps. With 5,000
+synthetic equal-timestamp rows, Python 3.14.7 / SQLite 3.53.1 on Linux:
+
+| Operation | Before | After |
+| --- | ---: | ---: |
+| History page plus total | 11.448 ms | 0.781 ms |
+| Approximate SQLite steps for that page | 229,100 | 55,000 |
+| Literal `%` search across HTML summaries | 926.368 ms | 37.186 ms |
+
+Tests cap the equivalent history fixture at 60,000 VM steps and require zero
+HTML projections for indexed punctuation searches. VM instructions alone do
+not describe the latter win: joining FTS adds SQLite work but removes expensive
+Python HTML parsing. These are synthetic local measurements, not installed
+Windows latency targets or an aggregate application speedup.
+
+### Meeting playback and review (2026-10-05)
+
+Saved Meeting playback prepares a balanced interval index once per segment
+snapshot. Time updates and arbitrary forward/backward seeks skip intervals
+outside the playhead; canonical/live priority, alignment quality, latest start,
+stable input-order ties, and half-open end boundaries match the linear lookup.
+Overlapping intervals still require checking the overlapping candidates. No
+index is built while a Meeting has no saved playback mix, so live WebSocket
+segment arrivals do not pay this preparation cost.
+
+Stable edit/undo callbacks let the memoized transcript skip unrelated playback
+ticks. Virtualizer item keys retain their identity between transcript changes,
+Follow uses an ID-to-row index, and duration/editability/search-position scans
+are memoized. User-visible row updates and correction-version checks remain
+covered by component tests. Pointer/focus prefetch is also tested for in-flight
+deduplication and fresh-cache reuse.
+
+`cd Frontend; npm run benchmark:meeting-review` runs a synthetic two-hour,
+12,000-segment timeline with overlapping turns and 2,000 seeks, checking each
+answer against the original linear lookup before timing. One Linux/Node 26.5.0
+run measured median lookup batches of 55.299 ms linear versus 1.828 ms indexed
+(30.25x), plus 1.876 ms to build the index. These are local CPU measurements,
+not installed Windows/WebView latency or a whole-app speedup.
+
+CI runs deterministic regression ceilings through the ordinary frontend suite:
+at most 64 timestamp reads per seek on that long timeline, and zero transcript
+renders for 20 playback ticks within the same segment. The latter test fails
+with 20 renders on the original PR #83 implementation. Wall-clock timings are
+informational, not a noisy CI gate. Revisit these budgets only with correctness
+and timing evidence, lowering ceilings when a cheaper implementation wins.
+
 ### Startup and backend readiness (2026-09-18)
 
 The main, tray, and recording-overlay bootstrap overlaps initial locale loading

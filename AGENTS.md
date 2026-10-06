@@ -328,6 +328,13 @@ Frontend and shell:
 - `Frontend/client/src/main.tsx` starts the initial locale catalog and only the
   selected main/tray/overlay module together, then waits for both before React
   renders. Keep the overlay's transparent document markers ahead of its import.
+  Main and tray also prefetch their bounded initial native backend access during
+  module loading. Reuse that startup promise at mount without blocking the
+  localized loader; normal health/restart checks must still refresh access.
+  Idle Settings preloading publishes the settings resource independently of
+  microphone discovery. Before writing the query cache, verify the bootstrap
+  generation and unchanged query state so a late preload cannot replace a save
+  or an independent query response, even within the same millisecond.
 - `Frontend/client/src/hooks/use-backend-status.tsx` subscribes to the native
   `backend-status-changed` invalidation before its initial authoritative query.
   Coalesce concurrent checks and retain one follow-up for events received during
@@ -762,7 +769,15 @@ Packaging and scripts:
   single-instance show actions must reveal that same WebView again; do not leave
   a headless tray process whose main window no longer exists. Explicit tray
   Quit and app exit still use the bounded graceful backend/audio cleanup path.
-- The custom tray WebView refreshes recent transcripts on every native show
+- The custom tray WebView keeps all action targets visible without a scroll
+  container. Create it from an async command or background event task because
+  synchronous WebView2 creation can deadlock Windows IPC. Serialize competing
+  show requests. Rows share
+  the available height; supplementary descriptions collapse before actions.
+  The native window fits the monitor work area in logical pixels, including
+  high-DPI displays. Verify normal, update, error, and recent-history views
+  at 668, 560, and 480 logical pixels high when changing this layout. It refreshes
+  recent transcripts on every native show
   through `scriber-tray-opened`, and after installing its listener on first
   startup. Abort and generation guards prevent older requests from replacing
   newer history. The Transcript routes' `/recent` and `/{id}/copy` reads use
@@ -772,6 +787,14 @@ Packaging and scripts:
   Labels are bounded plain-text previews; empty text stays visibly disabled.
   Copy validates the selected ID and final status again, runs off the UI
   dispatcher, and uses an owned Scriber HWND for Windows clipboard ownership.
+  Entering Recent Transcripts may reuse an in-flight read from that opening;
+  a new native opening must still invalidate it. Refresh shortcut labels on
+  opening, never on recording/update status events. Subscribe before reading
+  initial tray status, bound listener setup, and reject late snapshots after
+  newer events. Native unchanged status skips icon/menu/event work; app-wide
+  status delivery already reaches the tray and must not be duplicated.
+  A failed or stalled opened-listener registration must still perform the
+  initial shortcut/history read. Dispose timers and late listeners on unmount.
 - Rust registers both live-mic shortcuts and the Meeting shortcut after the
   token-protected backend identity is ready. Fresh installs default to
   `Ctrl+Shift+D` for Live Mic, `Ctrl+Shift+F` for post-processing, and
@@ -2147,7 +2170,81 @@ Already implemented and should not be regressed:
   provider replay evidence.
 - Canvas/RAF waveform drawing instead of per-frame React state.
 - Buffered transcript appends for long live sessions.
+- Timed file stitching retires only the sorted prefix ending strictly before
+  the next part. Preserve conservative overlap evidence, speakers and warnings;
+  compare changes with the frozen reference in the merge diagnostic benchmark.
+  Keep two alignment score rows and byte-sized traceback moves, without
+  truncating difficult overlaps. Tests bound timestamp reads and traced memory.
+- Summary contents navigation reuses heading elements and reads current
+  geometry with binary search for ordinary block headings. Preserve the linear
+  fallback for tables/snapshot grids and refresh references on summary changes.
+- Saved Meeting playback reuses `createReviewPlaybackLookup` per segment
+  snapshot; preserve canonical/alignment/start-time priority and stable ties.
+  Do not build the interval index for live previews without saved playback audio.
+  Keep transcript edit/undo callbacks and virtualizer item keys stable, and
+  avoid whole-transcript scans on playback ticks. `Meetings.test.tsx` gates zero
+  row renders within an unchanged active segment; the timeline tests gate at
+  most 64 timestamp reads per seek on 12,000 overlapping synthetic segments.
+  `npm run benchmark:meeting-review` reports informational CPU timings and
+  index construction cost; it is not an installed Windows latency claim.
+- Settings renders persisted values independently of microphone discovery and
+  native autostart. Preserve shared bootstrap requests, cache expiry, generation
+  guards, and in-flight detachment on invalidation; late peripheral results must
+  not overwrite user edits or notify after unmount.
+- Settings keeps custom vocabulary, the summary and live-cleanup prompts, and
+  both custom OpenRouter model codes in `lib/text-draft-store.ts` stores, not
+  page state. A keystroke renders only its field. Loads, resets, rollback and
+  canonicalization write the store; blur saves and "Use" read it. Vocabulary
+  autosave and localized-default prompt replacement subscribe to their store
+  with the former debounce/recheck semantics. Tests require zero page-wide
+  tooltip renders while typing.
+- The Visualizer-bars Settings control owns drag state and its saved-value
+  reference. Commit through the existing Settings write queue. Failed earlier
+  writes must not overwrite a newer draft, and reverting to the saved value
+  behind an outstanding write must still persist that revert.
+- `VirtualTranscriptHistory` is memoized; Live Mic/YouTube/File must keep both
+  row-render callbacks and next-page callbacks stable across unrelated inputs.
+  Include all row-visible action state in callback dependencies. Preserve
+  internal scroll/resize updates, replacement data, locale and layout changes.
+- Live Mic interim text, elapsed time, status and warnings stay inside the
+  memoized `LiveMicStage`; history query, search and cards stay in the page.
+  The stage receives only the history refresh callback for a finished session.
+- The Meetings page owns each note queue, pagehide flush and autosave delay
+  without subscribing to drafts; `MeetingNotesEditor` subscribes through
+  `useMeetingNotesAutosaveSnapshot`. Restart the delay only when draft text or
+  dirtiness changes, as the former render-driven effect did. The page-owned
+  chat question is a draft store read by `MeetingChatComposer`; Meeting
+  switches and successful answers still clear it, view switches keep it.
+- Meeting transcript rows keep separate memo boundaries. Pass draft/saving
+  state only to the affected row, and keep playback callbacks independent of
+  unrelated detail changes. The page-local display projector consumes immutable
+  segment snapshots and a stable label resolver; change resolver identity when
+  speaker metadata or locale changes. Its positional fast path and weak-key
+  fallback must preserve text, timing, revision, speaker and locale updates.
+  Tests bound row formatting and new display objects; benchmark CPU timings
+  remain informational and include the initial projection cost.
+- Debug Console keeps virtualizer key callbacks and level counts stable for
+  unchanged log snapshots. Memoized log messages receive stable copy callbacks
+  and row-local feedback; serialize raw structured JSON only when opened.
 - Paginated transcript endpoints and virtualized history lists.
+- Shared history virtualizers and the Live Mic/YouTube/File callers keep stable
+  item-key functions; scrolling must not reconstruct every loaded row's key.
+  Completed summary renderers skip unrelated UI updates but invalidate when
+  content or locale changes. Intl formatter caches are bounded to 32 instances
+  per kind, retain no rendered text, and reset date formatters on window focus.
+- Idle settings/device, active-Meeting, and history preloads are independent;
+  keep history requests sequential/frame-yielded, forward query abort signals,
+  and suppress late settings publication after cancellation.
+- Transcript history indexes include the ID tie-breaker and status for ordered,
+  covering reads. Migrate only their app-owned definitions once. Punctuation
+  search reuses FTS visible-summary text with a fallback for missing/mismatched
+  index rows; preserve literal substring semantics and hidden-HTML exclusion.
+- Metadata-only transcript saves compare the real indexed projection under the
+  parent write transaction and skip unchanged FTS rewrites. Preserve missing/
+  stale-row repair, summary-format semantics and rollback on projection errors.
+- Upload patches that change no field keep snapshot identity and do not notify
+  subscribers. Preserve the server-processing transition after rounded 100%.
+  File history partitions depend on history data, not upload or copy UI state.
 - Meeting detail assembly validates existence once and reuses its SQLite
   connection for related collections instead of repeating helper lookups.
 - The native 10-ms Meeting Mic/System/AEC relay reuses decode, clean-output,
@@ -2159,6 +2256,23 @@ Already implemented and should not be regressed:
   lease, applies duration-scaled provider budgets, and deduplicates cross-track
   echo with a timeline sweep instead of all mic-by-system pairs.
 - Coalesced `history_updated` events.
+- Live Meeting `meeting_segment` merges are linear: one scan plus binary-search
+  insertion, with the stable full sort only for unsorted input or comparator
+  ties. `meeting-segment-merge.test.ts` proves equivalence with
+  replace/append-then-sort and holds a deterministic `startMs`-read ceiling
+  for a 3,000-event stream; lower that ceiling when work drops, never raise it
+  to admit a regression. Measured 2026-10-05 on 6,000 segments: about 2.3x less
+  merge time than the former per-event copy-and-sort.
+- Meeting library rows prefetch detail after 150 ms of sustained pointer or
+  keyboard-focus intent, with the query's own 30-second stale time. Keep one
+  speculative request active, cancel unused owned requests on leave, and retain
+  requests adopted by navigation or observed elsewhere. Never cancel an existing
+  consumer's request or prefetch the selected Meeting or one pending discard.
+  A speculative response must retain cache updates received while it was in
+  flight, including live segments and edits, instead of restoring its stale snapshot.
+  Review matching uses one pass; build the membership set only for active
+  filters and reuse visible rows for timeline matches. Unfiltered previous/next
+  navigation still needs the ordered IDs.
 - Chunked/offloaded upload writes and export/cleanup work where practical.
 - JobStore and latency metrics store connection reuse.
 - App-owned aiohttp provider connection reuse with DNS caching and bounded

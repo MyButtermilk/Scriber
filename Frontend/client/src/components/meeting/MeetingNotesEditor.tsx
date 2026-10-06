@@ -4,7 +4,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { TransitionText } from "@/components/ui/transition-state";
 import { useI18n } from "@/i18n";
-import type { UseMeetingNotesAutosaveResult } from "./useMeetingNotesAutosave";
+import { useMeetingNotesAutosaveSnapshot, type UseMeetingNotesAutosaveResult } from "./useMeetingNotesAutosave";
 
 interface MeetingNotesEditorProps {
   autosave: UseMeetingNotesAutosaveResult;
@@ -14,7 +14,8 @@ interface MeetingNotesEditorProps {
 
 export function MeetingNotesEditor({ autosave, rows = 5, textareaClassName }: MeetingNotesEditorProps) {
   const { t } = useI18n();
-  const { body, error, retry, setBody, status, teardownSafe } = autosave;
+  const { retry, setBody } = autosave;
+  const { body, error, isDirty, status, teardownSafe } = useMeetingNotesAutosaveSnapshot(autosave);
 
   return (
     <div className="mt-3 space-y-2">
@@ -27,7 +28,7 @@ export function MeetingNotesEditor({ autosave, rows = 5, textareaClassName }: Me
         rows={rows}
         className={textareaClassName}
       />
-      {autosave.isDirty && !teardownSafe ? (
+      {isDirty && !teardownSafe ? (
         <p className="flex items-center text-xs text-amber-700 dark:text-amber-300" role="alert">
           <AlertTriangle className="mr-2 h-3.5 w-3.5 shrink-0" />
           {t("This note is too large for a shutdown save. Wait for Saved before closing Scriber.")}

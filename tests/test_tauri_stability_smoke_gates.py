@@ -29,6 +29,12 @@ def test_tauri_shell_defers_backend_start_off_setup_hot_path() -> None:
     assert "global hotkey registration skipped:" not in lib
     assert "let status = manager.ensure_started();" in lib
     assert "std::thread::sleep(BACKEND_SUPERVISOR_INTERVAL);" in lib
+    setup = lib.split(".setup(move |app| {", 1)[1].split(".invoke_handler", 1)[0]
+    # Launch configuration and the overlay event owner must exist before the
+    # worker starts; hidden WebView creation must not gate process startup.
+    assert setup.index("configure_launch(") < setup.index("start_backend_supervisor(")
+    assert setup.index("native_overlay::set_app_handle(") < setup.index("start_backend_supervisor(")
+    assert setup.index("start_backend_supervisor(") < setup.index("create_overlay_window(app)")
 
 
 def test_hotkey_refresh_is_serialized_and_partial_registration_is_settled() -> None:
@@ -59,6 +65,16 @@ def test_backend_relock_and_frontend_navigation_preserve_runtime_identity() -> N
     assert 'invoke<TauriNavigationRequest | null>("navigation_listener_ready")' in app
     assert 'invoke<boolean>("acknowledge_navigation", { navigationId })' in app
     assert "navigationId <= lastNavigationIdRef.current" in app
+
+
+def test_tray_creation_stays_off_synchronous_windows_dispatchers() -> None:
+    lib = read_script("Frontend/src-tauri/src/lib.rs")
+    assert "async fn show_tray_panel(" in lib
+    events = lib.split("fn request_tray_panel_from_event", 1)[1].split("fn show_tray_panel_for_app", 1)[0]
+    assert "tauri::async_runtime::spawn_blocking" in events
+    tray = lib.split("fn install_tray", 1)[1].split("fn show_tray_panel_for_app", 1)[0]
+    assert "show_tray_panel_for_app(tray.app_handle())" not in tray
+    assert "request_tray_panel_from_event(tray.app_handle())" in tray
 
 
 def test_main_window_close_hides_to_tray_without_destroying_restore_target() -> None:

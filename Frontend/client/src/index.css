@@ -6613,6 +6613,96 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
   pointer-events: none;
 }
 
+/* Keep every tray action in the native window, including update/error states.
+   Give rows the available space; shorten supplementary text before targets. */
+.tray-panel-body {
+  container: tray-body / size;
+}
+
+.tray-panel-actions > .tray-action-row,
+.tray-panel-recent > .tray-recent-row {
+  flex: 1 1 0;
+  min-height: 24px;
+  max-height: 42px;
+}
+
+.tray-panel-recent > .tray-recent-row {
+  max-height: 46px;
+}
+
+.tray-panel-actions > div,
+.tray-panel-recent > div {
+  flex-shrink: 0;
+}
+
+.tray-panel-error {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+@container tray-body (max-height: 410px) {
+  .tray-panel-actions .tray-action-detail {
+    display: none;
+  }
+}
+
+@media (max-height: 620px) {
+  .tray-panel {
+    padding: 4px;
+  }
+
+  .tray-panel-surface {
+    padding: 8px;
+  }
+
+  .tray-panel-header {
+    padding-bottom: 8px;
+  }
+
+  .tray-panel-header > div:first-child {
+    width: 32px;
+    height: 32px;
+  }
+
+  .tray-panel-header img {
+    width: 24px;
+    height: 24px;
+  }
+
+  .tray-panel-body {
+    padding-block: 4px;
+  }
+
+  .tray-panel-actions,
+  .tray-panel-recent,
+  .tray-panel-footer > div {
+    gap: 2px;
+  }
+
+  .tray-panel-actions > div {
+    margin-block: 0;
+  }
+
+  .tray-panel-footer,
+  .tray-panel-update {
+    padding-top: 4px;
+  }
+
+  .tray-panel-footer .tray-action-row {
+    height: 28px;
+  }
+
+  .tray-panel-update > button {
+    height: 38px;
+  }
+
+  .tray-panel-error {
+    padding: 4px 8px;
+  }
+}
+
 .debug-console-actions .t-tt-wrap {
   width: 100%;
 }

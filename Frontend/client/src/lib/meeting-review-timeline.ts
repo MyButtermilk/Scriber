@@ -47,17 +47,86 @@ export function activeReviewSegmentId(segments: readonly ReviewTimelineSegment[]
   return best?.id ?? null;
 }
 
+type PlaybackSegment = Pick<ReviewTimelineSegment, "id" | "revision" | "startMs" | "endMs" | "alignmentQuality">;
+
+interface PlaybackInterval {
+  segment: PlaybackSegment;
+  order: number;
+  maxEndMs: number;
+  left: PlaybackInterval | null;
+  right: PlaybackInterval | null;
+}
+
+/** Build once per transcript revision, then reuse for timeupdates and arbitrary seeks.
+ * The balanced interval tree skips subtrees that cannot contain the playhead.
+ * Disjoint timelines take logarithmic work; overlaps visit additional candidates.
+ * Original order breaks exact ties, just like the one-shot linear lookup.
+ */
+export function createReviewPlaybackLookup(segments: readonly PlaybackSegment[]): (atMs: number) => string | null {
+  const ordered = segments
+    .map((segment, order) => ({ segment, order }))
+    .filter(
+      ({ segment }) =>
+        Number.isFinite(segment.startMs) && Number.isFinite(segment.endMs) && segment.endMs > segment.startMs,
+    )
+    .sort((a, b) => a.segment.startMs - b.segment.startMs || a.order - b.order);
+
+  function build(low: number, high: number): PlaybackInterval | null {
+    if (low >= high) return null;
+    const middle = (low + high) >>> 1;
+    const left = build(low, middle);
+    const right = build(middle + 1, high);
+    const entry = ordered[middle];
+    return {
+      ...entry,
+      left,
+      right,
+      maxEndMs: Math.max(entry.segment.endMs, left?.maxEndMs ?? -Infinity, right?.maxEndMs ?? -Infinity),
+    };
+  }
+  const root = build(0, ordered.length);
+
+  return (atMs) => {
+    if (!Number.isFinite(atMs) || atMs < 0) return null;
+    let best: PlaybackInterval | null = null;
+    function visit(node: PlaybackInterval | null): void {
+      if (!node || node.maxEndMs <= atMs) return;
+      visit(node.left);
+      const segment = node.segment;
+      if (segment.startMs > atMs) return;
+      if (atMs < segment.endMs) {
+        const priority =
+          best === null
+            ? 1
+            : Number(segment.revision === "canonical") - Number(best.segment.revision === "canonical") ||
+              alignmentPriority[segment.alignmentQuality] - alignmentPriority[best.segment.alignmentQuality] ||
+              segment.startMs - best.segment.startMs ||
+              best.order - node.order;
+        if (priority > 0) best = node;
+      }
+      visit(node.right);
+    }
+    visit(root);
+    return (best as PlaybackInterval | null)?.segment.id ?? null;
+  };
+}
+
 export function matchingReviewSegmentIds(segments: readonly ReviewTimelineSegment[], search: ReviewSearch): string[] {
   const query = search.query.trim().toLocaleLowerCase();
-  return segments
-    .filter((segment) => !search.speakerId || segment.speakerId === search.speakerId)
-    .filter((segment) => search.fromMs == null || segment.endMs > search.fromMs)
-    .filter((segment) => search.toMs == null || segment.startMs < search.toMs)
-    .filter(
-      (segment) =>
-        !query || segment.text.toLocaleLowerCase().includes(query) || segment.label.toLocaleLowerCase().includes(query),
+  const matches: string[] = [];
+  for (const segment of segments) {
+    if (search.speakerId && segment.speakerId !== search.speakerId) continue;
+    if (search.fromMs != null && !(segment.endMs > search.fromMs)) continue;
+    if (search.toMs != null && !(segment.startMs < search.toMs)) continue;
+    if (
+      query &&
+      !segment.text.toLocaleLowerCase().includes(query) &&
+      !segment.label.toLocaleLowerCase().includes(query)
     )
-    .map((segment) => segment.id);
+      continue;
+    matches.push(segment.id);
+  }
+  return matches;
 }
 
 export function nextReviewMatchId(

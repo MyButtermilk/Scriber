@@ -407,12 +407,16 @@ export default function DebugConsole() {
       .map((item) => item.entry);
   }, [filteredLogs, newestFirst]);
 
+  const getLogItemKey = useCallback(
+    (index: number) => `${logEntryKey(displayedLogs[index])}-${index}`,
+    [displayedLogs],
+  );
   const logVirtualizer = useVirtualizer({
     count: displayedLogs.length,
     getScrollElement: () => logScrollRef.current,
     estimateSize: () => 94,
     overscan: 5,
-    getItemKey: (index) => `${logEntryKey(displayedLogs[index])}-${index}`,
+    getItemKey: getLogItemKey,
   });
 
   useLayoutEffect(() => {
@@ -431,9 +435,16 @@ export default function DebugConsole() {
     scroller.scrollTop = scroller.scrollHeight;
   }, [autoScroll, newestFirst, displayedLogs.length, lastUpdated]);
 
-  const errorCount = logs.filter((entry) => ["ERROR", "CRITICAL"].includes(normalizeLevel(entry.level))).length;
-  const warningCount = logs.filter((entry) => normalizeLevel(entry.level) === "WARNING").length;
-  const debugCount = logs.filter((entry) => ["DEBUG", "TRACE"].includes(normalizeLevel(entry.level))).length;
+  const { errorCount, warningCount, debugCount } = useMemo(() => {
+    const counts = { errorCount: 0, warningCount: 0, debugCount: 0 };
+    for (const entry of logs) {
+      const level = normalizeLevel(entry.level);
+      if (level === "ERROR" || level === "CRITICAL") counts.errorCount += 1;
+      else if (level === "WARNING") counts.warningCount += 1;
+      else if (level === "DEBUG" || level === "TRACE") counts.debugCount += 1;
+    }
+    return counts;
+  }, [logs]);
   const latestPostProcessing = postProcessingDiagnostics[0] || null;
   const postProcessingFailures = postProcessingDiagnostics.filter((item) => item.status === "failure").length;
   const dateFilterDisplay = useMemo(() => {
@@ -548,7 +559,7 @@ export default function DebugConsole() {
     }
   };
 
-  const copyLogDetail = async (text: string, key: string) => {
+  const copyLogDetail = useCallback(async (text: string, key: string) => {
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
@@ -563,7 +574,7 @@ export default function DebugConsole() {
     } catch (err: any) {
       setError({ source: "Copy failed: {{error}}", values: { error: String(err?.message || err) } });
     }
-  };
+  }, []);
 
   const downloadSupportBundle = async () => {
     setSupportBundleLoading(true);
@@ -994,6 +1005,7 @@ export default function DebugConsole() {
                 <div className="debug-log-list" style={{ height: logVirtualizer.getTotalSize(), position: "relative" }}>
                   {logVirtualizer.getVirtualItems().map((virtualRow) => {
                     const entry = displayedLogs[virtualRow.index];
+                    const copyKey = logEntryKey(entry);
                     const level = normalizeLevel(entry.level);
                     const Icon = iconForLevel(level);
                     return (
@@ -1026,9 +1038,13 @@ export default function DebugConsole() {
                           <RuntimeLogMessage
                             message={entry.message}
                             context={entry.context}
-                            copyKey={logEntryKey(entry)}
-                            copiedKey={copiedLogDetailKey}
-                            onCopy={(text, key) => void copyLogDetail(text, key)}
+                            copyKey={copyKey}
+                            copiedKey={
+                              copiedLogDetailKey === `${copyKey}:context` || copiedLogDetailKey === `${copyKey}:message`
+                                ? copiedLogDetailKey
+                                : ""
+                            }
+                            onCopy={copyLogDetail}
                           />
                         </div>
                       </article>

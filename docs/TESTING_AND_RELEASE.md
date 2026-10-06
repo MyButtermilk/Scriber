@@ -237,6 +237,113 @@ npm test
 npm run build
 ```
 
+Meeting review performance: `npm run benchmark:meeting-review` (from
+`Frontend`) compares the indexed playback lookup with its linear reference,
+including construction cost. `npm test` includes the deterministic timestamp
+read and transcript-render ceilings, randomized overlap equivalence, current
+edit-version handling, and pointer/focus prefetch deduplication. The component
+test replaces virtualizer geometry because JSDOM has no layout; installed
+WebView scrolling still belongs to the browser/Windows smoke gate.
+
+`npm run benchmark:meeting-display` compares display projection against the
+original map-and-copy reference for 100 updates to 12,000 synthetic segments.
+It validates complete output equivalence, counts new display objects, and reports
+initial projection cost separately from update timings. Tests require one label
+resolution and one new display for a single changed segment, preserve reordered
+rows and locale/speaker changes, and count real row duration-format calls:
+20 keystrokes format 20 rows, an offscreen live append formats no existing row,
+and playback crossing a segment boundary formats only the old and new active rows.
+The row tests keep actual React markup and callbacks, mocking virtualizer geometry.
+
+Shared UI performance: `npm run benchmark:formatters` compares cached and fresh
+Intl date/number formatting. Frontend tests cover construction counts, locale
+and option changes, bounded eviction, summary parser reuse, virtual-history
+scroll work, changed row keys, independent idle preloads, and cancellation.
+Summary contents tests additionally bound heading layout reads and verify
+scroll jumps, layout shifts, table fallbacks and navigation targets.
+
+Review follow-up: real-bootstrap preload tests delay microphone/settings reads
+across saves and invalidation, including independent same-timestamp query writes.
+Settings tests distinguish device-only failure from combined failure. Tray tests
+exercise failed/stalled opened-listener setup and cleanup. Meeting prefetch tests
+use the real QueryClient to check dwell, cancellation ownership, navigation,
+observed queries, stale responses and cache reuse; a real-page fixture crosses
+ten rows without starting detail requests. Review search checks 216 combinations
+against the preserved filter reference and verifies unfiltered navigation.
+
+Settings and logging UI: `npm run test:components` includes deferred-resource
+and real-page Settings tests for independent loading, device failure, unmount,
+request sharing, expiry and stale-cache races. The 1,200-row Debug Console test
+uses the real virtualizer with JSDOM geometry and bounds key work on unchanged
+refresh/scroll; log-message tests bound metadata traversal and closed-JSON
+serialization while checking full redacted copy output. Run the browser smoke
+with `--routes /settings,/debug --fast-tab-switch` for real DOM interaction.
+Backend logging regression coverage remains `python -m pytest
+tests/runtime/test_debug_logs.py tests/test_logging_opt_out.py
+tests/runtime/test_diagnostic_preferences.py -q`; Windows lock-specific cases
+run on Windows CI.
+
+Typing and streaming isolation: Settings tests type into custom vocabulary, both
+prompts and a custom OpenRouter model code. They require zero page-wide tooltip
+renders (the former page rendered 22 per keystroke) and check debounced and blur
+saves of the newest text, prompt reset, localized-default replacement and code
+canonicalization. Live Mic tests stream 20 interim events, clock ticks and a
+final without rendering the history toolbar, and type a history search without
+rendering the recording stage. Notes tests type and save without rendering the
+autosave owner and keep the restart-on-edit delay; the Meetings chat test allows
+one composer render per keystroke and checks view persistence, sending and
+clearing. For real-browser timing,
+build baseline and candidate with `npx vite build --outDir <dir>` and run
+`python scripts/diagnostics/benchmark_frontend_interactions.py --dist <dir>
+--scenario <name>` with identical arguments. It serves that build against the
+synthetic smoke backend in headless Chromium and reports in-page and CDP script
+time per event, plus commits and committed fiber changes from a separate
+instrumented run. Fiber props/state identity changes approximate rendering
+work; they are not exact render calls or DOM mutations. In-page elapsed time
+measures event processing, not time until displayed pixels; CDP reports script
+CPU time. These are informational browser measurements, not WebView2 latency.
+
+Slider and history follow-up: the Settings test drives drag and commit
+separately, gates zero page-wide tooltip renders for 20 movements, and covers
+save failure, newer drafts and a revert queued behind a pending write.
+`virtual-transcript-history.test.tsx` uses 10,000 entries to require zero
+visible-row callbacks during unrelated parent input; its existing real-scroll
+and replacement-data checks remain. The Live Mic page test requires zero
+virtualizer calls across 20 raw search edits and a live update on layout change.
+Source gates assert that the extracted slider still awaits the parent's
+authenticated Settings save callback. The browser diagnostic supports
+`live-mic-history-search`, `file-history-search` and `youtube-history-search`.
+
+Startup and tray: the component suite covers native access prefetch before
+module completion, one shared bounded startup lookup, browser/overlay bypass,
+and locale-before-render. Tray tests bound hotkey reads during status bursts,
+reuse pending history only within an opening, retain fresh reads on reopening,
+and reject stale status/history responses. Listener failure, stalled setup and
+late cleanup are exercised. Rust tests cover unchanged status suppression and
+every public status transition; shell source gates preserve launch/supervisor/
+overlay ordering. These controlled tests prove work reduction and race handling;
+they do not substitute for installed Windows cold-start and tray smoke results.
+
+Long-file stitching: `python scripts/diagnostics/benchmark_transcription_merge.py`
+checks exact words/warnings against the preserved reference before reporting
+timing and traced alignment memory. Run `python -m pytest
+tests/test_transcription_merge.py tests/test_transcription_merge_performance.py
+tests/test_provider_transcript.py -q` for boundary behavior, randomized
+equivalence and deterministic timestamp/normalization/memory budgets.
+
+History read performance: `python scripts/diagnostics/benchmark_history_reads.py`
+uses only a disposable SQLite database. Run `python -m pytest
+tests/test_database_search.py tests/test_summary_html.py -q` for migration,
+pagination, visible-text equivalence, and deterministic read-work budgets.
+The normal browser smoke covers primary-tab switching and transcript actions;
+use `--browser` to select Chromium on non-Windows development environments.
+
+History write performance: `python scripts/diagnostics/benchmark_transcript_writes.py`
+compares progress saves with unconditional FTS rewrites on a temporary database.
+The database tests above gate parent-only changes and retain repair/rollback
+coverage. Frontend tests also gate redundant upload notifications and unchanged
+File history row models during copy feedback, with status-transition coverage.
+
 YouTube browser handoff extension (from the repository root):
 
 ```powershell
@@ -282,7 +389,13 @@ durable store. Run Rust library tests for preview ownership/revisions, native
 rotation with real active-file/archive sharing locks, and bounded clipboard-open
 retries without touching the user's clipboard; run `native-overlay-state.test.ts`
 and `TrayPanel.test.tsx` for renderer ordering, every-show refresh, obsolete
-responses, and visible-entry copy IDs. Python gates include
+responses, and visible-entry copy IDs.
+`TrayPanel` layout checks must also use a real browser/WebView: at 386 pixels
+wide and 668, 560, and 480 logical pixels high, verify all action bounds and
+pointer hit targets, with no overflowing scroll container, for normal,
+recording, update-available, error, and eight-item recent-history states.
+Repeat at 100%, 125%, 150%, and 200% scale. The Rust tray work-area test checks
+the corresponding native window bounds. Python gates include
 `tests/data/test_transcript_artifact_store.py`,
 `tests/api/test_transcript_routes.py`, and `tests/test_file_job_diagnostics.py`.
 Logging changes also require the File/Podcast route and job tests plus
@@ -447,6 +560,11 @@ Web/API/jobs:
 - `tests/test_web_api_job_resume.py`
 - `tests/test_web_api_reliability.py`
 - `tests/test_web_api_timeouts.py`
+
+Startup recovery tests capture registered tasks directly because completed tasks
+may leave the running-task map before the startup scan returns. They also force
+that ordering while preserving assertions on durable results and avoiding source
+or provider replay.
 
 Performance/packaging:
 

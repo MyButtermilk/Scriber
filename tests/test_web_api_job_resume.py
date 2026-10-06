@@ -508,12 +508,14 @@ async def test_startup_recovers_exact_durable_result_with_failed_projection_and_
         with (
             patch("src.web_api.prepare_provider_audio_file", new=prepare_audio),
             patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+            patch.object(ctl, "_register_task", wraps=ctl._register_task) as registered,
         ):
             resumed = await ctl.resume_pending_jobs(limit=10, recover_running=True)
             assert resumed == 1
-            task = ctl._running_tasks.get(transcript_id)
-            assert task is not None
-            await asyncio.gather(task)
+            registered.assert_called_once()
+            registered_id, task = registered.call_args.args
+            assert registered_id == transcript_id
+            await task
 
         persisted = database.get_transcript(transcript_id)
         recovered_job = store.get(job.id)
@@ -531,9 +533,11 @@ async def test_startup_recovers_exact_durable_result_with_failed_projection_and_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stale_status", ["processing", "failed"])
+@pytest.mark.parametrize("finish_before_scan_returns", [False, True])
 async def test_startup_reprojects_completed_artifact_instead_of_only_completing_job(
     isolated_recovery_database,
     stale_status,
+    finish_before_scan_returns,
 ):
     store = JobStore(db_path=isolated_recovery_database)
     ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
@@ -576,16 +580,30 @@ async def test_startup_reprojects_completed_artifact_instead_of_only_completing_
     )
 
     prepare_audio = MagicMock(side_effect=AssertionError("completed artifact recovery must remain source-free"))
+    schedule_retry_scan = ctl._schedule_next_retry_scan_from_store
+
+    async def finish_recovery_before_retry_scan():
+        if finish_before_scan_returns:
+            # A recovered task can finish and leave _running_tasks while the
+            # startup scan is still awaiting its retry-store queries.
+            registered.assert_called_once()
+            await registered.call_args.args[1]
+            assert transcript_id not in ctl._running_tasks
+        await schedule_retry_scan()
+
     try:
         with (
             patch("src.web_api.prepare_provider_audio_file", new=prepare_audio),
             patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+            patch.object(ctl, "_register_task", wraps=ctl._register_task) as registered,
+            patch.object(ctl, "_schedule_next_retry_scan_from_store", new=finish_recovery_before_retry_scan),
         ):
             resumed = await ctl.resume_pending_jobs(limit=10, recover_running=True)
             assert resumed == 1
-            task = ctl._running_tasks.get(transcript_id)
-            assert task is not None
-            await asyncio.gather(task)
+            registered.assert_called_once()
+            registered_id, task = registered.call_args.args
+            assert registered_id == transcript_id
+            await task
 
         persisted = database.get_transcript(transcript_id)
         recovered_job = store.get(job.id)
@@ -762,12 +780,14 @@ async def test_startup_recovers_youtube_durable_result_without_url_or_download(
             patch("src.web_api.prepare_provider_audio_file", new=prepare_audio),
             patch("src.web_api._validate_provider_ready", new=validate_provider),
             patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+            patch.object(ctl, "_register_task", wraps=ctl._register_task) as registered,
         ):
             resumed = await ctl.resume_pending_jobs(limit=10, recover_running=True)
             assert resumed == 1
-            task = ctl._running_tasks.get(transcript_id)
-            assert task is not None
-            await asyncio.gather(task)
+            registered.assert_called_once()
+            registered_id, task = registered.call_args.args
+            assert registered_id == transcript_id
+            await task
 
         persisted = database.get_transcript(transcript_id)
         recovered_job = store.get(job.id)

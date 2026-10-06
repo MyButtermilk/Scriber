@@ -6,10 +6,13 @@ const boot = vi.hoisted(() => ({
   windowModule: Promise.resolve(),
   localeReady: false,
   imports: [] as string[],
+  access: vi.fn(() => new Promise<void>(() => {})),
   render: vi.fn(),
   createRoot: vi.fn(),
   observe: vi.fn(() => vi.fn()),
 }));
+
+vi.mock("./lib/initial-backend-access", () => ({ loadInitialBackendAccess: boot.access }));
 
 vi.mock("react-dom/client", () => ({ createRoot: boot.createRoot }));
 vi.mock("@fontsource/inter/400.css", () => ({}));
@@ -42,6 +45,7 @@ beforeEach(() => {
   boot.render.mockReset();
   boot.createRoot.mockReset().mockReturnValue({ render: boot.render });
   boot.observe.mockClear();
+  boot.access.mockClear();
   document.body.innerHTML = '<div id="root"></div>';
   delete document.body.dataset.scriberOverlayWindow;
   delete document.documentElement.dataset.scriberOverlayWindow;
@@ -82,6 +86,7 @@ describe("localized window bootstrap", () => {
     await import("./main");
 
     await vi.waitFor(() => expect(boot.imports).toEqual([expected]));
+    expect(boot.access).toHaveBeenCalledTimes(expected === "overlay" ? 0 : 1);
     expect(boot.createRoot).not.toHaveBeenCalled();
     expect(boot.localeReady).toBe(false);
     expect(boot.observe).toHaveBeenCalledTimes(expected === "main" ? 1 : 0);

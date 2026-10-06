@@ -38,6 +38,7 @@ import {
   X,
 } from "lucide-react";
 import { apiUrl } from "@/lib/backend";
+import { type TextDraftStore, useTextDraft, useTextDraftStore } from "@/lib/text-draft-store";
 import { apiRequest, OUTLOOK_SYNC_REQUEST_TIMEOUT_MS } from "@/lib/queryClient";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import {
@@ -107,12 +108,14 @@ import {
 } from "@/components/meeting/SpeakerAttendeeAssignments";
 import { saveWorkspaceMeetingNote, useMeetingNotesAutosave } from "@/components/meeting/useMeetingNotesAutosave";
 import {
-  activeReviewSegmentId,
+  createReviewPlaybackLookup,
   matchingReviewSegmentIds,
   nextReviewMatchId,
   reviewTimeRangeBounds,
   type ReviewTimeRange,
 } from "@/lib/meeting-review-timeline";
+import { createMeetingSegmentProjector, type DisplayMeetingSegment } from "@/lib/meeting-segment-display";
+import { createMeetingDetailPrefetch } from "@/lib/meeting-detail-prefetch";
 import {
   Dialog,
   DialogContent,
@@ -479,7 +482,205 @@ function highlightTranscriptMatch(text: string, query: string) {
   );
 }
 
-type DisplayMeetingSegment = MeetingSegment & { label: string };
+const MeetingTranscriptRow = memo(function MeetingTranscriptRow({
+  segment,
+  active,
+  search,
+  hasPlayableAudio,
+  onPlay,
+  canAssignSpeakers,
+  onAssignSpeaker,
+  canEdit,
+  editing,
+  draft,
+  setDraft,
+  beginEdit,
+  cancelEdit,
+  saving,
+  onSave,
+  onUndo,
+}: {
+  segment: DisplayMeetingSegment;
+  active: boolean;
+  search: string;
+  hasPlayableAudio: boolean;
+  onPlay: (startMs: number) => void;
+  canAssignSpeakers: boolean;
+  onAssignSpeaker: (speakerId: string) => void;
+  canEdit: boolean;
+  editing: boolean;
+  draft: string;
+  setDraft: (draft: string) => void;
+  beginEdit: (segment: DisplayMeetingSegment) => void;
+  cancelEdit: () => void;
+  saving: boolean;
+  onSave: (segment: DisplayMeetingSegment, text: string) => void;
+  onUndo: (segment: DisplayMeetingSegment) => void;
+}) {
+  const { t, formatNumber } = useI18n();
+  return (
+    <div
+      aria-current={active ? "true" : undefined}
+      className={`group grid w-full grid-cols-[112px_minmax(0,1fr)] gap-3 rounded-xl border-l-2 px-3 py-3 outline-none transition-colors duration-[var(--duration-quick)] motion-reduce:transition-none sm:grid-cols-[128px_minmax(0,1fr)] ${active ? "border-primary bg-primary/[0.07] shadow-[inset_0_1px_0_hsl(var(--background)/0.45)]" : "border-transparent hover:bg-muted/50 focus-within:bg-muted/35"}`}
+      tabIndex={canEdit ? 0 : -1}
+      onKeyDown={(event) => {
+        if (canEdit && event.key.toLocaleLowerCase() === "e" && event.target === event.currentTarget) {
+          event.preventDefault();
+          beginEdit(segment);
+        }
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => onPlay(segment.startMs)}
+        disabled={!hasPlayableAudio}
+        className="self-start rounded-lg text-left text-ui-micro tabular-nums outline-none enabled:active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-default"
+        title={
+          hasPlayableAudio
+            ? t("Play {{start}} to {{end}}", {
+                start: formatOffset(segment.startMs),
+                end: formatOffset(segment.endMs),
+              })
+            : t("Saved audio is unavailable")
+        }
+        aria-label={t("Play transcript segment from {{start}} to {{end}}", {
+          start: formatOffset(segment.startMs),
+          end: formatOffset(segment.endMs),
+        })}
+      >
+        <span className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 font-mono">
+          <span className="font-sans text-muted-foreground">{t("Start")}</span>
+          <span className="text-right font-medium text-primary">{formatOffset(segment.startMs)}</span>
+          <span className="font-sans text-muted-foreground">{t("End")}</span>
+          <span className="text-right font-medium text-primary">{formatOffset(segment.endMs)}</span>
+          <span className="font-sans text-muted-foreground">{t("Duration")}</span>
+          <span className="text-right text-muted-foreground">
+            {formatNumber(segment.durationMs / 1000, {
+              minimumFractionDigits: 1,
+              maximumFractionDigits: 1,
+            })}{" "}
+            s
+          </span>
+        </span>
+        {segment.alignmentQuality === "estimated" && (
+          <span
+            className="mt-1 block font-sans text-ui-micro font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300"
+            title={t("Exact word timing was not available, so this time was estimated.")}
+          >
+            {t("Estimated timing")}
+          </span>
+        )}
+      </button>
+      <div className="min-w-0">
+        <div className="flex min-w-0 items-center gap-2">
+          {canAssignSpeakers && segment.speakerId ? (
+            <button
+              type="button"
+              onClick={() => onAssignSpeaker(segment.speakerId!)}
+              data-testid={`meeting-transcript-speaker-${segment.id}`}
+              data-speaker-id={segment.speakerId}
+              className="group/speaker inline-flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-xs font-semibold text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary"
+              title={t("Assign a speaker name to {{speaker}}", { speaker: segment.label })}
+              aria-label={t("Assign a speaker name to {{speaker}}", { speaker: segment.label })}
+            >
+              <span className="truncate">{highlightTranscriptMatch(segment.label, search)}</span>
+              <Pencil
+                className="h-3 w-3 shrink-0 opacity-50 transition-opacity group-hover/speaker:opacity-80 group-focus-visible/speaker:opacity-80 motion-reduce:transition-none"
+                aria-hidden="true"
+              />
+            </button>
+          ) : (
+            <span className="truncate text-xs font-semibold text-muted-foreground">
+              {highlightTranscriptMatch(segment.label, search)}
+            </span>
+          )}
+          {segment.editVersion > 0 && (
+            <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-ui-micro">
+              {t("Edited")}
+            </Badge>
+          )}
+        </div>
+        {editing ? (
+          <div className="mt-2 space-y-2">
+            <Textarea
+              data-testid={`meeting-segment-edit-input-${segment.id}`}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              rows={3}
+              autoFocus
+              aria-label={t("Edit transcript for {{speaker}} at {{time}}", {
+                speaker: segment.label,
+                time: formatOffset(segment.startMs),
+              })}
+              className="text-sm leading-6"
+              onKeyDown={(event) => {
+                if (event.key === "Escape") cancelEdit();
+                if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && draft.trim()) {
+                  onSave(segment, draft.trim());
+                  cancelEdit();
+                }
+              }}
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                data-testid={`meeting-segment-edit-save-${segment.id}`}
+                type="button"
+                size="sm"
+                className="h-8 active:scale-[0.97]"
+                disabled={!draft.trim() || saving}
+                onClick={() => {
+                  onSave(segment, draft.trim());
+                  cancelEdit();
+                }}
+              >
+                {saving && <WavePhysicsLoader className="mr-1.5" size="inline" />}
+                {t("Save correction")}
+              </Button>
+              <Button type="button" size="sm" variant="ghost" className="h-8 active:scale-[0.97]" onClick={cancelEdit}>
+                <X className="mr-1.5 h-3.5 w-3.5" />
+                {t("Cancel")}
+              </Button>
+              <span className="text-ui-micro text-muted-foreground">{t("Ctrl+Enter saves · Esc cancels")}</span>
+            </div>
+          </div>
+        ) : (
+          <>
+            <p className="mt-1 text-sm leading-6">{highlightTranscriptMatch(segment.text, search)}</p>
+            {canEdit && (
+              <div className="mt-2 flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+                <Button
+                  data-testid={`meeting-segment-edit-${segment.id}`}
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-[11px] active:scale-[0.97]"
+                  onClick={() => beginEdit(segment)}
+                >
+                  <Pencil className="mr-1.5 h-3 w-3" />
+                  {t("Edit")}
+                </Button>
+                {segment.editVersion > 0 && (
+                  <Button
+                    data-testid={`meeting-segment-undo-${segment.id}`}
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2 text-[11px] active:scale-[0.97]"
+                    disabled={saving}
+                    onClick={() => onUndo(segment)}
+                  >
+                    <Undo2 className="mr-1.5 h-3 w-3" />
+                    {t("Undo latest")}
+                  </Button>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+});
 
 const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
   segments,
@@ -514,26 +715,28 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
   onSave: (segment: DisplayMeetingSegment, text: string) => void;
   onUndo: (segment: DisplayMeetingSegment) => void;
 }) {
-  const { t, formatNumber } = useI18n();
+  const { t } = useI18n();
   const scrollRef = useRef<HTMLDivElement>(null);
   const programmaticScrollRef = useRef(false);
   const [followLatest, setFollowLatest] = useState(true);
   const [editingId, setEditingId] = useState("");
   const [draft, setDraft] = useState("");
-  const beginEdit = (segment: DisplayMeetingSegment) => {
+  const beginEdit = useCallback((segment: DisplayMeetingSegment) => {
     setEditingId(segment.id);
     setDraft(segment.text);
-  };
-  const cancelEdit = () => {
+  }, []);
+  const cancelEdit = useCallback(() => {
     setEditingId("");
     setDraft("");
-  };
+  }, []);
+  const segmentIndexes = useMemo(() => new Map(segments.map((segment, index) => [segment.id, index])), [segments]);
+  const getItemKey = useCallback((index: number) => segments[index]?.id ?? index, [segments]);
   const virtualizer = useVirtualizer({
     count: segments.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 88,
     overscan: 8,
-    getItemKey: (index) => segments[index]?.id ?? index,
+    getItemKey,
   });
   const scrollToLatest = useCallback(() => {
     if (segments.length === 0) return;
@@ -543,8 +746,8 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
   }, [segments.length, virtualizer]);
   const scrollToSegment = useCallback(
     (segmentId: string) => {
-      const index = segments.findIndex((segment) => segment.id === segmentId);
-      if (index < 0) return;
+      const index = segmentIndexes.get(segmentId);
+      if (index === undefined) return;
       programmaticScrollRef.current = true;
       virtualizer.scrollToIndex(index, { align: "center" });
       window.requestAnimationFrame(() => {
@@ -553,7 +756,7 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
         });
       });
     },
-    [segments, virtualizer],
+    [segmentIndexes, virtualizer],
   );
   useEffect(() => {
     if (!isLive) setFollowLatest(true);
@@ -605,174 +808,24 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
                 className="absolute left-0 top-0 w-full pb-1"
                 style={{ transform: `translateY(${virtualRow.start}px)` }}
               >
-                <div
-                  aria-current={active ? "true" : undefined}
-                  className={`group grid w-full grid-cols-[112px_minmax(0,1fr)] gap-3 rounded-xl border-l-2 px-3 py-3 outline-none transition-colors duration-[var(--duration-quick)] motion-reduce:transition-none sm:grid-cols-[128px_minmax(0,1fr)] ${active ? "border-primary bg-primary/[0.07] shadow-[inset_0_1px_0_hsl(var(--background)/0.45)]" : "border-transparent hover:bg-muted/50 focus-within:bg-muted/35"}`}
-                  tabIndex={canEdit ? 0 : -1}
-                  onKeyDown={(event) => {
-                    if (canEdit && event.key.toLocaleLowerCase() === "e" && event.target === event.currentTarget) {
-                      event.preventDefault();
-                      beginEdit(segment);
-                    }
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => onPlay(segment.startMs)}
-                    disabled={!hasPlayableAudio}
-                    className="self-start rounded-lg text-left text-ui-micro tabular-nums outline-none enabled:active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-default"
-                    title={
-                      hasPlayableAudio
-                        ? t("Play {{start}} to {{end}}", {
-                            start: formatOffset(segment.startMs),
-                            end: formatOffset(segment.endMs),
-                          })
-                        : t("Saved audio is unavailable")
-                    }
-                    aria-label={t("Play transcript segment from {{start}} to {{end}}", {
-                      start: formatOffset(segment.startMs),
-                      end: formatOffset(segment.endMs),
-                    })}
-                  >
-                    <span className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 font-mono">
-                      <span className="font-sans text-muted-foreground">{t("Start")}</span>
-                      <span className="text-right font-medium text-primary">{formatOffset(segment.startMs)}</span>
-                      <span className="font-sans text-muted-foreground">{t("End")}</span>
-                      <span className="text-right font-medium text-primary">{formatOffset(segment.endMs)}</span>
-                      <span className="font-sans text-muted-foreground">{t("Duration")}</span>
-                      <span className="text-right text-muted-foreground">
-                        {formatNumber(segment.durationMs / 1000, {
-                          minimumFractionDigits: 1,
-                          maximumFractionDigits: 1,
-                        })}{" "}
-                        s
-                      </span>
-                    </span>
-                    {segment.alignmentQuality === "estimated" && (
-                      <span
-                        className="mt-1 block font-sans text-ui-micro font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300"
-                        title={t("Exact word timing was not available, so this time was estimated.")}
-                      >
-                        {t("Estimated timing")}
-                      </span>
-                    )}
-                  </button>
-                  <div className="min-w-0">
-                    <div className="flex min-w-0 items-center gap-2">
-                      {canAssignSpeakers && segment.speakerId ? (
-                        <button
-                          type="button"
-                          onClick={() => onAssignSpeaker(segment.speakerId!)}
-                          data-testid={`meeting-transcript-speaker-${segment.id}`}
-                          data-speaker-id={segment.speakerId}
-                          className="group/speaker inline-flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-xs font-semibold text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary"
-                          title={t("Assign a speaker name to {{speaker}}", { speaker: segment.label })}
-                          aria-label={t("Assign a speaker name to {{speaker}}", { speaker: segment.label })}
-                        >
-                          <span className="truncate">{highlightTranscriptMatch(segment.label, search)}</span>
-                          <Pencil
-                            className="h-3 w-3 shrink-0 opacity-50 transition-opacity group-hover/speaker:opacity-80 group-focus-visible/speaker:opacity-80 motion-reduce:transition-none"
-                            aria-hidden="true"
-                          />
-                        </button>
-                      ) : (
-                        <span className="truncate text-xs font-semibold text-muted-foreground">
-                          {highlightTranscriptMatch(segment.label, search)}
-                        </span>
-                      )}
-                      {segment.editVersion > 0 && (
-                        <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-ui-micro">
-                          {t("Edited")}
-                        </Badge>
-                      )}
-                    </div>
-                    {editingId === segment.id ? (
-                      <div className="mt-2 space-y-2">
-                        <Textarea
-                          data-testid={`meeting-segment-edit-input-${segment.id}`}
-                          value={draft}
-                          onChange={(event) => setDraft(event.target.value)}
-                          rows={3}
-                          autoFocus
-                          aria-label={t("Edit transcript for {{speaker}} at {{time}}", {
-                            speaker: segment.label,
-                            time: formatOffset(segment.startMs),
-                          })}
-                          className="text-sm leading-6"
-                          onKeyDown={(event) => {
-                            if (event.key === "Escape") cancelEdit();
-                            if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && draft.trim()) {
-                              onSave(segment, draft.trim());
-                              cancelEdit();
-                            }
-                          }}
-                        />
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Button
-                            data-testid={`meeting-segment-edit-save-${segment.id}`}
-                            type="button"
-                            size="sm"
-                            className="h-8 active:scale-[0.97]"
-                            disabled={!draft.trim() || savingSegmentId === segment.id}
-                            onClick={() => {
-                              onSave(segment, draft.trim());
-                              cancelEdit();
-                            }}
-                          >
-                            {savingSegmentId === segment.id && <WavePhysicsLoader className="mr-1.5" size="inline" />}
-                            {t("Save correction")}
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            className="h-8 active:scale-[0.97]"
-                            onClick={cancelEdit}
-                          >
-                            <X className="mr-1.5 h-3.5 w-3.5" />
-                            {t("Cancel")}
-                          </Button>
-                          <span className="text-ui-micro text-muted-foreground">
-                            {t("Ctrl+Enter saves · Esc cancels")}
-                          </span>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <p className="mt-1 text-sm leading-6">{highlightTranscriptMatch(segment.text, search)}</p>
-                        {canEdit && (
-                          <div className="mt-2 flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
-                            <Button
-                              data-testid={`meeting-segment-edit-${segment.id}`}
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 px-2 text-[11px] active:scale-[0.97]"
-                              onClick={() => beginEdit(segment)}
-                            >
-                              <Pencil className="mr-1.5 h-3 w-3" />
-                              {t("Edit")}
-                            </Button>
-                            {segment.editVersion > 0 && (
-                              <Button
-                                data-testid={`meeting-segment-undo-${segment.id}`}
-                                type="button"
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 px-2 text-[11px] active:scale-[0.97]"
-                                disabled={savingSegmentId === segment.id}
-                                onClick={() => onUndo(segment)}
-                              >
-                                <Undo2 className="mr-1.5 h-3 w-3" />
-                                {t("Undo latest")}
-                              </Button>
-                            )}
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
+                <MeetingTranscriptRow
+                  segment={segment}
+                  active={active}
+                  search={search}
+                  hasPlayableAudio={hasPlayableAudio}
+                  onPlay={onPlay}
+                  canAssignSpeakers={canAssignSpeakers}
+                  onAssignSpeaker={onAssignSpeaker}
+                  canEdit={canEdit}
+                  editing={editingId === segment.id}
+                  draft={editingId === segment.id ? draft : ""}
+                  setDraft={setDraft}
+                  beginEdit={beginEdit}
+                  cancelEdit={cancelEdit}
+                  saving={savingSegmentId === segment.id}
+                  onSave={onSave}
+                  onUndo={onUndo}
+                />
               </div>
             );
           })}
@@ -947,6 +1000,8 @@ function ActionItems({
   );
 }
 
+const MEETING_DETAIL_STALE_TIME_MS = 30_000;
+
 async function fetchJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetchWithTimeout(apiUrl(path), { credentials: "include", signal }, 15_000);
   if (!response.ok) throw new Error(`Request failed (${response.status})`);
@@ -1095,6 +1150,34 @@ const MeetingLevelMeter = memo(function MeetingLevelMeter({
   );
 });
 
+// The page owns the question so it survives view switches; typing renders only this composer.
+function MeetingChatComposer({
+  store,
+  pending,
+  onAsk,
+}: {
+  store: TextDraftStore;
+  pending: boolean;
+  onAsk: (question: string) => void;
+}) {
+  const { t } = useI18n();
+  const question = useTextDraft(store);
+  return (
+    <>
+      <Textarea
+        value={question}
+        onChange={(event) => store.set(event.target.value)}
+        placeholder={t("What did we decide about the launch?")}
+        rows={3}
+      />
+      <Button disabled={!question.trim() || pending} onClick={() => onAsk(question)}>
+        {pending && <WavePhysicsLoader className="mr-2" size="inline" />}
+        {t("Ask meeting")}
+      </Button>
+    </>
+  );
+}
+
 const MeetingWorkspaceTabs = memo(function MeetingWorkspaceTabs({
   value,
   onChange,
@@ -1197,7 +1280,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const calendarSelectionInitializedRef = useRef(false);
   const selectedCalendarSubjectRef = useRef("");
   const [workspaceView, setWorkspaceView] = useState<MeetingWorkspaceView>("transcript");
-  const [chatQuestion, setChatQuestion] = useState("");
+  const chatQuestionStore = useTextDraftStore();
   const [chatAnswer, setChatAnswer] = useState<{ content: string; citations: string[] } | null>(null);
   const audioLevelsRef = useRef({ microphone: 0, system: 0 });
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -1456,11 +1539,32 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     selectedCalendarEventId,
   ]);
   const deletingSelectedMeeting = Boolean(selectedId && meetingPendingDelete?.id === selectedId);
+  const meetingDetailPrefetch = useMemo(
+    () =>
+      createMeetingDetailPrefetch(
+        queryClient,
+        (id, signal) => fetchJson<MeetingDetail>(`/api/meetings/${id}`, signal),
+        MEETING_DETAIL_STALE_TIME_MS,
+      ),
+    [queryClient],
+  );
+  useEffect(() => () => meetingDetailPrefetch.dispose(), [meetingDetailPrefetch]);
+  useEffect(() => {
+    if (selectedId) meetingDetailPrefetch.forget(selectedId, true);
+    if (meetingPendingDelete?.id) meetingDetailPrefetch.forget(meetingPendingDelete.id);
+  }, [meetingDetailPrefetch, meetingPendingDelete?.id, selectedId]);
+  const prefetchMeetingDetail = useCallback(
+    (meetingId: string, source: "pointer" | "focus") => {
+      if (!meetingId || meetingId === selectedId || meetingId === meetingPendingDelete?.id) return;
+      meetingDetailPrefetch.enter(meetingId, source);
+    },
+    [meetingDetailPrefetch, meetingPendingDelete?.id, selectedId],
+  );
   const detailQuery = useQuery<MeetingDetail>({
     queryKey: ["/api/meetings", selectedId],
     queryFn: ({ signal }) => fetchJson(`/api/meetings/${selectedId}`, signal),
     enabled: Boolean(selectedId && !deletingSelectedMeeting),
-    staleTime: 30_000,
+    staleTime: MEETING_DETAIL_STALE_TIME_MS,
     refetchInterval: (query) => meetingDetailRefetchInterval(query.state.data?.state, meetingWsConnected),
   });
   const deliveriesQuery = useQuery<{
@@ -1527,13 +1631,13 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     savedVoicePreviewRef.current?.pause();
     savedVoicePreviewProfileIdRef.current = "";
     audioRef.current?.pause();
-    setChatQuestion("");
+    chatQuestionStore.set("");
     setChatAnswer(null);
     setTranscriptSearch("");
     setRetryFinalProvider("");
     setEditingMeetingTitle(false);
     setMeetingTitleDraft("");
-  }, [selectedId]);
+  }, [chatQuestionStore, selectedId]);
 
   useEffect(
     () => () => {
@@ -2230,6 +2334,15 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         description: t(error.message),
       }),
   });
+  const mutateSegment = segmentEditMutation.mutate;
+  const saveSegment = useCallback(
+    (segment: DisplayMeetingSegment, text: string) => mutateSegment({ segment, action: "edit", text }),
+    [mutateSegment],
+  );
+  const undoSegment = useCallback(
+    (segment: DisplayMeetingSegment) => mutateSegment({ segment, action: "undo" }),
+    [mutateSegment],
+  );
   const recoveryMutation = useMutation({
     mutationFn: async ({
       id,
@@ -2382,7 +2495,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     onSuccess: (payload, variables) => {
       if (variables.id !== selectedId) return;
       setChatAnswer(payload.message);
-      setChatQuestion("");
+      chatQuestionStore.set("");
     },
     onError: (error, variables) => {
       if (variables.id === selectedId) {
@@ -2513,19 +2626,20 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     });
     return names;
   }, [detail?.speakers, t]);
+  const [projectSegments] = useState(createMeetingSegmentProjector);
+  const segmentDisplayLabel = useCallback(
+    (segment: MeetingSegment) => {
+      const rawLabel =
+        (segment.speakerId ? genericSpeakerNames.get(segment.speakerId) : "") ||
+        segment.speakerLabel ||
+        (segment.source === "microphone" ? "You" : "Meeting audio");
+      return rawLabel === "You" || rawLabel === "Meeting audio" ? t(rawLabel) : rawLabel;
+    },
+    [genericSpeakerNames, t],
+  );
   const groupedSegments = useMemo(
-    () =>
-      liveSegments.map((segment) => {
-        const rawLabel =
-          (segment.speakerId ? genericSpeakerNames.get(segment.speakerId) : "") ||
-          segment.speakerLabel ||
-          (segment.source === "microphone" ? "You" : "Meeting audio");
-        return {
-          ...segment,
-          label: rawLabel === "You" || rawLabel === "Meeting audio" ? t(rawLabel) : rawLabel,
-        };
-      }),
-    [genericSpeakerNames, liveSegments, t],
+    () => projectSegments(liveSegments, segmentDisplayLabel),
+    [liveSegments, projectSegments, segmentDisplayLabel],
   );
   const reviewTimeBounds = useMemo(() => reviewTimeRangeBounds(reviewTimeRange), [reviewTimeRange]);
   const reviewMatchIds = useMemo(
@@ -2537,18 +2651,23 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       }),
     [groupedSegments, localeTag, reviewSpeakerId, reviewTimeBounds, transcriptSearch],
   );
-  const reviewMatchIdSet = useMemo(() => new Set(reviewMatchIds), [reviewMatchIds]);
   const reviewFiltersActive = Boolean(transcriptSearch.trim() || reviewSpeakerId || reviewTimeRange !== "all");
+  const reviewMatchIdSet = useMemo(
+    () => (reviewFiltersActive ? new Set(reviewMatchIds) : null),
+    [reviewFiltersActive, reviewMatchIds],
+  );
   const visibleTranscriptSegments = useMemo(
-    () =>
-      reviewFiltersActive ? groupedSegments.filter((segment) => reviewMatchIdSet.has(segment.id)) : groupedSegments,
-    [groupedSegments, reviewFiltersActive, reviewMatchIdSet],
+    () => (reviewMatchIdSet ? groupedSegments.filter((segment) => reviewMatchIdSet.has(segment.id)) : groupedSegments),
+    [groupedSegments, reviewMatchIdSet],
   );
-  const activePlaybackSegmentId = useMemo(
-    () => activeReviewSegmentId(groupedSegments, playbackMeetingTimeMs),
-    [groupedSegments, playbackMeetingTimeMs],
+  const reviewMatchIndex = useMemo(
+    () => (reviewMatchId ? reviewMatchIds.indexOf(reviewMatchId) : -1),
+    [reviewMatchId, reviewMatchIds],
   );
-  const reviewMatchIndex = reviewMatchId ? reviewMatchIds.indexOf(reviewMatchId) : -1;
+  const canEditVisibleTranscript = useMemo(
+    () => detail?.state === "ready" && visibleTranscriptSegments.every((segment) => segment.revision === "canonical"),
+    [detail?.state, visibleTranscriptSegments],
+  );
   const reviewSpeakers = useMemo(() => {
     const speakers = new Map<string, string>();
     groupedSegments.forEach((segment) => {
@@ -2588,7 +2707,10 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         })
       : t("Not generated");
   const analysis = analysisOutput?.payload;
-  const hasCanonicalTranscript = Boolean(detail?.segments.some((segment) => segment.revision === "canonical"));
+  const hasCanonicalTranscript = useMemo(
+    () => liveSegments.some((segment) => segment.revision === "canonical"),
+    [liveSegments],
+  );
   const outputsStale = Boolean(
     detail?.outputs.some(
       (output) =>
@@ -2609,17 +2731,23 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   };
   const playbackMix = detail?.audioAssets.find((asset) => asset.kind === "playback_mix") ?? null;
   const hasPlayableAudio = Boolean(playbackMix);
-  const playbackMixOriginMs = meetingPlaybackOriginMs(detail?.audioAssets, "mix");
-  const fallbackPlaybackMixEndMs = liveSegments.reduce(
-    (endMs, segment) => Math.max(endMs, segment.endMs),
-    playbackMixOriginMs,
+  // Live preview has no saved playback mix. Avoid rebuilding an unused index
+  // for every incoming websocket segment on that path.
+  const lookupPlaybackSegment = useMemo(
+    () => (hasPlayableAudio ? createReviewPlaybackLookup(liveSegments) : () => null),
+    [hasPlayableAudio, liveSegments],
   );
-  const playbackMixEndMs =
-    playbackMix?.durationMs == null ? fallbackPlaybackMixEndMs : playbackMixOriginMs + playbackMix.durationMs;
+  const activePlaybackSegmentId = lookupPlaybackSegment(playbackMeetingTimeMs);
+  const playbackMixOriginMs = meetingPlaybackOriginMs(detail?.audioAssets, "mix");
+  const playbackMixEndMs = useMemo(
+    () =>
+      playbackMix?.durationMs == null
+        ? liveSegments.reduce((endMs, segment) => Math.max(endMs, segment.endMs), playbackMixOriginMs)
+        : playbackMixOriginMs + playbackMix.durationMs,
+    [liveSegments, playbackMix?.durationMs, playbackMixOriginMs],
+  );
   const reviewTimelineMarkers = useMemo(() => {
-    const matchingSegments = reviewFiltersActive
-      ? groupedSegments.filter((segment) => reviewMatchIdSet.has(segment.id))
-      : [];
+    const matchingSegments = reviewFiltersActive ? visibleTranscriptSegments : [];
     const step = Math.max(1, Math.ceil(matchingSegments.length / 120));
     const citationSegmentIds = new Set<string>();
     [analysis?.decisions, analysis?.risks, analysis?.openQuestions].forEach((items) => {
@@ -2657,7 +2785,15 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
           label: t("Cited evidence"),
         })),
     ];
-  }, [analysis, detail?.actionItems, detail?.notes, groupedSegments, reviewFiltersActive, reviewMatchIdSet, t]);
+  }, [
+    analysis,
+    detail?.actionItems,
+    detail?.notes,
+    groupedSegments,
+    reviewFiltersActive,
+    visibleTranscriptSegments,
+    t,
+  ]);
   const canPlaySpeakerSamples =
     hasPlayableAudio && playbackMixEndMs - playbackMixOriginMs >= MEETING_SPEAKER_SAMPLE_MIN_MS;
   const playableSpeakerIds = useMemo(
@@ -2708,7 +2844,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   }, [detail?.audioAssets]);
   const playSegment = useCallback(
     (startMs: number) => {
-      if (!detail) return;
+      if (!detail?.id) return;
       speakerSnippetEndMsRef.current = null;
       savedVoicePreviewRef.current?.pause();
       savedVoicePreviewProfileIdRef.current = "";
@@ -2729,7 +2865,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         audioRef.current?.load();
       }
     },
-    [detail, hasPlayableAudio, playLoadedAudio],
+    [detail?.id, hasPlayableAudio, playLoadedAudio],
   );
   const playSpeakerSnippet = useCallback(
     (speakerId: string) => {
@@ -3001,7 +3137,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               >
                 <button
                   type="button"
-                  onClick={() => setLocation(`/meetings/${meeting.id}`)}
+                  onClick={() => {
+                    meetingDetailPrefetch.forget(meeting.id, true);
+                    setLocation(`/meetings/${meeting.id}`);
+                  }}
+                  onPointerEnter={() => prefetchMeetingDetail(meeting.id, "pointer")}
+                  onPointerLeave={() => meetingDetailPrefetch.leave(meeting.id, "pointer")}
+                  onFocus={() => prefetchMeetingDetail(meeting.id, "focus")}
+                  onBlur={() => meetingDetailPrefetch.leave(meeting.id, "focus")}
                   className="min-w-0 flex-1 rounded-[10px] px-2 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-primary"
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -4177,19 +4320,11 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                               )}
                             </div>
                           )}
-                          <Textarea
-                            value={chatQuestion}
-                            onChange={(event) => setChatQuestion(event.target.value)}
-                            placeholder={t("What did we decide about the launch?")}
-                            rows={3}
+                          <MeetingChatComposer
+                            store={chatQuestionStore}
+                            pending={chatMutation.isPending}
+                            onAsk={(question) => chatMutation.mutate({ id: detail.id, question })}
                           />
-                          <Button
-                            disabled={!chatQuestion.trim() || chatMutation.isPending}
-                            onClick={() => chatMutation.mutate({ id: detail.id, question: chatQuestion })}
-                          >
-                            {chatMutation.isPending && <WavePhysicsLoader className="mr-2" size="inline" />}
-                            {t("Ask meeting")}
-                          </Button>
                         </div>
                       ) : workspaceView === "notes" ? (
                         <div className="max-w-2xl">
@@ -4574,15 +4709,12 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                             onPlay={playSegment}
                             canAssignSpeakers={!OPEN_STATES.has(detail.state)}
                             onAssignSpeaker={focusSpeakerAssignment}
-                            canEdit={
-                              detail.state === "ready" &&
-                              visibleTranscriptSegments.every((segment) => segment.revision === "canonical")
-                            }
+                            canEdit={canEditVisibleTranscript}
                             savingSegmentId={
                               segmentEditMutation.isPending ? (segmentEditMutation.variables?.segment.id ?? "") : ""
                             }
-                            onSave={(segment, text) => segmentEditMutation.mutate({ segment, action: "edit", text })}
-                            onUndo={(segment) => segmentEditMutation.mutate({ segment, action: "undo" })}
+                            onSave={saveSegment}
+                            onUndo={undoSegment}
                           />
                         )}
                       </div>

@@ -1423,6 +1423,8 @@ class FrontendSmokeBackend:
                 "apiVersion": "1",
                 "configured": True,
                 "connected": self.outlook_connected,
+                "calendars": [],
+                "selectedCalendarId": "",
                 "scopes": ["User.Read", "Calendars.Read", "offline_access"],
                 "lastSyncAt": "2026-06-01T11:45:00Z" if self.outlook_synced else "",
                 "lastError": "",
@@ -2123,7 +2125,10 @@ async def wait_for_interaction_state(
         if last_state.get("ok"):
             return last_state
         await asyncio.sleep(0.25)
-    raise RuntimeError(f"Timed out waiting for interaction '{label}'. Last state: {last_state}")
+    browser_errors = await cdp.evaluate("window.__scriberSmoke || {}", timeout=5)
+    raise RuntimeError(
+        f"Timed out waiting for interaction '{label}'. Last state: {last_state}. Browser errors: {browser_errors}"
+    )
 
 
 async def exercise_interface_locale_switch(
@@ -2180,11 +2185,11 @@ async def exercise_interface_locale_switch(
   const text = document.body ? document.body.innerText : '';
   return {
     ok: document.readyState === 'complete'
-      && document.documentElement.lang === 'de'
+      && document.documentElement?.lang === 'de'
       && window.localStorage.getItem('scriber-ui-locale') === 'de'
       && text.includes('Einstellungen')
       && text.includes('Oberflächensprache'),
-    lang: document.documentElement.lang,
+    lang: document.documentElement?.lang,
     storedLocale: window.localStorage.getItem('scriber-ui-locale'),
     hasGermanSettingsTitle: text.includes('Einstellungen'),
     hasInterfaceLanguageControl: text.includes('Oberflächensprache'),
@@ -3497,7 +3502,10 @@ async def exercise_meeting_end_to_end(
     ):
         await asyncio.sleep(0.1)
     if not {"action-item", "speaker", "note"}.issubset(backend.meeting_requests):
-        raise RuntimeError(f"Meeting edits did not reach backend: {backend.meeting_requests}")
+        state = await cdp.evaluate(
+            "({errors: window.__scriberSmoke, notes: [...document.querySelectorAll('[data-testid=meeting-workspace-note]')].map(n => ({value: n.value, visible: !!n.getClientRects().length})), text: document.body.innerText.slice(-2000)})"
+        )
+        raise RuntimeError(f"Meeting edits did not reach backend: {backend.meeting_requests}; browser={state}")
 
     await click_button("Ask meeting")
     chat_prepared = await cdp.evaluate(
@@ -4222,7 +4230,7 @@ async def exercise_meeting_settings(
   const analysisTrigger = section.querySelector('button[aria-label="Meeting summary model"]');
   const retentionTrigger = section.querySelector('button[aria-label="Default meeting audio retention"]');
   const smartTurn = section.querySelector('[role="switch"][aria-label="Keep meeting live sentences together across short pauses"]');
-  const aec = section.querySelector('[role="switch"][aria-label="Reduce speaker echo in meetings"]');
+  const aec = section.querySelector('[role="switch"][aria-label="Clean up meeting audio"]');
   const autoAnalyze = section.querySelector('[role="switch"][aria-label="Automatically analyze completed meetings"]');
   if (!finalTrigger || !analysisTrigger || !retentionTrigger || !smartTurn || !aec || !autoAnalyze) {
     return { ok: false, reason: 'missing meeting pipeline control' };

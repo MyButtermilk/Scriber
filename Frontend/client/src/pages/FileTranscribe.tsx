@@ -21,6 +21,7 @@ import { TranscriptSummaryRetryButton } from "@/components/transcript-summary-re
 import { FileTranscriptRetryButton } from "@/components/file-transcript-retry-button";
 import { TranscriptStopButton } from "@/components/transcript-stop-button";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
+import { transcriptHistoryItemKey } from "@/lib/virtual-transcript-history-layout";
 import { ErrorShake } from "@/components/ui/error-shake";
 import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
 import {
@@ -653,9 +654,42 @@ export default function FileTranscribe() {
     },
   });
 
-  // Separate processing items from completed
-  const processingItems = recentFromBackend.filter((t) => t.status === "processing");
-  const completedItems = recentFromBackend.filter((t) => t.status !== "processing");
+  // Upload progress and copy/delete state must not rebuild the entire history
+  // or invalidate the virtualizer's row model.
+  const { processingItems, completedItems } = useMemo(() => {
+    const processingItems: TranscriptHistoryItem[] = [];
+    const completedItems: TranscriptHistoryItem[] = [];
+    for (const item of recentFromBackend) {
+      (item.status === "processing" ? processingItems : completedItems).push(item);
+    }
+    return { processingItems, completedItems };
+  }, [recentFromBackend]);
+
+  const renderHistoryItem = useCallback(
+    (item: TranscriptHistoryItem) => (
+      <FileCard
+        item={item}
+        viewMode={viewMode}
+        isDeleting={deletingId === item.id}
+        isCopying={copyingId === item.id}
+        onDelete={deleteTranscript}
+        onCopy={copyTranscript}
+        onSummaryRetryComplete={refreshAfterSummaryRetry}
+        onNavigate={navigateToTranscript}
+        onHover={preloadTranscript}
+      />
+    ),
+    [
+      copyingId,
+      deleteTranscript,
+      deletingId,
+      copyTranscript,
+      navigateToTranscript,
+      preloadTranscript,
+      refreshAfterSummaryRetry,
+      viewMode,
+    ],
+  );
 
   return (
     <div className="app-page-shell transcription-page file-page px-4 py-5 md:px-6 md:py-6" data-page-shell="file">
@@ -814,23 +848,11 @@ export default function FileTranscribe() {
           <VirtualTranscriptHistory
             items={completedItems}
             viewMode={viewMode}
-            getItemKey={(item) => item.id}
+            getItemKey={transcriptHistoryItemKey}
             hasMore={transcriptsQuery.hasNextPage}
             isLoadingMore={transcriptsQuery.isFetchingNextPage}
-            onLoadMore={() => transcriptsQuery.fetchNextPage()}
-            renderItem={(item) => (
-              <FileCard
-                item={item}
-                viewMode={viewMode}
-                isDeleting={deletingId === item.id}
-                isCopying={copyingId === item.id}
-                onDelete={deleteTranscript}
-                onCopy={copyTranscript}
-                onSummaryRetryComplete={refreshAfterSummaryRetry}
-                onNavigate={navigateToTranscript}
-                onHover={preloadTranscript}
-              />
-            )}
+            onLoadMore={transcriptsQuery.fetchNextPage}
+            renderItem={renderHistoryItem}
           />
         </TranscriptHistoryPanel>
       </div>

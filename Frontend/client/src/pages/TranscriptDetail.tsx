@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { memo, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { apiUrl, isTauriRuntime } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import ReactMarkdown from "react-markdown";
@@ -38,6 +38,8 @@ import { summaryTableOfContentsTitle } from "@/lib/summary-document-language";
 import { saveTranscriptExport } from "@/lib/transcript-export";
 import type { SettingsResponse, TranscriptDetailResponse, TranscriptHistoryItem } from "@/lib/api-types";
 import { useI18n } from "@/i18n";
+
+const MemoizedMarkdown = memo(ReactMarkdown);
 
 function normalizeSummaryMarkdown(text: string): string {
   return (text || "")
@@ -151,7 +153,7 @@ const SPEAKER_COLORS = [
 ];
 
 // Component to render transcript with speaker diarization labels
-function SpeakerFormattedText({ content }: { content: string }) {
+const SpeakerFormattedText = memo(function SpeakerFormattedText({ content }: { content: string }) {
   const { formatNumber, t } = useI18n();
   const hasSpeakerLabels = useMemo(() => /\[Speaker (\d+)\]:/.test(content), [content]);
   const paragraphs = useMemo(() => (content || "").split(/\n\n+/), [content]);
@@ -201,7 +203,7 @@ function SpeakerFormattedText({ content }: { content: string }) {
       })}
     </div>
   );
-}
+});
 
 function formatElapsedDuration(seconds: number): string {
   const hours = Math.floor(seconds / 3600);
@@ -1006,7 +1008,7 @@ export default function TranscriptDetail() {
                       <TranscriptSummaryDocument prepared={preparedSummaryHtml} />
                     ) : (
                       <div className="summary-document summary-document--markdown">
-                        <ReactMarkdown>{summaryMarkdown}</ReactMarkdown>
+                        <MemoizedMarkdown>{summaryMarkdown}</MemoizedMarkdown>
                       </div>
                     )
                   ) : (

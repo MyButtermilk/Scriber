@@ -73,12 +73,16 @@ def test_tauri_backend_status_trusts_supervisor_readiness() -> None:
 
 
 def test_app_initial_tauri_lookup_has_deadline_and_fallback() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
+    app_source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "initial-backend-access.ts").read_text(
+        encoding="utf-8"
+    )
+    assert "loadInitialBackendAccess()" in app_source
 
     assert "withPromiseTimeout(" in source
     assert '"Initial Tauri backend lookup"' in source
     assert "continuing with health fallback" in source
-    assert "setBackendBaseReady(true)" in source
+    assert "setBackendBaseReady(true)" in app_source
 
     backend_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
     assert '"Tauri backend access"' in backend_source
@@ -129,7 +133,7 @@ def test_settings_bootstrap_cache_rejects_stale_inflight_results() -> None:
 
     assert "bootstrapGeneration += 1" in source
     assert "requestGeneration === bootstrapGeneration" in source
-    assert "inflightBootstrap === request" in source
+    assert "inflightBootstrap === resources" in source
 
 
 def test_settings_put_commits_the_server_response_to_the_global_query_cache() -> None:
@@ -421,9 +425,9 @@ def test_settings_microphones_use_shared_api_types() -> None:
     assert "MicrophoneDevice," in source
     assert "MicrophonesResponse," in source
     assert "useState<MicrophoneDevice[]>([])" in source
-    assert "(await micsRes.json()) as MicrophonesResponse" in source
+    assert "(await response.json()) as MicrophonesResponse" in source
     assert "(await res.json()) as MicrophonesResponse" in source
-    assert "let microphonePayload = mics;" in source
+    assert "let microphonePayload = microphones;" in source
     assert "if (!Array.isArray(microphonePayload.devices))" in source
     assert "fetchWithTimeout(" in source
     assert 'apiUrl("/api/microphones")' in source
@@ -690,7 +694,7 @@ def test_live_mic_history_uses_snippets_period_sections_and_stable_virtual_rows(
     assert "getItemGroup={(item)" not in page_source
     assert "const getTranscriptHistoryGroup = useCallback(" in page_source
     reference_section = page_source[
-        page_source.index("const historyLocalDay =") : page_source.index("const activeSessionIdRef")
+        page_source.index("const historyLocalDay =") : page_source.index("const deleteTranscript = useCallback(")
     ]
     assert "const historyLocalDay = new Date().toDateString();" in reference_section
     assert "const historyReferenceTime = useMemo(() => {" in reference_section
@@ -1168,7 +1172,8 @@ def test_visualizer_bar_count_flows_to_live_mic_and_native_overlay() -> None:
     ).read_text(encoding="utf-8")
     api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(encoding="utf-8")
 
-    assert "await updateSettings({ visualizerBarCount: count });" in settings_source
+    assert "onSave={(count) => updateSettings({ visualizerBarCount: count })}" in settings_source
+    assert "await onSave(count);" in settings_source
     assert "await updateSettings({ overlayVisualizerStyle: style });" in settings_source
     assert "export const DEFAULT_VISUALIZER_BAR_COUNT = 45;" in helper_source
     assert "export const MIN_VISUALIZER_BAR_COUNT = 16;" in helper_source
@@ -1243,7 +1248,8 @@ def test_settings_and_youtube_mutations_use_authenticated_backend_access() -> No
     assert "await updateSettings({ favoriteMic: newFavorite });" in settings_source
     assert "await updateSettings({ hotkey });" in settings_source
     assert 'await updateSettings({ mode: mode === "press_hold" ? "push_to_talk" : "toggle" });' in settings_source
-    assert "await updateSettings({ visualizerBarCount: count });" in settings_source
+    assert "onSave={(count) => updateSettings({ visualizerBarCount: count })}" in settings_source
+    assert "await onSave(count);" in settings_source
     assert "fetchWithTimeout(" in visualizer_helper_source
     assert '{ credentials: "include", signal }' in visualizer_helper_source
 
@@ -1896,10 +1902,12 @@ def test_tray_panel_exposes_meetings_shortcut_and_installed_version() -> None:
     assert "shortcut={meetingShortcut}" in tray_source
     assert 'runAction("open_meetings")' in tray_source
     assert "value?.meetingHotkey" in tray_source
-    assert "loadRegisteredShortcuts(false)" in tray_source
+    assert "loadRegisteredShortcuts()" in tray_source
+    assert "let value = await getGlobalHotkeyStatus();" in tray_source
     assert "const requestId = ++shortcutLoadRequestRef.current;" in tray_source
     assert "requestId === shortcutLoadRequestRef.current" in tray_source
-    assert 'className="min-h-0 flex-1 overflow-y-auto overscroll-contain py-2.5 pr-1"' in tray_source
+    assert "overflow-y-auto" not in tray_source
+    assert 'className="tray-panel-actions flex h-full flex-col gap-1"' in tray_source
     assert '"open_meetings" => {' in shell_source
     assert 'show_main_window_path(app, "/meetings")?;' in shell_source
     assert "const TRAY_PANEL_HEIGHT: f64 = 668.0;" in shell_source
@@ -2269,7 +2277,9 @@ def test_meeting_workspace_scopes_drafts_playback_and_imports_to_durable_state()
     ).read_text(encoding="utf-8")
     settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
-    assert 'setChatQuestion("");' in meetings
+    assert "const chatQuestionStore = useTextDraftStore();" in meetings
+    assert meetings.count('chatQuestionStore.set("");') == 2
+    assert "}, [chatQuestionStore, selectedId]);" in meetings
     assert "variables.id !== selectedId" in meetings
     assert 'setTranscriptSearch("");' in meetings
     assert 'from "@/components/meeting/useMeetingNotesAutosave"' in meetings

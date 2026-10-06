@@ -8,59 +8,70 @@ interface SettingsBootstrapData {
   autostart: AutostartStatus;
 }
 
-let cachedBootstrap: { data: SettingsBootstrapData; loadedAt: number } | null = null;
-let inflightBootstrap: Promise<SettingsBootstrapData> | null = null;
+interface SettingsBootstrapResources {
+  isCurrent: () => boolean;
+  settings: Promise<SettingsResponse>;
+  microphones: Promise<MicrophonesResponse>;
+  autostart: Promise<AutostartStatus>;
+  complete: Promise<SettingsBootstrapData>;
+}
+
+let cachedBootstrap: { resources: SettingsBootstrapResources; loadedAt: number } | null = null;
+let inflightBootstrap: SettingsBootstrapResources | null = null;
 let bootstrapGeneration = 0;
 
 const SETTINGS_BOOTSTRAP_TTL_MS = 15_000;
 
-export function loadSettingsBootstrap({ force = false }: { force?: boolean } = {}): Promise<SettingsBootstrapData> {
-  if (force) {
-    bootstrapGeneration += 1;
-    cachedBootstrap = null;
+export function loadSettingsBootstrap(options: { force?: boolean } = {}): Promise<SettingsBootstrapData> {
+  return loadSettingsBootstrapResources(options).complete;
+}
+
+// Share requests with idle preloading, while allowing the page to show settings
+// before device discovery or the native autostart query finishes.
+export function loadSettingsBootstrapResources({
+  force = false,
+}: { force?: boolean } = {}): SettingsBootstrapResources {
+  if (force) invalidateSettingsBootstrap();
+  if (cachedBootstrap && Date.now() - cachedBootstrap.loadedAt < SETTINGS_BOOTSTRAP_TTL_MS) {
+    return cachedBootstrap.resources;
   }
-  const now = Date.now();
-  if (!force && cachedBootstrap && now - cachedBootstrap.loadedAt < SETTINGS_BOOTSTRAP_TTL_MS) {
-    return Promise.resolve(cachedBootstrap.data);
-  }
-  if (!force && inflightBootstrap) {
-    return inflightBootstrap;
-  }
+  if (inflightBootstrap) return inflightBootstrap;
 
   const requestGeneration = bootstrapGeneration;
-  const request = loadSettingsBootstrapUncached()
-    .then((data) => {
-      if (requestGeneration === bootstrapGeneration) {
-        cachedBootstrap = { data, loadedAt: Date.now() };
-      }
-      return data;
-    })
-    .finally(() => {
-      if (inflightBootstrap === request) {
-        inflightBootstrap = null;
-      }
-    });
-  inflightBootstrap = request;
-
-  return request;
+  const settings = fetchBootstrapJson<SettingsResponse>("/api/settings");
+  const microphones = fetchBootstrapJson<MicrophonesResponse>("/api/microphones");
+  const autostart = getAutostartStatus().catch(() => ({ enabled: false, available: false }));
+  const resources: SettingsBootstrapResources = {
+    isCurrent: () => requestGeneration === bootstrapGeneration,
+    settings,
+    microphones,
+    autostart,
+    complete: Promise.all([settings, microphones, autostart])
+      .then(([settings, microphones, autostart]) => {
+        if (requestGeneration === bootstrapGeneration) {
+          cachedBootstrap = { resources, loadedAt: Date.now() };
+        }
+        return { settings, microphones, autostart };
+      })
+      .finally(() => {
+        if (inflightBootstrap === resources) inflightBootstrap = null;
+      }),
+  };
+  // Resource consumers handle failures separately; the aggregate may have no
+  // consumer. Observe its rejection without changing the public promise.
+  void resources.complete.catch(() => {});
+  inflightBootstrap = resources;
+  return resources;
 }
 
 export function invalidateSettingsBootstrap() {
   bootstrapGeneration += 1;
   cachedBootstrap = null;
+  inflightBootstrap = null;
 }
 
-async function loadSettingsBootstrapUncached(): Promise<SettingsBootstrapData> {
-  const [settingsRes, microphonesRes, autostart] = await Promise.all([
-    fetchWithTimeout(apiUrl("/api/settings"), { credentials: "include" }, 10_000),
-    fetchWithTimeout(apiUrl("/api/microphones"), { credentials: "include" }, 10_000),
-    getAutostartStatus().catch(() => ({ enabled: false, available: false })),
-  ]);
-
-  if (!settingsRes.ok) throw new Error(await settingsRes.text());
-  if (!microphonesRes.ok) throw new Error(await microphonesRes.text());
-
-  const settings = (await settingsRes.json()) as SettingsResponse;
-  const microphones = (await microphonesRes.json()) as MicrophonesResponse;
-  return { settings, microphones, autostart };
+async function fetchBootstrapJson<T>(path: string): Promise<T> {
+  const response = await fetchWithTimeout(apiUrl(path), { credentials: "include" }, 10_000);
+  if (!response.ok) throw new Error(await response.text());
+  return response.json() as Promise<T>;
 }

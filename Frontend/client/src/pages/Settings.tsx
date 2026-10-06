@@ -34,7 +34,7 @@ import { Button } from "@/components/ui/button";
 import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, type ComponentProps, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Dialog,
@@ -69,7 +69,8 @@ import {
   setGlobalHotkeyCaptureActive,
   setAutostartEnabled as setDesktopAutostartEnabled,
 } from "@/lib/backend";
-import { invalidateSettingsBootstrap, loadSettingsBootstrap } from "@/lib/settings-bootstrap";
+import { invalidateSettingsBootstrap, loadSettingsBootstrapResources } from "@/lib/settings-bootstrap";
+import { type TextDraftStore, useTextDraft, useTextDraftStore } from "@/lib/text-draft-store";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { responseErrorMessage } from "@/lib/request-errors";
 import type {
@@ -1510,16 +1511,57 @@ function MetaContributorWarning({ active, compact = false }: { active: boolean; 
   );
 }
 
+function CustomOpenRouterModelForm({
+  id,
+  store,
+  invalid,
+  onValueChange,
+  onUse,
+}: {
+  id: string;
+  store: TextDraftStore;
+  invalid: boolean;
+  onValueChange: (value: string) => void;
+  onUse: () => void;
+}) {
+  const { t } = useI18n();
+  const value = useTextDraft(store);
+  return (
+    <form
+      className="flex flex-col gap-1.5 sm:flex-row"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onUse();
+      }}
+    >
+      <Input
+        id={id}
+        value={value}
+        onChange={(event) => {
+          store.set(event.target.value);
+          onValueChange(event.target.value);
+        }}
+        placeholder="author/model"
+        aria-invalid={invalid}
+        className="h-9 min-w-0 flex-1 bg-white/70 font-mono text-xs dark:bg-[var(--live-well)]"
+      />
+      <Button type="submit" size="sm" variant="outline" disabled={!value.trim()} className="h-9 shrink-0">
+        {t("Use custom model")}
+      </Button>
+    </form>
+  );
+}
+
 function CustomOpenRouterModelField({
   id,
-  value,
+  store,
   selectedModel,
   invalid,
   onValueChange,
   onUse,
 }: {
   id: string;
-  value: string;
+  store: TextDraftStore;
   selectedModel: string;
   invalid: boolean;
   onValueChange: (value: string) => void;
@@ -1531,25 +1573,7 @@ function CustomOpenRouterModelField({
       label={t("Custom OpenRouter model")}
       detail={t("Enter a canonical author/model code. Scriber applies the OpenRouter Nitro route automatically.")}
     >
-      <form
-        className="flex flex-col gap-1.5 sm:flex-row"
-        onSubmit={(event) => {
-          event.preventDefault();
-          onUse();
-        }}
-      >
-        <Input
-          id={id}
-          value={value}
-          onChange={(event) => onValueChange(event.target.value)}
-          placeholder="author/model"
-          aria-invalid={invalid}
-          className="h-9 min-w-0 flex-1 bg-white/70 font-mono text-xs dark:bg-[var(--live-well)]"
-        />
-        <Button type="submit" size="sm" variant="outline" disabled={!value.trim()} className="h-9 shrink-0">
-          {t("Use custom model")}
-        </Button>
-      </form>
+      <CustomOpenRouterModelForm id={id} store={store} invalid={invalid} onValueChange={onValueChange} onUse={onUse} />
       {invalid ? (
         <p className="text-ui-micro font-medium leading-4 text-red-600 dark:text-red-300">
           {t("Enter a canonical OpenRouter model code such as author/model.")}
@@ -1578,6 +1602,98 @@ function FieldShell({ label, children, detail }: { label: string; children: Reac
       </div>
       {children}
     </div>
+  );
+}
+
+type DraftTextareaProps = Omit<ComponentProps<typeof Textarea>, "value" | "defaultValue"> & { store: TextDraftStore };
+
+// Typing re-renders only this field; the page reads `store.get()` when it saves.
+function DraftTextarea({ store, onChange, ...props }: DraftTextareaProps) {
+  const value = useTextDraft(store);
+  return (
+    <Textarea
+      {...props}
+      value={value}
+      onChange={(event) => {
+        store.set(event.target.value);
+        onChange?.(event);
+      }}
+    />
+  );
+}
+
+function VisualizerBarCountSetting({
+  initialCount,
+  overlayStyle,
+  onSave,
+}: {
+  initialCount: number;
+  overlayStyle: OverlayVisualizerStyle;
+  onSave: (count: number) => Promise<unknown>;
+}) {
+  const { t, locale, formatNumber } = useI18n();
+  const { toast } = useToast();
+  const [visualizerBarCount, setVisualizerBarCount] = useState(initialCount);
+  const savedCountRef = useRef(initialCount);
+  const draftRevisionRef = useRef(0);
+  const pendingWritesRef = useRef(0);
+
+  useEffect(() => {
+    savedCountRef.current = initialCount;
+    draftRevisionRef.current += 1;
+    setVisualizerBarCount(initialCount);
+  }, [initialCount]);
+
+  const handleChange = (value: number[]) => {
+    draftRevisionRef.current += 1;
+    setVisualizerBarCount(normalizeVisualizerBarCount(value[0], savedCountRef.current));
+  };
+  const handleCommit = async (value: number[]) => {
+    const savedVisualizerBarCount = savedCountRef.current;
+    const count = normalizeVisualizerBarCount(value[0], savedVisualizerBarCount);
+    // Returning to the saved value must still follow an outstanding write.
+    if (count === savedVisualizerBarCount && pendingWritesRef.current === 0) return;
+    const revision = draftRevisionRef.current;
+    pendingWritesRef.current += 1;
+    try {
+      await onSave(count);
+      savedCountRef.current = count;
+    } catch (error) {
+      // A failed older commit must not move a newer drag back underneath the pointer.
+      if (revision === draftRevisionRef.current) setVisualizerBarCount(savedCountRef.current);
+      toast({
+        title: t("Save failed"),
+        description: localizedSettingsError(error, "The requested settings action failed.", locale, t),
+        duration: 4000,
+      });
+    } finally {
+      pendingWritesRef.current -= 1;
+    }
+  };
+
+  return (
+    <SettingLine
+      label={t("Visualizer bars")}
+      description={
+        overlayStyle === "bars"
+          ? t("Current count: {{count}}", { count: formatNumber(visualizerBarCount) })
+          : t("Controls Live Mic and the classic bar overlay.")
+      }
+    >
+      <div className="flex w-full items-center gap-2">
+        <BarChart3 className="h-4 w-4 shrink-0 text-slate-500" />
+        <Slider
+          aria-label={t("Visualizer bars")}
+          value={[visualizerBarCount]}
+          onValueChange={handleChange}
+          onValueCommit={handleCommit}
+          min={MIN_VISUALIZER_BAR_COUNT}
+          max={MAX_VISUALIZER_BAR_COUNT}
+          step={1}
+          className="min-w-[132px] flex-1"
+        />
+      </div>
+    </SettingLine>
   );
 }
 
@@ -1866,13 +1982,15 @@ export default function Settings() {
   const [speechmaticsKey, setSpeechmaticsKey] = useState("");
   const [googleApplicationCredentials, setGoogleApplicationCredentials] = useState("");
 
-  const [customVocabulary, setCustomVocabulary] = useState("");
+  // Long typed values live in draft stores: a keystroke re-renders only its
+  // field, while saves and resets read or write the latest text explicitly.
+  const customVocabularyStore = useTextDraftStore();
   const savedCustomVocabularyRef = useRef("");
   const pendingCustomVocabularyRef = useRef<string | null>(null);
   const customVocabularySaveInFlightRef = useRef<Promise<void> | null>(null);
   const settingsUpdateQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const [summarizationPrompt, setSummarizationPrompt] = useState("");
-  const [postProcessingPrompt, setPostProcessingPrompt] = useState(() => defaultPostProcessingPrompt(locale));
+  const summarizationPromptStore = useTextDraftStore();
+  const postProcessingPromptStore = useTextDraftStore(() => defaultPostProcessingPrompt(locale));
   const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSectionKey>("transcription");
   const requestedSettingsSectionRef = useRef<SettingsSectionKey | null>(null);
   const requestedSettingsSectionFallbackTimerRef = useRef<number | null>(null);
@@ -1956,10 +2074,10 @@ export default function Settings() {
   const [selectedDeviceId, setSelectedDeviceId] = useState("default");
   const [transcriptionModel, setTranscriptionModel] = useState("soniox-realtime");
   const [summarizationModel, setSummarizationModel] = useState(DEFAULT_SUMMARIZATION_MODEL);
-  const [customSummarizationModel, setCustomSummarizationModel] = useState("");
+  const customSummarizationModelStore = useTextDraftStore();
   const [customSummarizationModelInvalid, setCustomSummarizationModelInvalid] = useState(false);
   const [postProcessingModel, setPostProcessingModel] = useState(DEFAULT_POST_PROCESSING_MODEL);
-  const [customPostProcessingModel, setCustomPostProcessingModel] = useState("");
+  const customPostProcessingModelStore = useTextDraftStore();
   const [customPostProcessingModelInvalid, setCustomPostProcessingModelInvalid] = useState(false);
   const [postProcessingFallbackModel, setPostProcessingFallbackModel] = useState(
     DEFAULT_POST_PROCESSING_FALLBACK_MODEL,
@@ -1976,8 +2094,7 @@ export default function Settings() {
   const [postProcessingEngine, setPostProcessingEngine] = useState<PostProcessingEngine>("cloud");
   const [localPolishingVariant, setLocalPolishingVariant] = useState<LocalPolishingVariant>("qad_q4_0");
   const [language, setLanguage] = useState("auto");
-  const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
-  const [savedVisualizerBarCount, setSavedVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
+  const [initialVisualizerBarCount, setInitialVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
   const [overlayVisualizerStyle, setOverlayVisualizerStyle] = useState<OverlayVisualizerStyle>(
     DEFAULT_OVERLAY_VISUALIZER_STYLE,
   );
@@ -2827,15 +2944,42 @@ export default function Settings() {
       return service || "soniox-realtime";
     };
 
+    const resources = loadSettingsBootstrapResources();
+    void resources.autostart.then((autostart) => {
+      if (cancelled) return;
+      setAutostartEnabled(autostart.enabled || false);
+      setAutostartAvailable(autostart.available || false);
+    });
+    void resources.microphones
+      .then(async (microphones) => {
+        if (cancelled) return;
+        let microphonePayload = microphones;
+        if (!Array.isArray(microphonePayload.devices)) {
+          const response = await fetchWithTimeout(apiUrl("/api/microphones"), { credentials: "include" }, 10_000);
+          if (response.ok) microphonePayload = (await response.json()) as MicrophonesResponse;
+        }
+        if (!cancelled) setInputDevices(microphonePayload.devices || []);
+      })
+      .catch(async (error: unknown) => {
+        // A primary settings failure already has its own error presentation.
+        // Device discovery must not add a duplicate or misleading settings toast.
+        const settings = await resources.settings.catch(() => null);
+        if (!settings) return;
+        if (cancelled) return;
+        toast({
+          title: translateNow("Failed to load microphones"),
+          description: localizedSettingsErrorNow(error, "The requested settings action failed."),
+          duration: 4000,
+        });
+      });
+
     const load = async () => {
       try {
         setSettingsError("");
-        const { settings, microphones: mics, autostart } = await loadSettingsBootstrap();
+        const settings = await resources.settings;
         if (cancelled) return;
 
         const keys = settings.apiKeys || {};
-        setAutostartEnabled(autostart.enabled || false);
-        setAutostartAvailable(autostart.available || false);
         setHotkey(settings.hotkey || settings.hotkeyRaw || "Ctrl + Shift + D");
         setPostProcessingHotkey(
           settings.postProcessingHotkey || settings.postProcessingHotkeyRaw || "Ctrl + Shift + F",
@@ -2860,17 +3004,17 @@ export default function Settings() {
         setLanguage(settings.language || "auto");
         setTranscriptionModel(serviceToModel(settings.defaultSttService || "", settings.sonioxMode || "realtime"));
         savedCustomVocabularyRef.current = settings.customVocab || "";
-        setCustomVocabulary(savedCustomVocabularyRef.current);
-        setSummarizationPrompt(settings.summarizationPrompt || "");
+        customVocabularyStore.set(savedCustomVocabularyRef.current);
+        summarizationPromptStore.set(settings.summarizationPrompt || "");
         const loadedSummarizationModel = settings.summarizationModel || DEFAULT_SUMMARIZATION_MODEL;
         const loadedPostProcessingModel = settings.postProcessingModel || DEFAULT_POST_PROCESSING_MODEL;
         setSummarizationModel(loadedSummarizationModel);
-        setCustomSummarizationModel(
+        customSummarizationModelStore.set(
           selectedCustomOpenRouterModelCode(loadedSummarizationModel, summarizationModelOptionsAtBootstrapRef.current),
         );
         setCustomSummarizationModelInvalid(false);
         setPostProcessingModel(loadedPostProcessingModel);
-        setCustomPostProcessingModel(
+        customPostProcessingModelStore.set(
           selectedCustomOpenRouterModelCode(
             loadedPostProcessingModel,
             postProcessingModelOptionsAtBootstrapRef.current,
@@ -2884,10 +3028,9 @@ export default function Settings() {
         setYoutubePreferCaptions(settings.youtubePreferCaptions !== false);
         setVoiceprintLibraryOptIn(settings.voiceprintLibraryOptIn === true);
         setPostProcessingEnabled(settings.postProcessingEnabled !== false);
-        setPostProcessingPrompt(settings.postProcessingPrompt || defaultPostProcessingPrompt(getCurrentLocale()));
+        postProcessingPromptStore.set(settings.postProcessingPrompt || defaultPostProcessingPrompt(getCurrentLocale()));
         const loadedVisualizerBarCount = normalizeVisualizerBarCount(settings.visualizerBarCount);
-        setVisualizerBarCount(loadedVisualizerBarCount);
-        setSavedVisualizerBarCount(loadedVisualizerBarCount);
+        setInitialVisualizerBarCount(loadedVisualizerBarCount);
         setOverlayVisualizerStyle(normalizeOverlayVisualizerStyle(settings.overlayVisualizerStyle));
         setDiagnosticLoggingEnabled(settings.diagnosticLoggingEnabled !== false);
         setMicAlwaysOn(settings.micAlwaysOn === true);
@@ -2941,19 +3084,10 @@ export default function Settings() {
         setCredentialReadyKeys(loadedCredentialReadyKeys);
         setSavedKeys(loadedCredentialReadyKeys);
 
-        let microphonePayload = mics;
-        if (!Array.isArray(microphonePayload.devices)) {
-          const micsRes = await fetchWithTimeout(apiUrl("/api/microphones"), { credentials: "include" }, 10_000);
-          if (cancelled) return;
-          if (micsRes.ok) {
-            microphonePayload = (await micsRes.json()) as MicrophonesResponse;
-          }
-        }
-        setInputDevices(microphonePayload.devices || []);
-
-        // Show page immediately - don't wait for model info
+        // Device discovery and native autostart must not delay usable settings.
         setSettingsLoaded(true);
       } catch (e: any) {
+        if (cancelled) return;
         setSettingsLoaded(true); // Still mark as loaded even on error
         setSettingsError(localizedSettingsErrorNow(e, "The requested settings action failed."));
         toast({
@@ -2968,7 +3102,14 @@ export default function Settings() {
     return () => {
       cancelled = true;
     };
-  }, [toast]);
+  }, [
+    customPostProcessingModelStore,
+    customSummarizationModelStore,
+    customVocabularyStore,
+    postProcessingPromptStore,
+    summarizationPromptStore,
+    toast,
+  ]);
 
   useEffect(() => {
     if (settingsLoaded && onnxAvailable === null) {
@@ -3014,18 +3155,27 @@ export default function Settings() {
   );
 
   useEffect(() => {
-    if (!settingsLoaded || !isDefaultPostProcessingPrompt(postProcessingPrompt)) {
+    if (!settingsLoaded) {
       return;
     }
-    const localizedDefault = defaultPostProcessingPrompt(locale);
-    if (postProcessingPrompt === localizedDefault) {
-      return;
-    }
-    setPostProcessingPrompt(localizedDefault);
-    void updateSettings({ postProcessingPrompt: localizedDefault }).catch((error) => {
-      console.debug("Localized post-processing default could not be saved.", error);
-    });
-  }, [locale, postProcessingPrompt, settingsLoaded, updateSettings]);
+    const localizeDefaultPrompt = () => {
+      const postProcessingPrompt = postProcessingPromptStore.get();
+      if (!isDefaultPostProcessingPrompt(postProcessingPrompt)) {
+        return;
+      }
+      const localizedDefault = defaultPostProcessingPrompt(locale);
+      if (postProcessingPrompt === localizedDefault) {
+        return;
+      }
+      postProcessingPromptStore.set(localizedDefault);
+      void updateSettings({ postProcessingPrompt: localizedDefault }).catch((error) => {
+        console.debug("Localized post-processing default could not be saved.", error);
+      });
+    };
+    // Re-check on every prompt change, as the former state-driven effect did.
+    localizeDefaultPrompt();
+    return postProcessingPromptStore.subscribe(localizeDefaultPrompt);
+  }, [locale, postProcessingPromptStore, settingsLoaded, updateSettings]);
 
   const saveCustomVocabulary = useCallback(
     (nextValue: string): Promise<void> => {
@@ -3065,18 +3215,35 @@ export default function Settings() {
   );
 
   useEffect(() => {
-    if (!settingsLoaded || customVocabulary === savedCustomVocabularyRef.current) {
+    if (!settingsLoaded) {
       return;
     }
-
-    const timer = window.setTimeout(() => {
-      void saveCustomVocabulary(customVocabulary);
-    }, 650);
-
-    return () => {
-      window.clearTimeout(timer);
+    let timer: number | null = null;
+    const scheduleSave = () => {
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+      const customVocabulary = customVocabularyStore.get();
+      if (customVocabulary === savedCustomVocabularyRef.current) {
+        return;
+      }
+      timer = window.setTimeout(() => {
+        timer = null;
+        void saveCustomVocabulary(customVocabulary);
+      }, 650);
     };
-  }, [customVocabulary, saveCustomVocabulary, settingsLoaded]);
+
+    // Each change restarts the debounce without rendering the page.
+    scheduleSave();
+    const unsubscribe = customVocabularyStore.subscribe(scheduleSave);
+    return () => {
+      unsubscribe();
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [customVocabularyStore, saveCustomVocabulary, settingsLoaded]);
 
   const refreshMicrophones = useCallback(async () => {
     try {
@@ -3764,23 +3931,23 @@ export default function Settings() {
   };
 
   const handleCustomSummarizationModelUse = async () => {
-    const canonical = canonicalCustomOpenRouterModelCode(customSummarizationModel);
+    const canonical = canonicalCustomOpenRouterModelCode(customSummarizationModelStore.get());
     if (!isCanonicalCustomOpenRouterModelCode(canonical)) {
       setCustomSummarizationModelInvalid(true);
       return;
     }
-    setCustomSummarizationModel(canonical);
+    customSummarizationModelStore.set(canonical);
     setCustomSummarizationModelInvalid(false);
     await handleSummarizationModelChange(canonical);
   };
 
   const handleCustomPostProcessingModelUse = async () => {
-    const canonical = canonicalCustomOpenRouterModelCode(customPostProcessingModel);
+    const canonical = canonicalCustomOpenRouterModelCode(customPostProcessingModelStore.get());
     if (!isCanonicalCustomOpenRouterModelCode(canonical)) {
       setCustomPostProcessingModelInvalid(true);
       return;
     }
-    setCustomPostProcessingModel(canonical);
+    customPostProcessingModelStore.set(canonical);
     setCustomPostProcessingModelInvalid(false);
     await handlePostProcessingModelChange(canonical);
   };
@@ -4217,12 +4384,13 @@ export default function Settings() {
   };
 
   const handleCustomVocabBlur = async () => {
+    const customVocabulary = customVocabularyStore.get();
     await saveCustomVocabulary(customVocabulary);
   };
 
   const handleSummarizationPromptBlur = async () => {
     try {
-      await updateSettings({ summarizationPrompt });
+      await updateSettings({ summarizationPrompt: summarizationPromptStore.get() });
       toast({
         title: t("Saved"),
         description: t("Summarization prompt updated."),
@@ -4281,29 +4449,6 @@ export default function Settings() {
     }
   };
 
-  const handleVisualizerBarCountChange = (value: number[]) => {
-    const count = normalizeVisualizerBarCount(value[0], savedVisualizerBarCount);
-    setVisualizerBarCount(count);
-  };
-
-  const handleVisualizerBarCountCommit = async (value: number[]) => {
-    const count = normalizeVisualizerBarCount(value[0], savedVisualizerBarCount);
-    if (count === savedVisualizerBarCount) {
-      return;
-    }
-    try {
-      await updateSettings({ visualizerBarCount: count });
-      setSavedVisualizerBarCount(count);
-    } catch (e: any) {
-      setVisualizerBarCount(savedVisualizerBarCount);
-      toast({
-        title: t("Save failed"),
-        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
-        duration: 4000,
-      });
-    }
-  };
-
   const handleAutostartChange = async (enabled: boolean) => {
     setAutostartEnabled(enabled);
     try {
@@ -4359,7 +4504,7 @@ export default function Settings() {
 
   const handlePostProcessingPromptBlur = async () => {
     try {
-      await updateSettings({ postProcessingPrompt });
+      await updateSettings({ postProcessingPrompt: postProcessingPromptStore.get() });
       toast({
         title: t("Saved"),
         description: t("Live post-processing prompt updated."),
@@ -4375,9 +4520,9 @@ export default function Settings() {
   };
 
   const handleResetPostProcessingPrompt = async () => {
-    const previousPrompt = postProcessingPrompt;
+    const previousPrompt = postProcessingPromptStore.get();
     const localizedDefault = defaultPostProcessingPrompt(locale);
-    setPostProcessingPrompt(localizedDefault);
+    postProcessingPromptStore.set(localizedDefault);
     try {
       await updateSettings({ postProcessingPrompt: localizedDefault });
       toast({
@@ -4386,7 +4531,7 @@ export default function Settings() {
         duration: 2000,
       });
     } catch (e: any) {
-      setPostProcessingPrompt(previousPrompt);
+      postProcessingPromptStore.set(previousPrompt);
       toast({
         title: t("Save failed"),
         description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
@@ -4769,9 +4914,8 @@ export default function Settings() {
       label={t("Custom vocabulary")}
       detail={t("Names, brands, and domain terms passed to supported STT providers.")}
     >
-      <Textarea
-        value={customVocabulary}
-        onChange={(event) => setCustomVocabulary(event.target.value)}
+      <DraftTextarea
+        store={customVocabularyStore}
         onBlur={handleCustomVocabBlur}
         placeholder={t("Enter terms, one per line...")}
         className="min-h-[54px] resize-none bg-white/70 font-mono text-[12px] leading-5 dark:bg-[var(--live-well)]"
@@ -4909,13 +5053,10 @@ export default function Settings() {
 
             <CustomOpenRouterModelField
               id="post-processing-custom-openrouter-model"
-              value={customPostProcessingModel}
+              store={customPostProcessingModelStore}
               selectedModel={selectedCustomPostProcessingModel}
               invalid={customPostProcessingModelInvalid}
-              onValueChange={(value) => {
-                setCustomPostProcessingModel(value);
-                setCustomPostProcessingModelInvalid(false);
-              }}
+              onValueChange={() => setCustomPostProcessingModelInvalid(false)}
               onUse={() => void handleCustomPostProcessingModelUse()}
             />
 
@@ -4980,13 +5121,10 @@ export default function Settings() {
             </FieldShell>
 
             <FieldShell label={t("Live cleanup prompt")}>
-              <Textarea
-                value={postProcessingPrompt}
+              <DraftTextarea
+                store={postProcessingPromptStore}
                 onFocus={(event) => expandPromptTextarea(event.currentTarget, 560)}
-                onChange={(event) => {
-                  setPostProcessingPrompt(event.target.value);
-                  expandPromptTextarea(event.currentTarget, 560);
-                }}
+                onChange={(event) => expandPromptTextarea(event.currentTarget, 560)}
                 onBlur={(event) => {
                   event.currentTarget.style.height = "";
                   void handlePostProcessingPromptBlur();
@@ -5022,13 +5160,10 @@ export default function Settings() {
       label={t("Summarization prompt")}
       detail={t("Controls content and emphasis. Scriber always applies a safe HTML structure for display.")}
     >
-      <Textarea
-        value={summarizationPrompt}
+      <DraftTextarea
+        store={summarizationPromptStore}
         onFocus={(event) => expandPromptTextarea(event.currentTarget, 420)}
-        onChange={(event) => {
-          setSummarizationPrompt(event.target.value);
-          expandPromptTextarea(event.currentTarget, 420);
-        }}
+        onChange={(event) => expandPromptTextarea(event.currentTarget, 420)}
         onBlur={(event) => {
           event.currentTarget.style.height = "";
           void handleSummarizationPromptBlur();
@@ -5646,27 +5781,11 @@ export default function Settings() {
                   </ToggleGroup>
                 </div>
 
-                <SettingLine
-                  label={t("Visualizer bars")}
-                  description={
-                    overlayVisualizerStyle === "bars"
-                      ? t("Current count: {{count}}", { count: formatNumber(visualizerBarCount) })
-                      : t("Controls Live Mic and the classic bar overlay.")
-                  }
-                >
-                  <div className="flex w-full items-center gap-2">
-                    <BarChart3 className="h-4 w-4 shrink-0 text-slate-500" />
-                    <Slider
-                      value={[visualizerBarCount]}
-                      onValueChange={handleVisualizerBarCountChange}
-                      onValueCommit={handleVisualizerBarCountCommit}
-                      min={MIN_VISUALIZER_BAR_COUNT}
-                      max={MAX_VISUALIZER_BAR_COUNT}
-                      step={1}
-                      className="min-w-[132px] flex-1"
-                    />
-                  </div>
-                </SettingLine>
+                <VisualizerBarCountSetting
+                  initialCount={initialVisualizerBarCount}
+                  overlayStyle={overlayVisualizerStyle}
+                  onSave={(count) => updateSettings({ visualizerBarCount: count })}
+                />
               </div>
             </SettingsSubsection>
 
@@ -7083,13 +7202,10 @@ export default function Settings() {
               </div>
               <CustomOpenRouterModelField
                 id="summary-custom-openrouter-model"
-                value={customSummarizationModel}
+                store={customSummarizationModelStore}
                 selectedModel={selectedCustomSummarizationModel}
                 invalid={customSummarizationModelInvalid}
-                onValueChange={(value) => {
-                  setCustomSummarizationModel(value);
-                  setCustomSummarizationModelInvalid(false);
-                }}
+                onValueChange={() => setCustomSummarizationModelInvalid(false)}
                 onUse={() => void handleCustomSummarizationModelUse()}
               />
               <InfoTooltip label={t("Benchmark notes")}>

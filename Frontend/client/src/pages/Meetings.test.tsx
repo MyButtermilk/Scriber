@@ -1,0 +1,433 @@
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { LocaleProvider, LANGUAGE_STORAGE_KEY } from "@/i18n";
+import type { MeetingDetail, MeetingSegment } from "@/lib/api-types";
+import { MEETING_HISTORY_QUERY_KEY } from "@/lib/meeting-cache";
+import { createReviewPlaybackLookup } from "@/lib/meeting-review-timeline";
+import Meetings from "./Meetings";
+
+const observed = vi.hoisted(() => ({
+  transcriptRenders: 0,
+  rowFormats: 0,
+  i18nReads: 0,
+  itemKeys: [] as Array<(index: number) => string | number>,
+  scrollToIndex: vi.fn(),
+  apiRequest: vi.fn(),
+}));
+vi.mock("@/i18n", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/i18n")>();
+  type Formatter = ReturnType<typeof actual.useI18n>["formatNumber"];
+  const formatters = new WeakMap<Formatter, Formatter>();
+  return {
+    ...actual,
+    useI18n: () => {
+      // Every rendered Meetings component that shows text reads translations.
+      observed.i18nReads++;
+      const context = actual.useI18n();
+      let formatNumber = formatters.get(context.formatNumber);
+      if (!formatNumber) {
+        formatNumber = (value, options) => {
+          if (options?.minimumFractionDigits === 1 && options.maximumFractionDigits === 1) observed.rowFormats++;
+          return context.formatNumber(value, options);
+        };
+        formatters.set(context.formatNumber, formatNumber);
+      }
+      return { ...context, formatNumber };
+    },
+  };
+});
+vi.mock("@/contexts/WebSocketContext", () => ({
+  useWebSocketContext: () => ({ isConnected: true }),
+  useSharedWebSocket: () => ({ isConnected: true }),
+}));
+vi.mock("@/lib/queryClient", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/queryClient")>()),
+  apiRequest: observed.apiRequest,
+}));
+vi.mock("@/components/meeting/SpeakerAttendeeAssignments", () => ({ SpeakerAttendeeAssignments: () => null }));
+vi.mock("@/lib/meeting-review-timeline", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/meeting-review-timeline")>();
+  return { ...actual, createReviewPlaybackLookup: vi.fn(actual.createReviewPlaybackLookup) };
+});
+// JSDOM has no viewport layout. Keep the real page, memo boundary, row markup,
+// effects and interactions; substitute only the virtualizer's geometry.
+vi.mock("@tanstack/react-virtual", () => {
+  const virtualizer = {
+    getTotalSize: () => 264,
+    getVirtualItems: () => [0, 1, 2].map((index) => ({ index, start: index * 88 })),
+    measureElement: () => undefined,
+    scrollToIndex: observed.scrollToIndex,
+  };
+  return {
+    useVirtualizer: (options: { getItemKey: (index: number) => string | number }) => {
+      observed.transcriptRenders++;
+      observed.itemKeys.push(options.getItemKey);
+      return virtualizer;
+    },
+  };
+});
+
+function meeting(id = "meeting-1"): MeetingDetail {
+  const createdAt = "2026-10-01T12:00:00Z";
+  const segments: MeetingSegment[] = Array.from({ length: 3 }, (_, i) => ({
+    id: `segment-${i}`,
+    meetingId: id,
+    revision: "canonical",
+    source: "system",
+    speakerId: null,
+    speakerLabel: "Speaker A",
+    startMs: i * 10_000,
+    endMs: i * 10_000 + 9_000,
+    durationMs: 9_000,
+    text: `Review passage ${i}`,
+    confidence: null,
+    alignmentQuality: "exact_word",
+    isFinal: true,
+    sequence: i,
+    createdAt,
+    editVersion: 0,
+    editedAt: null,
+  }));
+  return {
+    apiVersion: "1",
+    id,
+    title: `Review ${id}`,
+    state: "ready",
+    language: "en",
+    transcriptionMode: "final_only",
+    liveProvider: "",
+    finalProvider: "test",
+    analysisModel: "",
+    aecEnabled: false,
+    voiceLibraryEnabled: false,
+    consentConfirmed: true,
+    origin: "captured",
+    startedAt: createdAt,
+    endedAt: createdAt,
+    createdAt,
+    updatedAt: createdAt,
+    errorCode: "",
+    errorMessage: "",
+    captureMetadata: {},
+    audioRetentionDays: 30,
+    smartTurnEnabled: false,
+    autoAnalyze: false,
+    transcriptEditVersion: 0,
+    processingProgress: null,
+    segments,
+    speakers: [],
+    notes: [],
+    actionItems: [],
+    outputs: [],
+    outputVersions: [],
+    audioGaps: [],
+    transcriptCheckpoints: [],
+    audioAssets: [
+      {
+        id: "mix",
+        meetingId: id,
+        kind: "playback_mix",
+        relativePath: "mix.wav",
+        codec: "pcm",
+        sampleRate: 16_000,
+        channels: 1,
+        durationMs: 30_000,
+        byteSize: 1,
+        sha256: "",
+        createdAt,
+      },
+    ],
+  };
+}
+
+let client: QueryClient;
+beforeEach(() => {
+  window.localStorage.setItem(LANGUAGE_STORAGE_KEY, "en");
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  observed.transcriptRenders = 0;
+  observed.itemKeys = [];
+  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined);
+  client = new QueryClient({
+    defaultOptions: { queries: { enabled: false, retry: false }, mutations: { retry: false } },
+  });
+});
+afterEach(() => {
+  client.clear();
+  vi.unstubAllGlobals();
+});
+
+function renderMeeting(detail = meeting()) {
+  client.setQueryData(["/api/meetings", detail.id], detail);
+  client.setQueryData(["/api/meetings", detail.id, "deliveries"], { items: [] });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <LocaleProvider>
+        <Meetings params={{ id: detail.id }} />
+      </LocaleProvider>
+    </QueryClientProvider>,
+  );
+  return { ...view, audio: view.container.querySelector("audio")! };
+}
+
+it("timeupdates within one segment do not rerender transcript rows; seeks still update and follow", () => {
+  const { audio } = renderMeeting();
+  expect(audio).not.toBeNull();
+  const initialRenders = observed.transcriptRenders;
+  const itemKey = observed.itemKeys.at(-1);
+  observed.scrollToIndex.mockClear();
+  for (let i = 1; i <= 20; i++) {
+    audio.currentTime = i / 10;
+    fireEvent.timeUpdate(audio);
+  }
+  expect(observed.transcriptRenders - initialRenders).toBe(0);
+  expect(createReviewPlaybackLookup).toHaveBeenCalledTimes(1);
+  expect(observed.scrollToIndex).not.toHaveBeenCalled();
+  expect(screen.getByTestId("meeting-transcript-segment-segment-0")).toHaveAttribute("data-playback-active", "true");
+
+  observed.rowFormats = 0;
+  audio.currentTime = 12;
+  fireEvent.timeUpdate(audio);
+  expect(observed.rowFormats).toBe(2);
+  expect(observed.transcriptRenders - initialRenders).toBe(1);
+  expect(observed.itemKeys.at(-1)).toBe(itemKey);
+  expect(screen.getByTestId("meeting-transcript-segment-segment-1")).toHaveAttribute("data-playback-active", "true");
+  expect(observed.scrollToIndex).toHaveBeenCalledWith(1, { align: "center" });
+
+  fireEvent.click(screen.getByRole("checkbox", { name: "Follow playback" }));
+  observed.scrollToIndex.mockClear();
+  audio.currentTime = 1;
+  fireEvent.timeUpdate(audio);
+  expect(screen.getByTestId("meeting-transcript-segment-segment-0")).toHaveAttribute("data-playback-active", "true");
+  expect(observed.scrollToIndex).not.toHaveBeenCalled();
+});
+
+it("does not construct a playback index when no saved audio is available", () => {
+  renderMeeting({ ...meeting(), audioAssets: [] });
+  expect(createReviewPlaybackLookup).not.toHaveBeenCalled();
+  expect(screen.getByText("Review passage 0")).toBeInTheDocument();
+});
+
+it("stable edit callbacks save and undo using the latest transcript version after playback", async () => {
+  const detail = meeting();
+  const { audio } = renderMeeting(detail);
+  audio.currentTime = 1;
+  fireEvent.timeUpdate(audio);
+  act(() => {
+    client.setQueryData<MeetingDetail>(["/api/meetings", detail.id], { ...detail, transcriptEditVersion: 7 });
+  });
+  await waitFor(() =>
+    expect(client.getQueryData<MeetingDetail>(["/api/meetings", detail.id])?.transcriptEditVersion).toBe(7),
+  );
+  observed.apiRequest.mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        meetingId: detail.id,
+        segment: { ...detail.segments[0], text: "Corrected passage", editVersion: 1 },
+        transcriptEditVersion: 8,
+        outputsStale: false,
+      }),
+    ),
+  );
+  fireEvent.click(screen.getByTestId("meeting-segment-edit-segment-0"));
+  fireEvent.change(screen.getByTestId("meeting-segment-edit-input-segment-0"), {
+    target: { value: "Corrected passage" },
+  });
+  fireEvent.click(screen.getByTestId("meeting-segment-edit-save-segment-0"));
+  await waitFor(() =>
+    expect(observed.apiRequest).toHaveBeenCalledWith("PATCH", "/api/meetings/meeting-1/segments/segment-0", {
+      expectedEditVersion: 7,
+      text: "Corrected passage",
+    }),
+  );
+  expect(await screen.findByText("Corrected passage")).toBeInTheDocument();
+  observed.apiRequest.mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        meetingId: detail.id,
+        segment: detail.segments[0],
+        transcriptEditVersion: 9,
+        outputsStale: false,
+      }),
+    ),
+  );
+  fireEvent.click(screen.getByTestId("meeting-segment-undo-segment-0"));
+  await waitFor(() =>
+    expect(observed.apiRequest).toHaveBeenCalledWith("POST", "/api/meetings/meeting-1/segments/segment-0/undo", {
+      expectedEditVersion: 8,
+    }),
+  );
+  expect(await screen.findByText("Review passage 0")).toBeInTheDocument();
+});
+
+it("Meeting intent prefetch deduplicates pointer/focus and reuses fresh detail data", async () => {
+  const other = meeting("meeting-2");
+  client.setQueryData(MEETING_HISTORY_QUERY_KEY, {
+    pages: [{ items: [other], total: 1, offset: 0, activeMeeting: null }],
+    pageParams: [0],
+  });
+  let finish!: (response: Response) => void;
+  const fetch = vi.fn(
+    (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Promise<Response>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  vi.stubGlobal("fetch", fetch);
+  renderMeeting();
+  const row = screen.getByText(other.title).closest("button")!;
+  fireEvent.pointerEnter(row);
+  fireEvent.focus(row);
+  expect(fetch).not.toHaveBeenCalled();
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+  expect(String(fetch.mock.calls[0]?.[0])).toContain("/api/meetings/meeting-2");
+  await act(async () => {
+    finish(new Response(JSON.stringify(other)));
+  });
+  fireEvent.pointerEnter(row);
+  fireEvent.focus(row);
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(client.getQueryData(["/api/meetings", other.id])).toEqual(other);
+});
+
+it("does not fetch details when the pointer crosses ten meeting rows without dwelling", async () => {
+  const items = Array.from({ length: 10 }, (_, i) => meeting(`other-${i}`));
+  client.setQueryData(MEETING_HISTORY_QUERY_KEY, {
+    pages: [{ items, total: items.length, offset: 0, activeMeeting: null }],
+    pageParams: [0],
+  });
+  const fetch = vi.fn(async () => Response.json(items[0]));
+  vi.stubGlobal("fetch", fetch);
+  renderMeeting();
+  for (const item of items) {
+    const row = screen.getByText(item.title).closest("button")!;
+    fireEvent.pointerEnter(row);
+    fireEvent.pointerLeave(row);
+  }
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 180));
+  });
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it("keeps unfiltered match navigation and restores all rows after clearing a filter", () => {
+  renderMeeting();
+  observed.scrollToIndex.mockClear();
+  fireEvent.click(screen.getByRole("button", { name: "Next match" }));
+  expect(observed.scrollToIndex).toHaveBeenCalledWith(1, { align: "center" });
+  const search = screen.getByTestId("meeting-review-search");
+  fireEvent.change(search, { target: { value: "passage 1" } });
+  expect(screen.getByTestId("meeting-transcript-segment-segment-1")).toHaveTextContent("Review passage 1");
+  expect(screen.queryByTestId("meeting-transcript-segment-segment-0")).not.toBeInTheDocument();
+  fireEvent.change(search, { target: { value: "" } });
+  expect(screen.getByText("Review passage 0")).toBeInTheDocument();
+  expect(screen.getByText("Review passage 2")).toBeInTheDocument();
+});
+
+it("typing a meeting question renders only the composer and keeps the draft across views", async () => {
+  renderMeeting();
+  fireEvent.click(screen.getByTestId("meeting-workspace-tab-chat"));
+  const questionField = () => screen.getByPlaceholderText<HTMLTextAreaElement>("What did we decide about the launch?");
+  const askButton = () =>
+    screen.getAllByRole("button", { name: "Ask meeting" }).find((button) => !button.dataset.testid)!;
+  expect(askButton()).toBeDisabled();
+  observed.i18nReads = 0;
+
+  let question = "";
+  for (const character of "What did we decide?") {
+    question += character;
+    fireEvent.change(questionField(), { target: { value: question } });
+  }
+
+  expect(questionField()).toHaveValue(question);
+  expect(askButton()).toBeEnabled();
+  // One composer render per keystroke; the whole Meetings page rendered before.
+  expect(observed.i18nReads).toBe(question.length);
+  fireEvent.click(screen.getByTestId("meeting-workspace-tab-notes"));
+  fireEvent.click(screen.getByTestId("meeting-workspace-tab-chat"));
+  expect(questionField()).toHaveValue(question);
+
+  observed.apiRequest.mockResolvedValueOnce(
+    new Response(JSON.stringify({ message: { content: "Launch moves to Friday.", citations: [] } })),
+  );
+  fireEvent.click(askButton());
+  expect(await screen.findByText("Launch moves to Friday.")).toBeInTheDocument();
+  expect(observed.apiRequest).toHaveBeenCalledWith("POST", "/api/meetings/meeting-1/chat", { question });
+  expect(questionField()).toHaveValue("");
+  expect(askButton()).toBeDisabled();
+});
+
+it("typing a correction renders only its row, and Escape retains the original text", () => {
+  renderMeeting();
+  fireEvent.click(screen.getByTestId("meeting-segment-edit-segment-0"));
+  observed.rowFormats = 0;
+  for (let i = 1; i <= 20; i++) {
+    fireEvent.change(screen.getByTestId("meeting-segment-edit-input-segment-0"), {
+      target: { value: `Correction ${i}` },
+    });
+  }
+  expect(observed.rowFormats).toBe(20);
+  fireEvent.keyDown(screen.getByTestId("meeting-segment-edit-input-segment-0"), { key: "Escape" });
+  expect(screen.getByText("Review passage 0")).toBeInTheDocument();
+  expect(screen.queryByTestId("meeting-segment-edit-input-segment-0")).not.toBeInTheDocument();
+});
+
+it("an incoming live segment leaves unchanged visible rows unrendered", async () => {
+  const detail = meeting();
+  detail.audioAssets = [];
+  detail.state = "recording";
+  detail.segments = detail.segments.map((segment) => ({ ...segment, revision: "live" }));
+  renderMeeting(detail);
+  observed.rowFormats = 0;
+  await act(async () => {
+    client.setQueryData<MeetingDetail>(["/api/meetings", detail.id], (current) => ({
+      ...current!,
+      segments: [...current!.segments, { ...detail.segments[0], id: "new-segment", startMs: 40_000 }],
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(observed.rowFormats).toBe(0);
+
+  await act(async () => {
+    client.setQueryData<MeetingDetail>(["/api/meetings", detail.id], (current) => ({
+      ...current!,
+      segments: current!.segments.map((segment) =>
+        segment.id === "segment-1" ? { ...segment, text: "Updated live passage" } : segment,
+      ),
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(screen.getByText("Updated live passage")).toBeInTheDocument();
+  expect(observed.rowFormats).toBe(1);
+});
+
+it("memoized rows refresh speaker labels and translations without a segment text change", async () => {
+  const detail = meeting();
+  detail.segments = detail.segments.map((segment) => ({ ...segment, speakerLabel: "" }));
+  renderMeeting(detail);
+  const row = () => screen.getByTestId("meeting-transcript-segment-segment-0");
+  expect(row()).toHaveTextContent("Meeting audio");
+  await act(async () => {
+    window.dispatchEvent(new StorageEvent("storage", { key: LANGUAGE_STORAGE_KEY, newValue: "de" }));
+  });
+  await waitFor(() => expect(row()).not.toHaveTextContent("Meeting audio"));
+  expect(row()).toHaveTextContent("Review passage 0");
+  await act(async () => {
+    client.setQueryData<MeetingDetail>(["/api/meetings", detail.id], (current) => ({
+      ...current!,
+      segments: current!.segments.map((segment) =>
+        segment.id === "segment-0" ? { ...segment, speakerLabel: "Ada" } : segment,
+      ),
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(row()).toHaveTextContent("Ada");
+  expect(row()).toHaveTextContent("Review passage 0");
+});

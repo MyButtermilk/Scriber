@@ -29,13 +29,13 @@ import {
   getTrayStatus,
   hideTrayPanel,
   isTauriRuntime,
-  loadBackendBaseUrlFromTauri,
   refreshGlobalHotkey,
   trayAction,
   type TrayStatus,
 } from "@/lib/backend";
 import type { TrayTranscriptItem, TranscriptType } from "@/lib/api-types";
 import { checkDesktopUpdate, installDesktopUpdate, type DesktopUpdateProgress } from "@/lib/desktop-updates";
+import { isInitialBackendAccessReady, loadInitialBackendAccess } from "@/lib/initial-backend-access";
 import { cn } from "@/lib/utils";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useI18n, type TranslationValues } from "@/i18n";
@@ -164,7 +164,7 @@ function TrayRow({
       onClick={disabled ? undefined : onClick}
       disabled={disabled}
       className={cn(
-        "group flex h-[42px] w-full items-center gap-3 rounded-[12px] px-3 text-left outline-none transition-colors duration-150",
+        "tray-action-row group flex h-[42px] w-full items-center gap-3 rounded-[12px] px-3 text-left outline-none transition-colors duration-150",
         "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white/80",
         variant === "default" && "text-slate-950 hover:bg-slate-950/[0.055]",
         variant === "primary" && "bg-blue-50 text-blue-700 hover:bg-blue-100",
@@ -195,7 +195,7 @@ function TrayRow({
         {detail ? (
           <span
             className={cn(
-              "mt-px block truncate text-[11px] leading-[13px]",
+              "tray-action-detail mt-px block truncate text-[11px] leading-[13px]",
               variant === "update" ? "text-white/78" : "text-slate-500",
             )}
           >
@@ -237,7 +237,7 @@ function RecentTranscriptRow({
       onClick={onCopy}
       disabled={disabled}
       className={cn(
-        "group flex h-[46px] w-full items-center gap-3 rounded-[12px] px-3 text-left outline-none transition-colors duration-150",
+        "tray-recent-row group flex h-[46px] w-full items-center gap-3 rounded-[12px] px-3 text-left outline-none transition-colors duration-150",
         "text-slate-950 hover:bg-slate-950/[0.055]",
         "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white/80",
         copied && "bg-emerald-50 text-emerald-700",
@@ -290,7 +290,7 @@ function formatShortcut(raw: string | undefined, t: Translate): string {
 
 export default function TrayPanel() {
   const { formatNumber, t } = useI18n();
-  const [backendReady, setBackendReady] = useState(!isTauriRuntime());
+  const [backendReady, setBackendReady] = useState(isInitialBackendAccessReady);
   const [view, setView] = useState<TrayView>("main");
   const [status, setStatus] = useState<TrayStatus>(DEFAULT_TRAY_STATUS);
   const [appVersion, setAppVersion] = useState("");
@@ -322,24 +322,21 @@ export default function TrayPanel() {
     [t],
   );
 
-  const loadRegisteredShortcuts = useCallback(
-    async (refreshRegistration: boolean) => {
-      if (!isTauriRuntime() || !backendReady) return;
-      const requestId = ++shortcutLoadRequestRef.current;
-      try {
-        let value = refreshRegistration ? await refreshGlobalHotkey() : await getGlobalHotkeyStatus();
-        if (!value?.hotkey && !refreshRegistration) {
-          value = await refreshGlobalHotkey();
-        }
-        if (requestId === shortcutLoadRequestRef.current) {
-          applyShortcuts(value?.hotkey, value?.meetingHotkey);
-        }
-      } catch (error) {
-        console.debug("Tray hotkey lookup failed.", error);
+  const loadRegisteredShortcuts = useCallback(async () => {
+    if (!isTauriRuntime() || !backendReady) return;
+    const requestId = ++shortcutLoadRequestRef.current;
+    try {
+      let value = await getGlobalHotkeyStatus();
+      if (!value?.hotkey) {
+        value = await refreshGlobalHotkey();
       }
-    },
-    [applyShortcuts, backendReady],
-  );
+      if (requestId === shortcutLoadRequestRef.current) {
+        applyShortcuts(value?.hotkey, value?.meetingHotkey);
+      }
+    } catch (error) {
+      console.debug("Tray hotkey lookup failed.", error);
+    }
+  }, [applyShortcuts, backendReady]);
 
   useEffect(() => {
     document.documentElement.dataset.scriberTrayWindow = "true";
@@ -366,7 +363,7 @@ export default function TrayPanel() {
 
   useEffect(() => {
     let cancelled = false;
-    void loadBackendBaseUrlFromTauri().finally(() => {
+    void loadInitialBackendAccess().then(() => {
       if (!cancelled) {
         setBackendReady(true);
       }
@@ -380,32 +377,57 @@ export default function TrayPanel() {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    void getTrayStatus()
-      .then((value) => {
-        if (value) setStatus(value);
-      })
-      .catch((error) => console.debug("Tray status lookup failed.", error));
+    let revision = 0;
+    const publish = (value: TrayStatus) => {
+      const next = { ...DEFAULT_TRAY_STATUS, ...value };
+      setStatus((previous) =>
+        previous.recordingActive === next.recordingActive &&
+        previous.recordingMode === next.recordingMode &&
+        previous.updateAvailable === next.updateAvailable &&
+        previous.updateInstalling === next.updateInstalling &&
+        previous.updateVersion === next.updateVersion &&
+        previous.updateMessage === next.updateMessage
+          ? previous
+          : next,
+      );
+    };
+    const readStatus = () => {
+      clearTimeout(fallbackTimer);
+      if (disposed) return;
+      const readRevision = ++revision;
+      void getTrayStatus()
+        .then((value) => {
+          if (!disposed && revision === readRevision && value) publish(value);
+        })
+        .catch((error) => console.debug("Tray status lookup failed.", error));
+    };
+    // A failed or stalled listener must not prevent the initial status read.
+    const fallbackTimer = setTimeout(readStatus, 2_000);
+    // Subscribe before reading. A newer event must win over a slow initial
+    // snapshot, and access readiness must not reinstall this subscription.
     void listen<TrayStatus>("scriber-tray-status", (event) => {
-      setStatus({ ...DEFAULT_TRAY_STATUS, ...event.payload });
-      void loadRegisteredShortcuts(false);
+      if (disposed) return;
+      revision += 1;
+      publish(event.payload);
     })
       .then((cleanup) => {
         if (disposed) {
           cleanup();
-        } else {
-          unlisten = cleanup;
+          return;
         }
+        unlisten = cleanup;
+        readStatus();
       })
-      .catch((error) => console.debug("Tray status listener failed.", error));
+      .catch((error) => {
+        console.debug("Tray status listener failed.", error);
+        readStatus();
+      });
     return () => {
       disposed = true;
+      clearTimeout(fallbackTimer);
       unlisten?.();
     };
-  }, [loadRegisteredShortcuts]);
-
-  useEffect(() => {
-    void loadRegisteredShortcuts(true);
-  }, [loadRegisteredShortcuts]);
+  }, []);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -452,68 +474,82 @@ export default function TrayPanel() {
     clearTimeout(hideTimerRef.current);
   }, []);
 
-  const loadRecentTranscripts = useCallback(async () => {
-    if (!backendReady) return;
-    const requestId = ++recentRequestRef.current;
-    recentAbortRef.current?.abort();
-    const controller = new AbortController();
-    recentAbortRef.current = controller;
-    clearTimeout(hideTimerRef.current);
-    setCopiedTranscriptId("");
-    setRecentItems([]);
-    setRecentLoading(true);
-    setRecentError("");
-    try {
-      const response = await fetchWithTimeout(
-        apiUrl("/api/transcripts/recent"),
-        {
-          credentials: "include",
-          cache: "no-store",
-          signal: controller.signal,
-        },
-        10_000,
-      );
-      if (!response.ok) {
-        throw new Error(t("Could not load recent transcripts ({{status}}).", { status: response.status }));
+  const loadRecentTranscripts = useCallback(
+    async ({ reusePending = false }: { reusePending?: boolean } = {}) => {
+      if (!backendReady) return;
+      // Entering the recent view can reuse this opening's pending read. A new
+      // native opening or explicit refresh still invalidates older requests.
+      if (reusePending && recentAbortRef.current && !recentAbortRef.current.signal.aborted) return;
+      const requestId = ++recentRequestRef.current;
+      recentAbortRef.current?.abort();
+      const controller = new AbortController();
+      recentAbortRef.current = controller;
+      clearTimeout(hideTimerRef.current);
+      setCopiedTranscriptId("");
+      setRecentItems([]);
+      setRecentLoading(true);
+      setRecentError("");
+      try {
+        const response = await fetchWithTimeout(
+          apiUrl("/api/transcripts/recent"),
+          {
+            credentials: "include",
+            cache: "no-store",
+            signal: controller.signal,
+          },
+          10_000,
+        );
+        if (!response.ok) {
+          throw new Error(t("Could not load recent transcripts ({{status}}).", { status: response.status }));
+        }
+        const payload = (await response.json()) as TranscriptListResponse;
+        if (requestId !== recentRequestRef.current) return;
+        if (!Array.isArray(payload.items)) throw new Error(t("Could not load recent transcripts."));
+        const seen = new Set<string>();
+        setRecentItems(
+          payload.items
+            .filter((item) => {
+              if (
+                !item ||
+                item.status !== "completed" ||
+                typeof item.id !== "string" ||
+                !/^[A-Za-z0-9_-]{1,160}$/.test(item.id) ||
+                seen.has(item.id)
+              )
+                return false;
+              seen.add(item.id);
+              return true;
+            })
+            .slice(0, RECENT_TRANSCRIPT_LIMIT),
+        );
+        setRecentLoaded(true);
+      } catch {
+        if (requestId === recentRequestRef.current) setRecentError(t("Could not load recent transcripts."));
+      } finally {
+        if (requestId === recentRequestRef.current) {
+          recentAbortRef.current = null;
+          setRecentLoading(false);
+        }
       }
-      const payload = (await response.json()) as TranscriptListResponse;
-      if (requestId !== recentRequestRef.current) return;
-      if (!Array.isArray(payload.items)) throw new Error(t("Could not load recent transcripts."));
-      const seen = new Set<string>();
-      setRecentItems(
-        payload.items
-          .filter((item) => {
-            if (
-              !item ||
-              item.status !== "completed" ||
-              typeof item.id !== "string" ||
-              !/^[A-Za-z0-9_-]{1,160}$/.test(item.id) ||
-              seen.has(item.id)
-            )
-              return false;
-            seen.add(item.id);
-            return true;
-          })
-          .slice(0, RECENT_TRANSCRIPT_LIMIT),
-      );
-      setRecentLoaded(true);
-    } catch {
-      if (requestId === recentRequestRef.current) setRecentError(t("Could not load recent transcripts."));
-    } finally {
-      if (requestId === recentRequestRef.current) setRecentLoading(false);
-    }
-  }, [backendReady, t]);
+    },
+    [backendReady, t],
+  );
 
   useEffect(() => {
     if (!backendReady) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
     const refresh = () => {
+      clearTimeout(fallbackTimer);
+      if (disposed) return;
       clearTimeout(blurTimerRef.current);
       setError("");
+      void loadRegisteredShortcuts();
       void loadRecentTranscripts();
     };
     if (isTauriRuntime()) {
+      fallbackTimer = setTimeout(refresh, 2_000);
       // Listen before the initial read: the first show can precede WebView
       // startup, while every subsequent show (even already focused) emits this.
       void listen("scriber-tray-opened", refresh)
@@ -525,22 +561,24 @@ export default function TrayPanel() {
           }
         })
         .catch(() => {
-          if (!disposed) setRecentError(t("Could not load recent transcripts."));
+          refresh();
         });
     } else refresh();
     return () => {
       disposed = true;
+      clearTimeout(fallbackTimer);
       unlisten?.();
+      shortcutLoadRequestRef.current += 1;
       cancelRecentRequest();
     };
-  }, [backendReady, cancelRecentRequest, loadRecentTranscripts, t]);
+  }, [backendReady, cancelRecentRequest, loadRecentTranscripts, loadRegisteredShortcuts, t]);
 
   const openRecentView = useCallback(() => {
     setError("");
     setRecentError("");
     setCopiedTranscriptId("");
     setView("recent");
-    void loadRecentTranscripts();
+    void loadRecentTranscripts({ reusePending: true });
   }, [loadRecentTranscripts]);
 
   const copyRecentTranscript = useCallback(
@@ -645,14 +683,14 @@ export default function TrayPanel() {
   })();
 
   return (
-    <main className="flex h-screen w-screen items-center justify-center bg-transparent p-2 text-slate-950 antialiased">
+    <main className="tray-panel flex h-screen w-screen items-center justify-center bg-transparent p-2 text-slate-950 antialiased">
       <motion.section
         initial={{ opacity: 0, y: 10, scale: 0.985 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-        className="flex h-full w-full flex-col overflow-hidden rounded-[24px] border border-white/70 bg-[rgba(248,250,252,0.96)] p-4 shadow-[0_26px_70px_-34px_rgba(15,23,42,0.78),0_8px_24px_-20px_rgba(15,23,42,0.45)] backdrop-blur-2xl"
+        className="tray-panel-surface flex h-full w-full flex-col overflow-hidden rounded-[24px] border border-white/70 bg-[rgba(248,250,252,0.96)] p-4 shadow-[0_26px_70px_-34px_rgba(15,23,42,0.78),0_8px_24px_-20px_rgba(15,23,42,0.45)] backdrop-blur-2xl"
       >
-        <header className="flex items-center gap-3 pb-3">
+        <header className="tray-panel-header flex shrink-0 items-center gap-3 pb-3">
           <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-slate-200/80 bg-white shadow-[0_12px_28px_-22px_rgba(15,23,42,0.75)]">
             <img src="/favicon.svg" alt="" className="h-8 w-8 object-contain" draggable={false} />
           </div>
@@ -677,7 +715,7 @@ export default function TrayPanel() {
         <div className="h-px bg-slate-200/80" />
 
         {view === "main" && showUpdateInstallBanner ? (
-          <div className="pt-2.5">
+          <div className="tray-panel-update shrink-0 pt-2.5">
             <motion.button
               type="button"
               whileTap={installing || status.updateInstalling ? undefined : { scale: 0.985 }}
@@ -707,9 +745,9 @@ export default function TrayPanel() {
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain py-2.5 pr-1">
+        <div className="tray-panel-body min-h-0 flex-1 overflow-hidden py-2">
           {view === "main" ? (
-            <div className="flex flex-col gap-1.5">
+            <div className="tray-panel-actions flex h-full flex-col gap-1">
               <TrayRow
                 icon={status.recordingActive ? Square : Mic}
                 label={status.recordingActive ? t("Stop Recording") : t("Start Live Transcription")}
@@ -760,7 +798,7 @@ export default function TrayPanel() {
               />
             </div>
           ) : (
-            <div className="flex h-full flex-col gap-1.5">
+            <div className="tray-panel-recent flex h-full flex-col gap-1">
               <div className="flex items-center gap-2 px-1 pb-1">
                 <button
                   type="button"
@@ -831,7 +869,7 @@ export default function TrayPanel() {
         </div>
 
         {view === "main" ? (
-          <div className="border-t border-slate-200/80 pt-2.5">
+          <div className="tray-panel-footer shrink-0 border-t border-slate-200/80 pt-2.5">
             <div className="flex flex-col gap-1.5">
               <TrayRow icon={RotateCw} label={t("Restart Application")} onClick={() => void runAction("restart_app")} />
               <TrayRow icon={LogOut} label={t("Quit Application")} onClick={() => void runAction("quit")} />
@@ -840,7 +878,7 @@ export default function TrayPanel() {
         ) : null}
 
         {error || recentError ? (
-          <div className="rounded-[14px] border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-medium leading-4 text-red-700">
+          <div className="tray-panel-error shrink-0 rounded-[14px] border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-medium leading-4 text-red-700">
             {t(error || recentError)}
           </div>
         ) : null}

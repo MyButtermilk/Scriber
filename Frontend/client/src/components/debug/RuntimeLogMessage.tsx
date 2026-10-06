@@ -1,3 +1,4 @@
+import { memo, useMemo, useState } from "react";
 import { Check, ChevronRight, Copy } from "lucide-react";
 import type { RuntimeLogContext, RuntimeLogContextValue } from "@/lib/api-types";
 import { useI18n } from "@/i18n";
@@ -122,7 +123,13 @@ function CopyTechnicalButton({ copied, label, onClick }: { copied: boolean; labe
   );
 }
 
-export function RuntimeLogMessage({ message, context, copyKey, copiedKey, onCopy }: RuntimeLogMessageProps) {
+export const RuntimeLogMessage = memo(function RuntimeLogMessage({
+  message,
+  context,
+  copyKey,
+  copiedKey,
+  onCopy,
+}: RuntimeLogMessageProps) {
   const { formatNumber, t } = useI18n();
   const isLongMessage = message.length > LONG_MESSAGE_PREVIEW_CHARS || message.split("\n").length > 6;
   const timingMetrics = hotPathMetrics(context, formatNumber);
@@ -130,7 +137,6 @@ export function RuntimeLogMessage({ message, context, copyKey, copiedKey, onCopy
   const finalizationMetrics = timingMetrics.filter((metric) => metric.group === "finalization");
   const configMetrics = configurationMetrics(context);
   const summaryMetrics = timingMetrics.length ? timingMetrics : configMetrics;
-  const rawContext = context ? JSON.stringify(context, null, 2) : "";
   const contextRows = context ? technicalContextRows(context, formatNumber, t) : [];
   const contextFieldCount = context ? countPrimitiveFields(context) : 0;
   const fullMessageCopyKey = `${copyKey}:message`;
@@ -205,23 +211,12 @@ export function RuntimeLogMessage({ message, context, copyKey, copiedKey, onCopy
               </section>
             )}
 
-            <details className="debug-log-raw-details">
-              <summary>
-                <ChevronRight className="debug-log-details-chevron" aria-hidden="true" />
-                <span>{t("Raw structured data")}</span>
-              </summary>
-              <div className="debug-log-raw-body">
-                <div className="debug-log-raw-header">
-                  <span>{t("Redacted JSON")}</span>
-                  <CopyTechnicalButton
-                    copied={copiedKey === contextCopyKey}
-                    label={t("Copy raw structured log data")}
-                    onClick={() => onCopy(rawContext, contextCopyKey)}
-                  />
-                </div>
-                <pre>{rawContext}</pre>
-              </div>
-            </details>
+            <RawStructuredData
+              context={context}
+              copyKey={contextCopyKey}
+              copied={copiedKey === contextCopyKey}
+              onCopy={onCopy}
+            />
           </div>
         </details>
       )}
@@ -251,5 +246,42 @@ export function RuntimeLogMessage({ message, context, copyKey, copiedKey, onCopy
         </details>
       )}
     </div>
+  );
+});
+
+function RawStructuredData({
+  context,
+  copyKey,
+  copied,
+  onCopy,
+}: {
+  context: RuntimeLogContext;
+  copyKey: string;
+  copied: boolean;
+  onCopy: RuntimeLogMessageProps["onCopy"];
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const rawContext = useMemo(() => (open ? JSON.stringify(context, null, 2) : ""), [context, open]);
+  return (
+    <details className="debug-log-raw-details" onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary>
+        <ChevronRight className="debug-log-details-chevron" aria-hidden="true" />
+        <span>{t("Raw structured data")}</span>
+      </summary>
+      {open && (
+        <div className="debug-log-raw-body">
+          <div className="debug-log-raw-header">
+            <span>{t("Redacted JSON")}</span>
+            <CopyTechnicalButton
+              copied={copied}
+              label={t("Copy raw structured log data")}
+              onClick={() => onCopy(rawContext, copyKey)}
+            />
+          </div>
+          <pre>{rawContext}</pre>
+        </div>
+      )}
+    </details>
   );
 }

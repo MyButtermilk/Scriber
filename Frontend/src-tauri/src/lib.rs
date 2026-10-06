@@ -33,7 +33,7 @@ use tauri::{
     image::Image,
     menu::Menu,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, LogicalPosition, Manager, Runtime, WebviewUrl, WebviewWindow,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -525,7 +525,7 @@ impl Default for TrayStatusInner {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TrayStatus {
     recording_active: bool,
@@ -546,6 +546,17 @@ impl From<&TrayStatusInner> for TrayStatus {
             update_version: value.update_version.clone(),
             update_message: value.update_message.clone(),
         }
+    }
+}
+
+impl TrayState {
+    fn update(&self, update: impl FnOnce(&mut TrayStatusInner)) -> (TrayStatus, bool) {
+        let mut inner = lock_unpoisoned(&self.inner);
+        let previous = TrayStatus::from(&*inner);
+        update(&mut inner);
+        let status = TrayStatus::from(&*inner);
+        let changed = status != previous;
+        (status, changed)
     }
 }
 
@@ -1592,7 +1603,7 @@ fn set_tray_recording_state(
 }
 
 #[tauri::command]
-fn show_tray_panel(app: AppHandle) -> Result<(), String> {
+async fn show_tray_panel(app: AppHandle) -> Result<(), String> {
     show_tray_panel_for_app(&app)
 }
 
@@ -2011,6 +2022,9 @@ pub fn run() {
             }
             start_single_instance_show_listener(app.handle().clone());
             native_overlay::set_app_handle(app.handle().clone());
+            // Launch inputs and shell state are ready. Let Python start on the
+            // supervisor thread while the hidden overlay and autostart finish.
+            start_backend_supervisor(app.handle().clone());
             match native_overlay::create_overlay_window(app) {
                 Ok(()) => write_shell_log("native overlay hidden window precreated"),
                 Err(err) => write_shell_log(&format!(
@@ -2018,7 +2032,6 @@ pub fn run() {
                 )),
             }
             apply_desktop_autostart_preference(app.handle());
-            start_backend_supervisor(app.handle().clone());
             write_shell_log(
                 "setup backend ensure and global hotkey registration deferred to supervisor",
             );
@@ -2209,9 +2222,7 @@ fn install_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
             if should_show_tray_panel_for_event(&event) {
-                if let Err(err) = show_tray_panel_for_app(tray.app_handle()) {
-                    write_shell_log(&format!("tray panel show failed from tray click: {err}"));
-                }
+                request_tray_panel_from_event(tray.app_handle());
             }
         });
 
@@ -2261,9 +2272,7 @@ fn handle_shell_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
             let _ = hide_tray_panel_for_app(app);
         }
         MENU_ITEM_INSTALL_UPDATE => {
-            if let Err(err) = show_tray_panel_for_app(app) {
-                write_shell_log(&format!("tray update panel show failed: {err}"));
-            }
+            request_tray_panel_from_event(app);
             if let Err(err) = app.emit(TRAY_STATUS_EVENT, tray_status_for_app(app)) {
                 write_shell_log(&format!("tray update status emit failed: {err}"));
             }
@@ -3136,18 +3145,12 @@ fn update_tray_status_for_app<R: Runtime>(
     app: &AppHandle<R>,
     update: impl FnOnce(&mut TrayStatusInner),
 ) -> TrayStatus {
-    let status = {
-        let state = app.state::<TrayState>();
-        let mut inner = state
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        update(&mut inner);
-        TrayStatus::from(&*inner)
-    };
-    refresh_tray_visuals_for_app(app, &status);
-    refresh_tray_menu_for_app(app, "tray status");
-    emit_tray_status_for_app(app, &status);
+    let (status, changed) = app.state::<TrayState>().update(update);
+    if changed {
+        refresh_tray_visuals_for_app(app, &status);
+        refresh_tray_menu_for_app(app, "tray status");
+        emit_tray_status_for_app(app, &status);
+    }
     status
 }
 
@@ -3169,10 +3172,23 @@ fn refresh_tray_visuals_for_app<R: Runtime>(app: &AppHandle<R>, status: &TraySta
 
 fn emit_tray_status_for_app<R: Runtime>(app: &AppHandle<R>, status: &TrayStatus) {
     let _ = app.emit(TRAY_STATUS_EVENT, status.clone());
-    let _ = app.emit_to(TRAY_PANEL_LABEL, TRAY_STATUS_EVENT, status.clone());
+    // App-wide emit already reaches the tray WebView; do not deliver twice.
+}
+
+fn request_tray_panel_from_event<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(err) = show_tray_panel_for_app(&app) {
+            write_shell_log(&format!("tray panel show failed: {err}"));
+        }
+    });
 }
 
 fn show_tray_panel_for_app<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    // WebView2 creation cannot run in a synchronous command/event handler.
+    // Serialize background requests so repeated clicks cannot create two windows.
+    static SHOW_LOCK: Mutex<()> = Mutex::new(());
+    let _show_guard = lock_unpoisoned(&SHOW_LOCK);
     let window = if let Some(window) = app.get_webview_window(TRAY_PANEL_LABEL) {
         window
     } else {
@@ -3183,8 +3199,6 @@ fn show_tray_panel_for_app<R: Runtime>(app: &AppHandle<R>) -> Result<(), String>
         )
         .title("Scriber Tray")
         .inner_size(TRAY_PANEL_WIDTH, TRAY_PANEL_HEIGHT)
-        .min_inner_size(TRAY_PANEL_WIDTH, TRAY_PANEL_HEIGHT)
-        .max_inner_size(TRAY_PANEL_WIDTH, TRAY_PANEL_HEIGHT)
         .resizable(false)
         .decorations(false)
         .transparent(true)
@@ -3232,18 +3246,29 @@ fn position_tray_panel_window<R: Runtime>(window: &WebviewWindow<R>) -> tauri::R
     if let Some(monitor) = monitor {
         let work_area = monitor.work_area();
         let scale = monitor.scale_factor().max(0.25);
+        let work_width = f64::from(work_area.size.width) / scale;
+        let work_height = f64::from(work_area.size.height) / scale;
+        let (panel_width, panel_height) = tray_panel_size_for_work_area(work_width, work_height);
+        window.set_size(LogicalSize::new(panel_width, panel_height))?;
         let (x, y) = tray_panel_position_for_work_area(
             f64::from(work_area.position.x) / scale,
             f64::from(work_area.position.y) / scale,
-            f64::from(work_area.size.width) / scale,
-            f64::from(work_area.size.height) / scale,
-            TRAY_PANEL_WIDTH,
-            TRAY_PANEL_HEIGHT,
+            work_width,
+            work_height,
+            panel_width,
+            panel_height,
             TRAY_PANEL_MARGIN,
         );
         window.set_position(LogicalPosition::new(x, y))?;
     }
     Ok(())
+}
+
+fn tray_panel_size_for_work_area(work_width: f64, work_height: f64) -> (f64, f64) {
+    (
+        TRAY_PANEL_WIDTH.min((work_width - 2.0 * TRAY_PANEL_MARGIN).max(1.0)),
+        TRAY_PANEL_HEIGHT.min((work_height - 2.0 * TRAY_PANEL_MARGIN).max(1.0)),
+    )
 }
 
 fn tray_panel_position_for_work_area(
@@ -5734,7 +5759,7 @@ mod tests {
         wait_for_child_exit, youtube_deep_link_request_from_args, youtube_import_navigation_path,
         BackendAccess, BackendCommandSpec, BackendManager, BackendStatus,
         BackendStatusChangeTracker, DesktopHotkeyState, NativeDeviceObserveOnlyLogState,
-        ShellMenuSmokeAction, TrayIconKind, TrayStatus, TrayStatusInner, UiLocale,
+        ShellMenuSmokeAction, TrayIconKind, TrayState, TrayStatus, TrayStatusInner, UiLocale,
         YoutubeDeepLinkRequest, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT,
         BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE,
         MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT,
@@ -7673,6 +7698,66 @@ mod tests {
             tray_icon_kind(&recording_during_update),
             TrayIconKind::Recording
         );
+    }
+
+    #[test]
+    fn tray_status_skips_unchanged_updates_but_preserves_each_public_transition() {
+        let state = TrayState::default();
+        for _ in 0..100 {
+            let (status, changed) = state.update(|inner| inner.recording_active = false);
+            assert!(!changed);
+            assert!(!status.recording_active);
+        }
+        assert!(state.update(|inner| inner.recording_active = true).1);
+        assert!(!state.update(|inner| inner.recording_active = true).1);
+        assert!(
+            state
+                .update(|inner| inner.recording_mode = "meeting".into())
+                .1
+        );
+        assert!(state.update(|inner| inner.update_available = true).1);
+        assert!(state.update(|inner| inner.update_installing = true).1);
+        assert!(
+            state
+                .update(|inner| inner.update_version = Some("1.2.3".into()))
+                .1
+        );
+        assert!(
+            state
+                .update(|inner| inner.update_message = "Installing".into())
+                .1
+        );
+        let (status, changed) = state.update(|_| {});
+        assert!(!changed);
+        assert!(status.recording_active && status.update_available && status.update_installing);
+        assert_eq!(status.recording_mode, "meeting");
+        assert_eq!(status.update_version.as_deref(), Some("1.2.3"));
+        assert_eq!(status.update_message, "Installing");
+    }
+
+    #[test]
+    fn tray_panel_fits_the_scaled_monitor_work_area() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let width = 1920.0 / scale;
+            let height = 1040.0 / scale;
+            let (panel_width, panel_height) = super::tray_panel_size_for_work_area(width, height);
+            let (x, y) = super::tray_panel_position_for_work_area(
+                -width,
+                0.0,
+                width,
+                height,
+                panel_width,
+                panel_height,
+                super::TRAY_PANEL_MARGIN,
+            );
+            assert!(x >= -width);
+            assert!(y >= 0.0);
+            assert!(x + panel_width <= 0.0);
+            assert!(y + panel_height <= height);
+            assert!(panel_width <= super::TRAY_PANEL_WIDTH);
+            assert!(panel_height <= super::TRAY_PANEL_HEIGHT);
+        }
+        assert_eq!(super::tray_panel_size_for_work_area(0.0, 0.0), (1.0, 1.0));
     }
 
     #[test]

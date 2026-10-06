@@ -8,6 +8,12 @@ import { LANGUAGE_STORAGE_KEY, LocaleProvider } from "@/i18n";
 import type { TranscriptDetailResponse } from "@/lib/api-types";
 import TranscriptDetail from "./TranscriptDetail";
 import { AppScrollContainerContext } from "@/contexts/AppScrollContainerContext";
+import ReactMarkdown from "react-markdown";
+
+vi.mock("react-markdown", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-markdown")>();
+  return { ...actual, default: vi.fn(actual.default) };
+});
 
 vi.mock("@/hooks/use-transcript-auto-refresh", () => ({ useTranscriptAutoRefresh: () => ({ isWsConnected: true }) }));
 vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }));
@@ -39,7 +45,7 @@ function mount(
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => record } } });
   const location = memoryLocation({ path: "/transcript/failed-mic" });
-  return render(
+  const view = render(
     <QueryClientProvider client={client}>
       <LocaleProvider>
         <Router hook={location.hook}>
@@ -52,11 +58,37 @@ function mount(
       </LocaleProvider>
     </QueryClientProvider>,
   );
+  return { ...view, client };
 }
 
 describe("failed transcript", () => {
   beforeEach(() => {
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, "en");
+  });
+
+  it("copying a long completed summary does not reparse unchanged Markdown", async () => {
+    const user = userEvent.setup();
+    const summary = Array.from({ length: 200 }, (_, i) => `## Topic ${i}\n\nParagraph **${i}**.`).join("\n\n");
+    mount("Transcript text.", "", summary, "file", { status: "completed", summaryStatus: "completed" });
+    await screen.findByRole("heading", { name: "Topic 199" });
+    vi.mocked(ReactMarkdown).mockClear();
+    await user.click(screen.getByRole("button", { name: "Copy summary" }));
+    expect(await navigator.clipboard.readText()).toBe(summary);
+    expect(screen.getByRole("button", { name: "Copied!" })).toBeInTheDocument();
+    expect(vi.mocked(ReactMarkdown).mock.calls.length).toBe(0);
+  });
+
+  it("updates a memoized summary when its saved content changes", async () => {
+    const { client } = mount("Transcript", "", "## Original summary", "file", {
+      status: "completed",
+      summaryStatus: "completed",
+    });
+    await screen.findByRole("heading", { name: "Original summary" });
+    client.setQueryData<TranscriptDetailResponse>(["/api/transcripts", "failed-mic"], (current) =>
+      current ? { ...current, summary: "## Revised summary" } : current,
+    );
+    expect(await screen.findByRole("heading", { name: "Revised summary" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Original summary" })).not.toBeInTheDocument();
   });
 
   it("offers transcription retry beside the error for an ordinary uploaded file", async () => {

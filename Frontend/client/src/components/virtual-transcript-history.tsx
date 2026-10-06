@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import {
@@ -58,7 +58,7 @@ function defaultGroupHeader(group: TranscriptHistoryGroup, itemCount: number) {
   );
 }
 
-export function VirtualTranscriptHistory<TItem>({
+function VirtualTranscriptHistoryView<TItem>({
   items,
   viewMode,
   renderItem,
@@ -171,6 +171,16 @@ export function VirtualTranscriptHistory<TItem>({
     };
   }, []);
 
+  const getRowKey = useCallback(
+    (index: number) => {
+      const row = rows[index];
+      if (!row) return index;
+      if (row.kind === "group") return `group-${row.group.key}`;
+      return row.items.map(({ item, index: itemIndex }) => getItemKey(item, itemIndex)).join("|");
+    },
+    [rows, getItemKey],
+  );
+
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: rows.length,
     getScrollElement: () => scrollElement,
@@ -181,12 +191,7 @@ export function VirtualTranscriptHistory<TItem>({
     },
     overscan: 6,
     scrollMargin,
-    getItemKey: (index) => {
-      const row = rows[index];
-      if (!row) return index;
-      if (row.kind === "group") return `group-${row.group.key}`;
-      return row.items.map(({ item, index: itemIndex }) => getItemKey(item, itemIndex)).join("|");
-    },
+    getItemKey: getRowKey,
   });
 
   useEffect(() => {
@@ -311,3 +316,6 @@ export function VirtualTranscriptHistory<TItem>({
     </div>
   );
 }
+
+// Preserve generic item inference while skipping unchanged parent renders.
+export const VirtualTranscriptHistory = memo(VirtualTranscriptHistoryView) as typeof VirtualTranscriptHistoryView;

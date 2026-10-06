@@ -4,6 +4,7 @@ import "@fontsource/inter/400.css";
 import "@carrot-kpi/switzer-font/latin-400.css";
 import "./index.css";
 import "./interface-polish.css";
+import { loadInitialBackendAccess } from "./lib/initial-backend-access";
 import { startFrontendLongTaskObserver } from "./lib/frontend-performance";
 import { initializeLocaleCatalog, LocaleProvider } from "./i18n";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
@@ -35,6 +36,7 @@ async function renderApplication(): Promise<void> {
   const localeReady = initializeLocaleCatalog().catch((error) => {
     console.debug("Initial interface translation catalog could not be loaded.", error);
   });
+  if (!isOverlayWindow) void loadInitialBackendAccess();
   if (!isTrayWindow && !isOverlayWindow) {
     // Include module evaluation in startup diagnostics, as the lazy import did.
     const stopLongTaskObserver = startFrontendLongTaskObserver();
