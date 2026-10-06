@@ -115,6 +115,40 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 ## Implemented Performance Work
 
+### Long-file stitching and summary scrolling (2026-10-06)
+
+Timed file-transcript merging now retires the sorted prefix whose words end
+strictly before the next part starts. Later boundaries only scan and sort the
+remaining tail. Long/nested intervals stay in that tail; timestamp ties,
+speaker evidence, clipped-word repairs, and conflicting-word warnings retain
+the previous algorithm's behavior. Immutable words are reused when no speaker
+rewrite is needed. Alignment normalizes each input word once, keeps just two
+score rows, and uses byte-sized traceback moves. The overlap alignment still
+has quadratic cell count; this does not impose a new truncation or word limit.
+
+`python scripts/diagnostics/benchmark_transcription_merge.py` compares the
+preserved reference algorithm against the candidate and asserts identical
+words and warnings. Python 3.14.7 on Linux, median of five runs:
+
+| Synthetic workload | Before | After |
+| --- | ---: | ---: |
+| Timed merge: 160 parts, 17,276 input / 16,004 output words | 400.459 ms | 127.233 ms |
+| Traced Python peak allocations: 300 × 300 alignment cells | 1,544,768 bytes | 154,318 bytes |
+| Heading geometry reads per scroll: 512-section summary | 512 | at most 10 |
+
+Merge tests compare 160 deterministic randomized overlap cases with the old
+implementation, including long intervals, ties, missing speakers and conflicting
+recognition. The long fixture must stay below 600,000 timestamp reads (previously
+4,144,904); dense alignment must stay below 400,000 traced bytes. Timing is
+informational and excludes provider calls, decoding and installed-app latency.
+
+The summary contents navigator retains heading elements and binary-searches
+their current viewport positions. It avoids repeated whole-document lookups
+and reads fresh geometry so font/layout changes remain visible. Headings in
+tables or generated snapshot grids use the original document-order scan.
+Tests cover forward/backward jumps, bottom-of-document selection, tied/missing
+headings, replacement summaries, layout shifts and explicit navigation targets.
+
 ### Shared UI and history read paths (2026-10-05)
 
 The Live Mic, YouTube, and File histories keep stable item-key callbacks, and

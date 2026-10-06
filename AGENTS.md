@@ -2147,6 +2147,14 @@ Already implemented and should not be regressed:
   provider replay evidence.
 - Canvas/RAF waveform drawing instead of per-frame React state.
 - Buffered transcript appends for long live sessions.
+- Timed file stitching retires only the sorted prefix ending strictly before
+  the next part. Preserve conservative overlap evidence, speakers and warnings;
+  compare changes with the frozen reference in the merge diagnostic benchmark.
+  Keep two alignment score rows and byte-sized traceback moves, without
+  truncating difficult overlaps. Tests bound timestamp reads and traced memory.
+- Summary contents navigation reuses heading elements and reads current
+  geometry with binary search for ordinary block headings. Preserve the linear
+  fallback for tables/snapshot grids and refresh references on summary changes.
 - Saved Meeting playback reuses `createReviewPlaybackLookup` per segment
   snapshot; preserve canonical/alignment/start-time priority and stable ties.
   Do not build the interval index for live previews without saved playback audio.

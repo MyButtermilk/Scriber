@@ -167,11 +167,6 @@ def _same_interval(left: TranscriptWord, right: TranscriptWord) -> bool:
     )
 
 
-def _same_word(left: TranscriptWord, right: TranscriptWord) -> bool:
-    key = _key(left.text)
-    return bool(key) and key == _key(right.text) and _same_interval(left, right)
-
-
 def _uncertain_same_event(left: TranscriptWord, right: TranscriptWord) -> bool:
     if min(left.end_ms, right.end_ms) > max(left.start_ms, right.start_ms):
         return True
@@ -201,20 +196,28 @@ def _word_quality(item: _Evidence) -> tuple[int, float, int]:
 def _alignment(left: Sequence[_Evidence], right: Sequence[_Evidence]) -> list[tuple[int, int]]:
     """Monotone, time-constrained LCS; ties prefer the closest real intervals."""
     rows, columns = len(left), len(right)
-    scores = [[(0, 0) for _ in range(columns + 1)] for _ in range(rows + 1)]
-    moves = [[0 for _ in range(columns + 1)] for _ in range(rows + 1)]
+    if not rows or not columns:
+        return []
+    left_keys = [_key(item.word.text) for item in left]
+    right_keys = [_key(item.word.text) for item in right]
+    # Scores only depend on the previous row. Traceback needs one small move
+    # code per cell, not a matrix of Python score tuples and integer lists.
+    scores = [(0, 0)] * (columns + 1)
+    moves = [bytearray(columns + 1) for _ in range(rows + 1)]
     for i in range(1, rows + 1):
+        previous_scores = scores
+        scores = [(0, 0)] * (columns + 1)
         for j in range(1, columns + 1):
-            score, move = scores[i - 1][j], 1
-            if scores[i][j - 1] > score:
-                score, move = scores[i][j - 1], 2
+            score, move = previous_scores[j], 1
+            if scores[j - 1] > score:
+                score, move = scores[j - 1], 2
             old, new = left[i - 1].word, right[j - 1].word
-            if _same_word(old, new):
-                count, distance = scores[i - 1][j - 1]
+            if left_keys[i - 1] and left_keys[i - 1] == right_keys[j - 1] and _same_interval(old, new):
+                count, distance = previous_scores[j - 1]
                 candidate = (count + 1, distance - abs(old.start_ms + old.end_ms - new.start_ms - new.end_ms))
                 if candidate > score:
                     score, move = candidate, 3
-            scores[i][j], moves[i][j] = score, move
+            scores[j], moves[i][j] = score, move
     result: list[tuple[int, int]] = []
     i, j = rows, columns
     while i and j:
@@ -274,12 +277,15 @@ def _speaker_mapping(
 
 
 def _merge_timed(parts: Sequence[PartTranscript]) -> tuple[list[TranscriptWord], list[BoundaryWarning]]:
+    finished: list[TranscriptWord] = []
     retained: list[_Evidence] = []
     warnings: list[BoundaryWarning] = []
     for part_index, part in enumerate(parts):
         new = [
             _Evidence(
-                replace(word, speaker=f"part-{part.index}:{word.speaker}" if word.speaker not in (None, "") else None),
+                word
+                if word.speaker is None
+                else replace(word, speaker=f"part-{part.index}:{word.speaker}" if word.speaker else None),
                 part,
             )
             for word in part.words
@@ -287,6 +293,17 @@ def _merge_timed(parts: Sequence[PartTranscript]) -> tuple[list[TranscriptWord],
         if not part_index:
             retained.extend(new)
             continue
+        if part_index > 1:
+            # After the first boundary retained is sorted. Parts advance on the
+            # original clock: a leading word ending strictly before this part
+            # can never participate in another overlap or change position.
+            # Stop at the first still-live interval (end times need not sort).
+            frontier = 0
+            while frontier < len(retained) and retained[frontier].word.end_ms < part.start_ms:
+                finished.append(retained[frontier].word)
+                frontier += 1
+            if frontier:
+                del retained[:frontier]
         previous = parts[part_index - 1]
         overlap_end = min(previous.end_ms, part.end_ms)
         old_indices = [
@@ -299,10 +316,13 @@ def _merge_timed(parts: Sequence[PartTranscript]) -> tuple[list[TranscriptWord],
         new_overlap = [new[i] for i in new_indices]
         matches = _alignment(old_overlap, new_overlap)
         speaker_map = _speaker_mapping(old_overlap, new_overlap, matches)
-        new = [
-            replace(item, word=replace(item.word, speaker=speaker_map.get(item.word.speaker, item.word.speaker)))
-            for item in new
-        ]
+        if speaker_map:
+            new = [
+                replace(item, word=replace(item.word, speaker=speaker_map[item.word.speaker]))
+                if item.word.speaker is not None and item.word.speaker in speaker_map
+                else item
+                for item in new
+            ]
         skipped: set[int] = set()
         matched_old: set[int] = set()
         for old_match, new_match in matches:
@@ -337,7 +357,8 @@ def _merge_timed(parts: Sequence[PartTranscript]) -> tuple[list[TranscriptWord],
         retained = [item for i, item in enumerate(retained) if i not in removed]
         retained.extend(item for i, item in enumerate(new) if i not in skipped)
         retained.sort(key=lambda item: (item.word.start_ms, item.word.end_ms, item.part.index))
-    return [item.word for item in retained], warnings
+    finished.extend(item.word for item in retained)
+    return finished, warnings
 
 
 def merge_part_transcripts(parts: Sequence[PartTranscript]) -> MergedTranscript:

@@ -2180,11 +2180,11 @@ async def exercise_interface_locale_switch(
   const text = document.body ? document.body.innerText : '';
   return {
     ok: document.readyState === 'complete'
-      && document.documentElement.lang === 'de'
+      && document.documentElement?.lang === 'de'
       && window.localStorage.getItem('scriber-ui-locale') === 'de'
       && text.includes('Einstellungen')
       && text.includes('Oberflächensprache'),
-    lang: document.documentElement.lang,
+    lang: document.documentElement?.lang,
     storedLocale: window.localStorage.getItem('scriber-ui-locale'),
     hasGermanSettingsTitle: text.includes('Einstellungen'),
     hasInterfaceLanguageControl: text.includes('Oberflächensprache'),

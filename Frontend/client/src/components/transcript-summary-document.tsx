@@ -128,6 +128,21 @@ export function SummaryTableOfContents({
   const itemRefs = useRef(new Map<string, HTMLLIElement>());
   const navigationTargetRef = useRef("");
   const navigationReleaseTimerRef = useRef<number | null>(null);
+  const headingsRef = useRef<HTMLElement[]>([]);
+  const orderedHeadingsRef = useRef(true);
+
+  useLayoutEffect(() => {
+    // Keep elements, not coordinates: fonts and resizing can move headings.
+    headingsRef.current = outline
+      .map(({ id }) => document.getElementById(id))
+      .filter((heading): heading is HTMLElement => heading !== null);
+    // Ordinary block headings follow vertical document order. Headings inside
+    // tables or generated snapshot grids may not; retain the linear fallback.
+    orderedHeadingsRef.current = !headingsRef.current.some((heading) => heading.closest("table, .summary-snapshot"));
+    return () => {
+      headingsRef.current = [];
+    };
+  }, [outline]);
 
   const resolveActiveHeading = useCallback(() => {
     const root = scrollContainerRef.current;
@@ -148,11 +163,22 @@ export function SummaryTableOfContents({
 
     const activationOffset = Math.min(136, Math.max(72, root.clientHeight * 0.18));
     const activationTop = root.getBoundingClientRect().top + activationOffset;
-    const headings = outline
-      .map(({ id }) => document.getElementById(id))
-      .filter((heading): heading is HTMLElement => heading !== null);
-    const passed = headings.filter((heading) => heading.getBoundingClientRect().top <= activationTop + 1);
-    setActiveId((passed.at(-1) || headings[0])?.id || "");
+    const headings = headingsRef.current;
+    if (!orderedHeadingsRef.current) {
+      const passed = headings.filter((heading) => heading.getBoundingClientRect().top <= activationTop + 1);
+      setActiveId((passed.at(-1) || headings[0])?.id || "");
+      return;
+    }
+    // Upper bound preserves the last heading at a tied position, with current
+    // geometry on every seek and only logarithmic layout reads per frame.
+    let low = 0;
+    let high = headings.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (headings[middle].getBoundingClientRect().top <= activationTop + 1) low = middle + 1;
+      else high = middle;
+    }
+    setActiveId(headings[Math.max(0, low - 1)]?.id || "");
   }, [outline, scrollContainerRef]);
 
   const releaseNavigationTarget = useCallback(
@@ -227,9 +253,7 @@ export function SummaryTableOfContents({
     const root = scrollContainerRef.current;
     if (!root || outline.length === 0 || typeof IntersectionObserver === "undefined") return;
 
-    const headings = outline
-      .map(({ id }) => document.getElementById(id))
-      .filter((heading): heading is HTMLElement => heading !== null);
+    const headings = headingsRef.current;
     if (headings.length === 0) return;
 
     let observer: IntersectionObserver | null = null;

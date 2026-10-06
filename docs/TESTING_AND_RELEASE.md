@@ -249,6 +249,15 @@ Shared UI performance: `npm run benchmark:formatters` compares cached and fresh
 Intl date/number formatting. Frontend tests cover construction counts, locale
 and option changes, bounded eviction, summary parser reuse, virtual-history
 scroll work, changed row keys, independent idle preloads, and cancellation.
+Summary contents tests additionally bound heading layout reads and verify
+scroll jumps, layout shifts, table fallbacks and navigation targets.
+
+Long-file stitching: `python scripts/diagnostics/benchmark_transcription_merge.py`
+checks exact words/warnings against the preserved reference before reporting
+timing and traced alignment memory. Run `python -m pytest
+tests/test_transcription_merge.py tests/test_transcription_merge_performance.py
+tests/test_provider_transcript.py -q` for boundary behavior, randomized
+equivalence and deterministic timestamp/normalization/memory budgets.
 
 History read performance: `python scripts/diagnostics/benchmark_history_reads.py`
 uses only a disposable SQLite database. Run `python -m pytest
