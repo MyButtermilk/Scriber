@@ -266,6 +266,12 @@ pagination, visible-text equivalence, and deterministic read-work budgets.
 The normal browser smoke covers primary-tab switching and transcript actions;
 use `--browser` to select Chromium on non-Windows development environments.
 
+History write performance: `python scripts/diagnostics/benchmark_transcript_writes.py`
+compares progress saves with unconditional FTS rewrites on a temporary database.
+The database tests above gate parent-only changes and retain repair/rollback
+coverage. Frontend tests also gate redundant upload notifications and unchanged
+File history row models during copy feedback, with status-transition coverage.
+
 YouTube browser handoff extension (from the repository root):
 
 ```powershell

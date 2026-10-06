@@ -2177,6 +2177,12 @@ Already implemented and should not be regressed:
   covering reads. Migrate only their app-owned definitions once. Punctuation
   search reuses FTS visible-summary text with a fallback for missing/mismatched
   index rows; preserve literal substring semantics and hidden-HTML exclusion.
+- Metadata-only transcript saves compare the real indexed projection under the
+  parent write transaction and skip unchanged FTS rewrites. Preserve missing/
+  stale-row repair, summary-format semantics and rollback on projection errors.
+- Upload patches that change no field keep snapshot identity and do not notify
+  subscribers. Preserve the server-processing transition after rounded 100%.
+  File history partitions depend on history data, not upload or copy UI state.
 - Meeting detail assembly validates existence once and reuses its SQLite
   connection for related collections instead of repeating helper lookups.
 - The native 10-ms Meeting Mic/System/AEC relay reuses decode, clean-output,

@@ -42,6 +42,33 @@ afterEach(() => {
 });
 
 describe("file upload queue", () => {
+  it("publishes only changed progress and still enters server processing after rounded 100%", async () => {
+    vi.stubGlobal("XMLHttpRequest", UploadRequest);
+    const { startFileUploadBatch, getFileUploadSnapshot, subscribeFileUpload } = await import("./file-upload-store");
+    const batch = startFileUploadBatch(files("long.wav"), options);
+    const changed = vi.fn();
+    const stop = subscribeFileUpload(changed);
+    const request = UploadRequest.requests[0];
+    const progress = (loaded: number) => request.upload.onprogress?.({ lengthComputable: true, loaded, total: 10_000 });
+    const initial = getFileUploadSnapshot();
+    for (let value = 1; value < 50; value++) progress(value);
+    expect(getFileUploadSnapshot()).toBe(initial);
+    expect(changed).not.toHaveBeenCalled();
+    for (let value = 50; value < 10_000; value++) progress(value);
+    expect(changed).toHaveBeenCalledTimes(100);
+    expect(getFileUploadSnapshot()).toMatchObject({ status: "uploading", progress: 100 });
+    progress(10_000);
+    expect(changed).toHaveBeenCalledTimes(101);
+    expect(getFileUploadSnapshot()).toMatchObject({ status: "server_processing", progress: 100 });
+    request.upload.onload?.();
+    expect(changed).toHaveBeenCalledTimes(101);
+    request.finish("finished");
+    expect((await batch).responses).toEqual([{ id: "finished", status: "processing" }]);
+    expect(getFileUploadSnapshot().status).toBe("completed");
+    stop();
+    await settle();
+  });
+
   it.each(["body", "header"])(
     "keeps the server reference from the %s separate from its translated message",
     async (source) => {

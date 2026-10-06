@@ -115,6 +115,41 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 ## Implemented Performance Work
 
+### Progress updates and write amplification (2026-10-06)
+
+Transcript saves compare the actual FTS projection after the parent write has
+acquired its transaction lock. Unchanged title, content, channel and visible
+summary skip FTS delete/reinsert/tokenization. The comparison still projects
+HTML summaries; it does not cache or trust a stale in-memory copy. Changed,
+missing or mismatched FTS rows take the existing repair path. Parent lifecycle
+fields and terminal compare-and-set semantics remain durable and transactional.
+
+`python scripts/diagnostics/benchmark_transcript_writes.py` uses a disposable
+database and a preserved unconditional-index-write reference. For 25 progress
+saves on one synthetic 20,000-word transcript, Python 3.14.7 / SQLite 3.53.1 on
+Linux (median of five batches): 432.504 ms before, 48.884 ms after. SQLite's
+logical change counter, including FTS shadow tables, drops from 9,437 to 25 in
+the recorded batch; this is not a count of physical disk writes. Regression
+tests require only one parent-row change per metadata-only save, and cover
+terminal transitions, all indexed fields, missing/corrupt rows, summary format
+changes, equivalent HTML projections and rollback after projection failure.
+
+The upload store preserves its snapshot and skips subscriber notifications when
+a patch changes no field. A synthetic 10,000-event upload now publishes 100
+distinct percentage changes plus the server-processing transition. Reaching a
+rounded 100% before all bytes arrive does not hide that transition or completion.
+The File page partitions history only when its data changes, preserving the
+virtualizer's input while upload/copy state updates. Copy feedback with 10,000
+loaded records previously read 20,003 statuses; the gate now permits fewer than
+10 visible-card reads and requires the same row-array identity. Changed history
+still moves completed records out of the processing group.
+
+The summary scroll regression fixture keeps all 512 headings and the same
+ten-read budget, but locates its asserted links by their navigation targets
+rather than repeatedly calculating accessible names for the whole document.
+This removes the observed CI test-runner timeout without increasing time limits.
+These figures describe synthetic workloads, not installed Windows latency.
+
 ### Long-file stitching and summary scrolling (2026-10-06)
 
 Timed file-transcript merging now retires the sorted prefix whose words end

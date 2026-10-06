@@ -72,6 +72,87 @@ def test_save_transcript_propagates_storage_failure(monkeypatch):
         database.save_transcript({"id": "must-fail"})
 
 
+def test_progress_writes_preserve_search_without_rewriting_fts(monkeypatch, tmp_path):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")
+    try:
+        database.init_database()
+        record = _summary_record("progress", "<p>VisibleMarker</p>", "html")
+        record.update(content="Longneedle " * 5_000, status="processing")
+        database.save_transcript(record)
+        conn = database._get_connection()
+        changes = conn.total_changes
+        for index in range(30):
+            database.save_transcript({**record, "step": f"Processing {index}%", "duration": str(index)})
+        # Only the parent row changes; FTS shadow-table writes are counted too.
+        assert conn.total_changes - changes == 30
+        assert database.get_transcript("progress")["step"] == "Processing 29%"
+        assert database.search_transcript_metadata("Longneedle")["total"] == 1
+        assert database.search_transcript_metadata("VisibleMarker")["total"] == 1
+        changes = conn.total_changes
+        assert database.save_transcript_terminal_transition({**record, "status": "completed"})
+        assert conn.total_changes - changes == 1
+        assert database.get_transcript("progress")["status"] == "completed"
+    finally:
+        database._close_all_connections()
+
+
+@pytest.mark.parametrize("field", ["id", "title", "content", "summary", "channel", "missing"])
+def test_unchanged_parent_save_repairs_stale_or_missing_index(monkeypatch, tmp_path, field):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")
+    try:
+        database.init_database()
+        record = _summary_record("repair", "<p>VisibleMarker</p>", "html")
+        record.update(title="TitleMarker", content="ContentMarker", channel="ChannelMarker")
+        database.save_transcript(record)
+        conn = database._get_connection()
+        expected = tuple(conn.execute("SELECT id,title,content,summary,channel FROM transcripts_fts").fetchone())
+        if field == "missing":
+            conn.execute("DELETE FROM transcripts_fts")
+        else:
+            conn.execute(f"UPDATE transcripts_fts SET {field} = 'StaleMarker'")
+        conn.commit()
+        database.save_transcript(record)
+        assert (
+            tuple(conn.execute("SELECT id,title,content,summary,channel FROM transcripts_fts").fetchone()) == expected
+        )
+        assert database.search_transcript_metadata("StaleMarker")["total"] == 0
+        for token in ("TitleMarker", "ContentMarker", "VisibleMarker", "ChannelMarker"):
+            assert database.search_transcript_metadata(token)["total"] == 1
+    finally:
+        database._close_all_connections()
+
+
+def test_summary_projection_changes_and_storage_failures_remain_atomic(monkeypatch, tmp_path):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")
+    try:
+        database.init_database()
+        record = _summary_record("summary-write", '<p title="HiddenMarker">VisibleMarker</p>', "html")
+        database.save_transcript(record)
+        conn = database._get_connection()
+        changes = conn.total_changes
+        assert database.update_transcript_summary(record["id"], "<section><p>VisibleMarker</p></section>")
+        assert conn.total_changes - changes == 1  # same visible projection
+        assert database.update_transcript_summary_state(record["id"], status="completed", summary="<p>NewMarker</p>")
+        assert database.search_transcript_metadata("NewMarker")["total"] == 1
+        assert database.search_transcript_metadata("VisibleMarker")["total"] == 0
+        database.save_transcript({**record, "summaryFormat": "markdown"})
+        assert database.search_transcript_metadata("HiddenMarker")["total"] == 1
+
+        def fail(*_args):
+            raise ValueError("projection unavailable")
+
+        conn.create_function("scriber_summary_text", 2, fail)
+        with pytest.raises(sqlite3.OperationalError):
+            database.save_transcript({**record, "content": "UncommittedMarker"})
+        assert database.get_transcript(record["id"])["content"] != "UncommittedMarker"
+        assert database.search_transcript_metadata("UncommittedMarker")["total"] == 0
+    finally:
+        database._close_all_connections()
+
+
 def test_punctuation_search_reuses_indexed_visible_text_and_falls_back_for_missing_rows(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")

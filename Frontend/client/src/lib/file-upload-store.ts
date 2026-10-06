@@ -100,7 +100,13 @@ function publishItems(items: FileUploadQueueItem[]) {
 }
 
 function updateQueueItem(id: string, patch: Partial<FileUploadQueueItem>) {
-  publishItems(snapshot.items.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  const index = snapshot.items.findIndex((item) => item.id === id);
+  if (index < 0) return;
+  const item = snapshot.items[index];
+  if (Object.entries(patch).every(([key, value]) => item[key as keyof FileUploadQueueItem] === value)) return;
+  const items = snapshot.items.slice();
+  items[index] = { ...item, ...patch };
+  publishItems(items);
 }
 
 export function subscribeFileUpload(listener: () => void): () => void {

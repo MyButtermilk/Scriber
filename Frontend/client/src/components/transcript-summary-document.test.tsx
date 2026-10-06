@@ -110,7 +110,7 @@ it("finds the active heading with logarithmic layout reads after arbitrary scrol
   for (const index of [300, 5, 500, 0, 210]) {
     headingReads = 0;
     scroll(index * 200);
-    expect(screen.getByRole("link", { name: `Section ${index}` })).toHaveAttribute("aria-current", "location");
+    expect(document.querySelector(`a[href="#section-${index}"]`)).toHaveAttribute("aria-current", "location");
     expect(headingReads).toBeLessThanOrEqual(10);
   }
   expect(lookup).not.toHaveBeenCalled();
@@ -120,12 +120,12 @@ it("uses fresh geometry after layout shifts, handles missing headings and the bo
   render(<Document outline={outline} missing="section-300" />);
   flushFrames();
   scroll(60_000);
-  expect(screen.getByRole("link", { name: "Section 299" })).toHaveAttribute("aria-current", "location");
+  expect(document.querySelector('a[href="#section-299"]')).toHaveAttribute("aria-current", "location");
   layoutShift = 400;
   scroll(60_000);
-  expect(screen.getByRole("link", { name: "Section 298" })).toHaveAttribute("aria-current", "location");
+  expect(document.querySelector('a[href="#section-298"]')).toHaveAttribute("aria-current", "location");
   scroll(102_400);
-  expect(screen.getByRole("link", { name: "Section 511" })).toHaveAttribute("aria-current", "location");
+  expect(document.querySelector('a[href="#section-511"]')).toHaveAttribute("aria-current", "location");
 });
 
 it("refreshes heading references when a replacement summary arrives", () => {

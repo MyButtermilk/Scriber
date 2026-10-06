@@ -654,9 +654,16 @@ export default function FileTranscribe() {
     },
   });
 
-  // Separate processing items from completed
-  const processingItems = recentFromBackend.filter((t) => t.status === "processing");
-  const completedItems = recentFromBackend.filter((t) => t.status !== "processing");
+  // Upload progress and copy/delete state must not rebuild the entire history
+  // or invalidate the virtualizer's row model.
+  const { processingItems, completedItems } = useMemo(() => {
+    const processingItems: TranscriptHistoryItem[] = [];
+    const completedItems: TranscriptHistoryItem[] = [];
+    for (const item of recentFromBackend) {
+      (item.status === "processing" ? processingItems : completedItems).push(item);
+    }
+    return { processingItems, completedItems };
+  }, [recentFromBackend]);
 
   return (
     <div className="app-page-shell transcription-page file-page px-4 py-5 md:px-6 md:py-6" data-page-shell="file">

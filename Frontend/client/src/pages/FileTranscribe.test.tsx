@@ -6,12 +6,17 @@ import { LocaleProvider, LANGUAGE_STORAGE_KEY } from "@/i18n";
 import type { TranscriptHistoryItem } from "@/lib/api-types";
 import FileTranscribe from "./FileTranscribe";
 
-const { history, request, navigate, toast, view } = vi.hoisted(() => ({
+const { history, request, navigate, toast, view, historyInputs } = vi.hoisted(() => ({
   history: [] as TranscriptHistoryItem[],
   request: vi.fn(),
   navigate: vi.fn(),
   toast: vi.fn(),
-  view: { mode: "grid" as "grid" | "list" },
+  view: {
+    mode: "grid" as "grid" | "list",
+    limit: Infinity,
+    replacement: undefined as TranscriptHistoryItem[] | undefined,
+  },
+  historyInputs: [] as TranscriptHistoryItem[][],
 }));
 
 vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast }) }));
@@ -33,7 +38,10 @@ vi.mock("@/hooks/use-transcript-history-panel-state", () => ({
 }));
 vi.mock("@/hooks/use-transcript-history-query", () => ({
   transcriptHistoryQueryKey: () => ["/api/transcripts", { type: "file" }],
-  useTranscriptHistoryQuery: () => ({ items: history, total: history.length }),
+  useTranscriptHistoryQuery: () => ({
+    items: view.replacement ?? history,
+    total: (view.replacement ?? history).length,
+  }),
 }));
 vi.mock("@/components/virtual-transcript-history", () => ({
   VirtualTranscriptHistory: ({
@@ -42,13 +50,16 @@ vi.mock("@/components/virtual-transcript-history", () => ({
   }: {
     items: TranscriptHistoryItem[];
     renderItem: (item: TranscriptHistoryItem) => ReactNode;
-  }) => (
-    <>
-      {items.map((item) => (
-        <div key={item.id}>{renderItem(item)}</div>
-      ))}
-    </>
-  ),
+  }) => {
+    historyInputs.push(items);
+    return (
+      <>
+        {items.slice(0, view.limit).map((item) => (
+          <div key={item.id}>{renderItem(item)}</div>
+        ))}
+      </>
+    );
+  },
 }));
 
 function mount(item: Partial<TranscriptHistoryItem>) {
@@ -64,13 +75,15 @@ function mount(item: Partial<TranscriptHistoryItem>) {
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["/api/settings"], {});
-  return render(
+  const content = () => (
     <QueryClientProvider client={client}>
       <LocaleProvider>
         <FileTranscribe />
       </LocaleProvider>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const rendered = render(content());
+  return { ...rendered, refresh: () => rendered.rerender(content()) };
 }
 
 describe("File transcription recovery", () => {
@@ -78,8 +91,48 @@ describe("File transcription recovery", () => {
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, "en");
     history.length = 0;
     view.mode = "grid";
+    view.limit = Infinity;
+    view.replacement = undefined;
+    historyInputs.length = 0;
     request.mockReset();
     request.mockResolvedValue({ ok: true, json: async () => ({ episode: null, resumeAvailable: false }) });
+  });
+
+  it("copy feedback preserves the row model and avoids rescanning 10,000 loaded records", async () => {
+    let statusReads = 0;
+    view.limit = 1; // Model the visible window, rather than mounting the whole history in JSDOM.
+    for (let index = 0; index < 10_000; index++) {
+      history.push({
+        id: `archive-${index}`,
+        title: `Archived ${index}`,
+        type: "file",
+        date: "2026-10-02",
+        duration: "1:00",
+        get status() {
+          statusReads++;
+          return "completed" as const;
+        },
+      });
+    }
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    mount({ status: "completed" });
+    const initialRows = historyInputs.at(-1);
+    statusReads = 0;
+    request.mockResolvedValue({ ok: true, json: async () => ({ content: "Copied speech" }) });
+    fireEvent.click(screen.getByRole("button", { name: "Copy transcript Archived 0" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("Copied speech"));
+    expect(statusReads).toBeLessThan(10);
+    expect(historyInputs.at(-1) === initialRows).toBe(true);
+  });
+
+  it("repartitions history when processing records complete", () => {
+    const mounted = mount({ status: "processing" });
+    expect(historyInputs).toHaveLength(0);
+    view.replacement = [{ ...history[0], status: "completed" }];
+    mounted.refresh();
+    expect(historyInputs.at(-1)).toEqual(view.replacement);
+    expect(screen.getByRole("button", { name: "Copy transcript A failed uploaded recording.mp4" })).toBeEnabled();
   });
 
   it.each(["grid", "list"] as const)(

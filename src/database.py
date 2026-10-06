@@ -54,6 +54,20 @@ def _build_fts_query(query: str) -> str:
 
 
 def _sync_fts_row(conn: sqlite3.Connection, transcript_id: str) -> None:
+    # The parent write already owns the transaction's writer lock. Compare the
+    # actual indexed projection, so progress-only writes do not tokenize the
+    # entire transcript again. Missing/stale rows still take the repair path.
+    if conn.execute(
+        """
+        SELECT 1 FROM transcripts t
+        JOIN transcripts_fts f ON f.rowid = t.rowid
+        WHERE t.id = ? AND f.id IS t.id AND f.title IS t.title
+          AND f.content IS t.content AND f.channel IS t.channel
+          AND f.summary IS scriber_summary_text(t.summary, t.summary_format)
+        """,
+        (transcript_id,),
+    ).fetchone():
+        return
     # init_database repairs legacy rowid drift before any controller writes.
     # FTS5's id column is UNINDEXED: deleting by that value reads every stored
     # document. The shared rowid permits one indexed parent lookup and one FTS row.
