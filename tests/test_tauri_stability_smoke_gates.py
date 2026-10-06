@@ -29,6 +29,12 @@ def test_tauri_shell_defers_backend_start_off_setup_hot_path() -> None:
     assert "global hotkey registration skipped:" not in lib
     assert "let status = manager.ensure_started();" in lib
     assert "std::thread::sleep(BACKEND_SUPERVISOR_INTERVAL);" in lib
+    setup = lib.split(".setup(move |app| {", 1)[1].split(".invoke_handler", 1)[0]
+    # Launch configuration and the overlay event owner must exist before the
+    # worker starts; hidden WebView creation must not gate process startup.
+    assert setup.index("configure_launch(") < setup.index("start_backend_supervisor(")
+    assert setup.index("native_overlay::set_app_handle(") < setup.index("start_backend_supervisor(")
+    assert setup.index("start_backend_supervisor(") < setup.index("create_overlay_window(app)")
 
 
 def test_hotkey_refresh_is_serialized_and_partial_registration_is_settled() -> None:

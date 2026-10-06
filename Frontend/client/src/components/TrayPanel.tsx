@@ -29,13 +29,13 @@ import {
   getTrayStatus,
   hideTrayPanel,
   isTauriRuntime,
-  loadBackendBaseUrlFromTauri,
   refreshGlobalHotkey,
   trayAction,
   type TrayStatus,
 } from "@/lib/backend";
 import type { TrayTranscriptItem, TranscriptType } from "@/lib/api-types";
 import { checkDesktopUpdate, installDesktopUpdate, type DesktopUpdateProgress } from "@/lib/desktop-updates";
+import { isInitialBackendAccessReady, loadInitialBackendAccess } from "@/lib/initial-backend-access";
 import { cn } from "@/lib/utils";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useI18n, type TranslationValues } from "@/i18n";
@@ -290,7 +290,7 @@ function formatShortcut(raw: string | undefined, t: Translate): string {
 
 export default function TrayPanel() {
   const { formatNumber, t } = useI18n();
-  const [backendReady, setBackendReady] = useState(!isTauriRuntime());
+  const [backendReady, setBackendReady] = useState(isInitialBackendAccessReady);
   const [view, setView] = useState<TrayView>("main");
   const [status, setStatus] = useState<TrayStatus>(DEFAULT_TRAY_STATUS);
   const [appVersion, setAppVersion] = useState("");
@@ -322,24 +322,21 @@ export default function TrayPanel() {
     [t],
   );
 
-  const loadRegisteredShortcuts = useCallback(
-    async (refreshRegistration: boolean) => {
-      if (!isTauriRuntime() || !backendReady) return;
-      const requestId = ++shortcutLoadRequestRef.current;
-      try {
-        let value = refreshRegistration ? await refreshGlobalHotkey() : await getGlobalHotkeyStatus();
-        if (!value?.hotkey && !refreshRegistration) {
-          value = await refreshGlobalHotkey();
-        }
-        if (requestId === shortcutLoadRequestRef.current) {
-          applyShortcuts(value?.hotkey, value?.meetingHotkey);
-        }
-      } catch (error) {
-        console.debug("Tray hotkey lookup failed.", error);
+  const loadRegisteredShortcuts = useCallback(async () => {
+    if (!isTauriRuntime() || !backendReady) return;
+    const requestId = ++shortcutLoadRequestRef.current;
+    try {
+      let value = await getGlobalHotkeyStatus();
+      if (!value?.hotkey) {
+        value = await refreshGlobalHotkey();
       }
-    },
-    [applyShortcuts, backendReady],
-  );
+      if (requestId === shortcutLoadRequestRef.current) {
+        applyShortcuts(value?.hotkey, value?.meetingHotkey);
+      }
+    } catch (error) {
+      console.debug("Tray hotkey lookup failed.", error);
+    }
+  }, [applyShortcuts, backendReady]);
 
   useEffect(() => {
     document.documentElement.dataset.scriberTrayWindow = "true";
@@ -366,7 +363,7 @@ export default function TrayPanel() {
 
   useEffect(() => {
     let cancelled = false;
-    void loadBackendBaseUrlFromTauri().finally(() => {
+    void loadInitialBackendAccess().then(() => {
       if (!cancelled) {
         setBackendReady(true);
       }
@@ -380,32 +377,57 @@ export default function TrayPanel() {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    void getTrayStatus()
-      .then((value) => {
-        if (value) setStatus(value);
-      })
-      .catch((error) => console.debug("Tray status lookup failed.", error));
+    let revision = 0;
+    const publish = (value: TrayStatus) => {
+      const next = { ...DEFAULT_TRAY_STATUS, ...value };
+      setStatus((previous) =>
+        previous.recordingActive === next.recordingActive &&
+        previous.recordingMode === next.recordingMode &&
+        previous.updateAvailable === next.updateAvailable &&
+        previous.updateInstalling === next.updateInstalling &&
+        previous.updateVersion === next.updateVersion &&
+        previous.updateMessage === next.updateMessage
+          ? previous
+          : next,
+      );
+    };
+    const readStatus = () => {
+      clearTimeout(fallbackTimer);
+      if (disposed) return;
+      const readRevision = ++revision;
+      void getTrayStatus()
+        .then((value) => {
+          if (!disposed && revision === readRevision && value) publish(value);
+        })
+        .catch((error) => console.debug("Tray status lookup failed.", error));
+    };
+    // A failed or stalled listener must not prevent the initial status read.
+    const fallbackTimer = setTimeout(readStatus, 2_000);
+    // Subscribe before reading. A newer event must win over a slow initial
+    // snapshot, and access readiness must not reinstall this subscription.
     void listen<TrayStatus>("scriber-tray-status", (event) => {
-      setStatus({ ...DEFAULT_TRAY_STATUS, ...event.payload });
-      void loadRegisteredShortcuts(false);
+      if (disposed) return;
+      revision += 1;
+      publish(event.payload);
     })
       .then((cleanup) => {
         if (disposed) {
           cleanup();
-        } else {
-          unlisten = cleanup;
+          return;
         }
+        unlisten = cleanup;
+        readStatus();
       })
-      .catch((error) => console.debug("Tray status listener failed.", error));
+      .catch((error) => {
+        console.debug("Tray status listener failed.", error);
+        readStatus();
+      });
     return () => {
       disposed = true;
+      clearTimeout(fallbackTimer);
       unlisten?.();
     };
-  }, [loadRegisteredShortcuts]);
-
-  useEffect(() => {
-    void loadRegisteredShortcuts(true);
-  }, [loadRegisteredShortcuts]);
+  }, []);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -452,57 +474,66 @@ export default function TrayPanel() {
     clearTimeout(hideTimerRef.current);
   }, []);
 
-  const loadRecentTranscripts = useCallback(async () => {
-    if (!backendReady) return;
-    const requestId = ++recentRequestRef.current;
-    recentAbortRef.current?.abort();
-    const controller = new AbortController();
-    recentAbortRef.current = controller;
-    clearTimeout(hideTimerRef.current);
-    setCopiedTranscriptId("");
-    setRecentItems([]);
-    setRecentLoading(true);
-    setRecentError("");
-    try {
-      const response = await fetchWithTimeout(
-        apiUrl("/api/transcripts/recent"),
-        {
-          credentials: "include",
-          cache: "no-store",
-          signal: controller.signal,
-        },
-        10_000,
-      );
-      if (!response.ok) {
-        throw new Error(t("Could not load recent transcripts ({{status}}).", { status: response.status }));
+  const loadRecentTranscripts = useCallback(
+    async ({ reusePending = false }: { reusePending?: boolean } = {}) => {
+      if (!backendReady) return;
+      // Entering the recent view can reuse this opening's pending read. A new
+      // native opening or explicit refresh still invalidates older requests.
+      if (reusePending && recentAbortRef.current && !recentAbortRef.current.signal.aborted) return;
+      const requestId = ++recentRequestRef.current;
+      recentAbortRef.current?.abort();
+      const controller = new AbortController();
+      recentAbortRef.current = controller;
+      clearTimeout(hideTimerRef.current);
+      setCopiedTranscriptId("");
+      setRecentItems([]);
+      setRecentLoading(true);
+      setRecentError("");
+      try {
+        const response = await fetchWithTimeout(
+          apiUrl("/api/transcripts/recent"),
+          {
+            credentials: "include",
+            cache: "no-store",
+            signal: controller.signal,
+          },
+          10_000,
+        );
+        if (!response.ok) {
+          throw new Error(t("Could not load recent transcripts ({{status}}).", { status: response.status }));
+        }
+        const payload = (await response.json()) as TranscriptListResponse;
+        if (requestId !== recentRequestRef.current) return;
+        if (!Array.isArray(payload.items)) throw new Error(t("Could not load recent transcripts."));
+        const seen = new Set<string>();
+        setRecentItems(
+          payload.items
+            .filter((item) => {
+              if (
+                !item ||
+                item.status !== "completed" ||
+                typeof item.id !== "string" ||
+                !/^[A-Za-z0-9_-]{1,160}$/.test(item.id) ||
+                seen.has(item.id)
+              )
+                return false;
+              seen.add(item.id);
+              return true;
+            })
+            .slice(0, RECENT_TRANSCRIPT_LIMIT),
+        );
+        setRecentLoaded(true);
+      } catch {
+        if (requestId === recentRequestRef.current) setRecentError(t("Could not load recent transcripts."));
+      } finally {
+        if (requestId === recentRequestRef.current) {
+          recentAbortRef.current = null;
+          setRecentLoading(false);
+        }
       }
-      const payload = (await response.json()) as TranscriptListResponse;
-      if (requestId !== recentRequestRef.current) return;
-      if (!Array.isArray(payload.items)) throw new Error(t("Could not load recent transcripts."));
-      const seen = new Set<string>();
-      setRecentItems(
-        payload.items
-          .filter((item) => {
-            if (
-              !item ||
-              item.status !== "completed" ||
-              typeof item.id !== "string" ||
-              !/^[A-Za-z0-9_-]{1,160}$/.test(item.id) ||
-              seen.has(item.id)
-            )
-              return false;
-            seen.add(item.id);
-            return true;
-          })
-          .slice(0, RECENT_TRANSCRIPT_LIMIT),
-      );
-      setRecentLoaded(true);
-    } catch {
-      if (requestId === recentRequestRef.current) setRecentError(t("Could not load recent transcripts."));
-    } finally {
-      if (requestId === recentRequestRef.current) setRecentLoading(false);
-    }
-  }, [backendReady, t]);
+    },
+    [backendReady, t],
+  );
 
   useEffect(() => {
     if (!backendReady) return;
@@ -511,6 +542,7 @@ export default function TrayPanel() {
     const refresh = () => {
       clearTimeout(blurTimerRef.current);
       setError("");
+      void loadRegisteredShortcuts();
       void loadRecentTranscripts();
     };
     if (isTauriRuntime()) {
@@ -531,16 +563,17 @@ export default function TrayPanel() {
     return () => {
       disposed = true;
       unlisten?.();
+      shortcutLoadRequestRef.current += 1;
       cancelRecentRequest();
     };
-  }, [backendReady, cancelRecentRequest, loadRecentTranscripts, t]);
+  }, [backendReady, cancelRecentRequest, loadRecentTranscripts, loadRegisteredShortcuts, t]);
 
   const openRecentView = useCallback(() => {
     setError("");
     setRecentError("");
     setCopiedTranscriptId("");
     setView("recent");
-    void loadRecentTranscripts();
+    void loadRecentTranscripts({ reusePending: true });
   }, [loadRecentTranscripts]);
 
   const copyRecentTranscript = useCallback(

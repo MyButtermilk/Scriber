@@ -8,6 +8,11 @@ const mocks = vi.hoisted(() => ({
   fetch: vi.fn(),
   action: vi.fn(),
   hide: vi.fn(),
+  access: vi.fn(),
+  status: vi.fn(),
+  hotkeys: vi.fn(),
+  refreshHotkeys: vi.fn(),
+  listenSetup: vi.fn(),
   cleanups: [] as string[],
   listeners: new Map<string, (event: { payload: TrayStatus }) => void>(),
   ready: {
@@ -22,16 +27,21 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/backend", () => ({
   isTauriRuntime: () => true,
   loadBackendBaseUrlFromTauri: async () => undefined,
-  getTrayStatus: async () => mocks.ready,
-  getGlobalHotkeyStatus: async () => ({ hotkey: "Ctrl+F9" }),
-  refreshGlobalHotkey: async () => ({ hotkey: "Ctrl+F9" }),
+  getTrayStatus: mocks.status,
+  getGlobalHotkeyStatus: mocks.hotkeys,
+  refreshGlobalHotkey: mocks.refreshHotkeys,
   hideTrayPanel: mocks.hide,
   trayAction: mocks.action,
   apiUrl: (path: string) => path,
 }));
+vi.mock("@/lib/initial-backend-access", () => ({
+  isInitialBackendAccessReady: () => false,
+  loadInitialBackendAccess: mocks.access,
+}));
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: async () => "0.5.0" }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: async (event: string, listener: (event: { payload: TrayStatus }) => void) => {
+    await mocks.listenSetup(event);
     mocks.listeners.set(event, listener);
     return () => {
       mocks.listeners.delete(event);
@@ -65,6 +75,11 @@ function opened() {
 }
 
 beforeEach(() => {
+  mocks.listenSetup.mockReset().mockResolvedValue(undefined);
+  mocks.access.mockReset().mockResolvedValue(undefined);
+  mocks.status.mockReset().mockResolvedValue(mocks.ready);
+  mocks.hotkeys.mockReset().mockResolvedValue({ hotkey: "Ctrl+F9" });
+  mocks.refreshHotkeys.mockReset().mockResolvedValue({ hotkey: "Ctrl+F9" });
   mocks.listeners.clear();
   mocks.cleanups.length = 0;
   mocks.fetch.mockReset().mockResolvedValue(response());
@@ -136,6 +151,8 @@ it("discards older responses and errors after a newer opening even when abort is
   try {
     await waitFor(() => expect(pending.length).toBe(1));
     fireEvent.click(view.getByRole("button", { name: /Recent Transcripts/ }));
+    expect(pending.length).toBe(1);
+    await act(async () => opened());
     await waitFor(() => expect(pending.length).toBe(2));
     await act(async () => opened());
     await act(async () => pending[2](response([item("new", "Newest text")])));
@@ -289,4 +306,107 @@ it("aborts pending history reads on unmount and does not leave an opened listene
   expect(mocks.listeners.size).toBe(0);
   await act(async () => resolve(response([item("late", "Late answer")])));
   expect(mocks.hide).not.toHaveBeenCalled();
+});
+
+it("does not query or re-register hotkeys for recording/update status bursts", async () => {
+  const { default: TrayPanel } = await import("./TrayPanel");
+  const view = render(<TrayPanel />);
+  await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(1));
+  mocks.hotkeys.mockClear();
+  mocks.refreshHotkeys.mockClear();
+  await act(async () => {
+    for (let index = 0; index < 100; index++) {
+      mocks.listeners.get("scriber-tray-status")?.({ payload: { ...mocks.ready, recordingActive: index % 2 === 0 } });
+    }
+  });
+  expect(mocks.hotkeys).not.toHaveBeenCalled();
+  expect(mocks.refreshHotkeys).not.toHaveBeenCalled();
+  mocks.hotkeys.mockResolvedValue({ hotkey: "Ctrl+F10", meetingHotkey: "Ctrl+F11" });
+  await act(async () => opened());
+  await view.findByText("Ctrl+F10");
+  await view.findByText("Ctrl+F11");
+  expect(mocks.hotkeys).toHaveBeenCalledTimes(1);
+});
+
+it("subscribes once before the status read and preserves a newer event across access readiness", async () => {
+  let finishStatus!: (status: TrayStatus) => void;
+  let finishAccess!: () => void;
+  mocks.access.mockReturnValue(
+    new Promise<void>((resolve) => {
+      finishAccess = resolve;
+    }),
+  );
+  mocks.status.mockImplementation(() => {
+    expect(mocks.listeners.has("scriber-tray-status")).toBe(true);
+    return new Promise<TrayStatus>((resolve) => {
+      finishStatus = resolve;
+    });
+  });
+  const { default: TrayPanel } = await import("./TrayPanel");
+  const view = render(<TrayPanel />);
+  await waitFor(() => expect(mocks.status).toHaveBeenCalledTimes(1));
+  await act(async () =>
+    mocks.listeners.get("scriber-tray-status")?.({ payload: { ...mocks.ready, recordingActive: true } }),
+  );
+  await act(async () => {
+    finishStatus(mocks.ready);
+    finishAccess();
+  });
+  await view.findByRole("button", { name: /Stop Recording/ });
+  expect(mocks.status).toHaveBeenCalledTimes(1);
+  expect(mocks.cleanups).not.toContain("scriber-tray-status");
+});
+
+it("reuses an opening's pending history read when entering Recent Transcripts", async () => {
+  let finish!: (value: ReturnType<typeof response>) => void;
+  mocks.fetch.mockReturnValue(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  const { default: TrayPanel } = await import("./TrayPanel");
+  const view = render(<TrayPanel />);
+  await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(1));
+  const signal = mocks.fetch.mock.calls[0][1].signal as AbortSignal;
+  fireEvent.click(view.getByRole("button", { name: /Recent Transcripts/ }));
+  expect(mocks.fetch).toHaveBeenCalledTimes(1);
+  expect(signal.aborted).toBe(false);
+  await act(async () => finish(response([item("fresh", "Fresh text")])));
+  fireEvent.click(await view.findByRole("button", { name: /Fresh text/ }));
+  await waitFor(() => expect(mocks.action).toHaveBeenCalledWith("copy_transcript:fresh"));
+});
+
+it("falls back to a status read when listener registration fails", async () => {
+  vi.spyOn(console, "debug").mockImplementation(() => undefined);
+  mocks.listenSetup.mockImplementation(async (event) => {
+    if (event === "scriber-tray-status") throw new Error("listener unavailable");
+  });
+  mocks.status.mockResolvedValue({ ...mocks.ready, recordingActive: true });
+  const { default: TrayPanel } = await import("./TrayPanel");
+  const view = render(<TrayPanel />);
+  await view.findByRole("button", { name: /Stop Recording/ });
+  expect(mocks.status).toHaveBeenCalledTimes(1);
+});
+
+it("bounds stalled listener setup and cleans a listener arriving after unmount", async () => {
+  let finishListener!: () => void;
+  mocks.listenSetup.mockImplementation((event) =>
+    event === "scriber-tray-status"
+      ? new Promise<void>((resolve) => {
+          finishListener = resolve;
+        })
+      : Promise.resolve(),
+  );
+  const { default: TrayPanel } = await import("./TrayPanel");
+  vi.useFakeTimers();
+  const view = render(<TrayPanel />);
+  await act(async () => vi.advanceTimersByTimeAsync(1999));
+  expect(mocks.status).not.toHaveBeenCalled();
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(mocks.status).toHaveBeenCalledTimes(1);
+  view.unmount();
+  await act(async () => finishListener());
+  expect(mocks.cleanups).toContain("scriber-tray-status");
+  expect(mocks.listeners.size).toBe(0);
+  expect(mocks.status).toHaveBeenCalledTimes(1);
 });

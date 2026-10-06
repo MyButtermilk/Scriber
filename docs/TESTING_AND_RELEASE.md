@@ -264,6 +264,16 @@ tests/runtime/test_debug_logs.py tests/test_logging_opt_out.py
 tests/runtime/test_diagnostic_preferences.py -q`; Windows lock-specific cases
 run on Windows CI.
 
+Startup and tray: the component suite covers native access prefetch before
+module completion, one shared bounded startup lookup, browser/overlay bypass,
+and locale-before-render. Tray tests bound hotkey reads during status bursts,
+reuse pending history only within an opening, retain fresh reads on reopening,
+and reject stale status/history responses. Listener failure, stalled setup and
+late cleanup are exercised. Rust tests cover unchanged status suppression and
+every public status transition; shell source gates preserve launch/supervisor/
+overlay ordering. These controlled tests prove work reduction and race handling;
+they do not substitute for installed Windows cold-start and tray smoke results.
+
 Long-file stitching: `python scripts/diagnostics/benchmark_transcription_merge.py`
 checks exact words/warnings against the preserved reference before reporting
 timing and traced alignment memory. Run `python -m pytest

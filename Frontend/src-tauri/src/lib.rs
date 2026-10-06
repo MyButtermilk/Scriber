@@ -525,7 +525,7 @@ impl Default for TrayStatusInner {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TrayStatus {
     recording_active: bool,
@@ -546,6 +546,17 @@ impl From<&TrayStatusInner> for TrayStatus {
             update_version: value.update_version.clone(),
             update_message: value.update_message.clone(),
         }
+    }
+}
+
+impl TrayState {
+    fn update(&self, update: impl FnOnce(&mut TrayStatusInner)) -> (TrayStatus, bool) {
+        let mut inner = lock_unpoisoned(&self.inner);
+        let previous = TrayStatus::from(&*inner);
+        update(&mut inner);
+        let status = TrayStatus::from(&*inner);
+        let changed = status != previous;
+        (status, changed)
     }
 }
 
@@ -2011,6 +2022,9 @@ pub fn run() {
             }
             start_single_instance_show_listener(app.handle().clone());
             native_overlay::set_app_handle(app.handle().clone());
+            // Launch inputs and shell state are ready. Let Python start on the
+            // supervisor thread while the hidden overlay and autostart finish.
+            start_backend_supervisor(app.handle().clone());
             match native_overlay::create_overlay_window(app) {
                 Ok(()) => write_shell_log("native overlay hidden window precreated"),
                 Err(err) => write_shell_log(&format!(
@@ -2018,7 +2032,6 @@ pub fn run() {
                 )),
             }
             apply_desktop_autostart_preference(app.handle());
-            start_backend_supervisor(app.handle().clone());
             write_shell_log(
                 "setup backend ensure and global hotkey registration deferred to supervisor",
             );
@@ -3136,18 +3149,12 @@ fn update_tray_status_for_app<R: Runtime>(
     app: &AppHandle<R>,
     update: impl FnOnce(&mut TrayStatusInner),
 ) -> TrayStatus {
-    let status = {
-        let state = app.state::<TrayState>();
-        let mut inner = state
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        update(&mut inner);
-        TrayStatus::from(&*inner)
-    };
-    refresh_tray_visuals_for_app(app, &status);
-    refresh_tray_menu_for_app(app, "tray status");
-    emit_tray_status_for_app(app, &status);
+    let (status, changed) = app.state::<TrayState>().update(update);
+    if changed {
+        refresh_tray_visuals_for_app(app, &status);
+        refresh_tray_menu_for_app(app, "tray status");
+        emit_tray_status_for_app(app, &status);
+    }
     status
 }
 
@@ -3169,7 +3176,7 @@ fn refresh_tray_visuals_for_app<R: Runtime>(app: &AppHandle<R>, status: &TraySta
 
 fn emit_tray_status_for_app<R: Runtime>(app: &AppHandle<R>, status: &TrayStatus) {
     let _ = app.emit(TRAY_STATUS_EVENT, status.clone());
-    let _ = app.emit_to(TRAY_PANEL_LABEL, TRAY_STATUS_EVENT, status.clone());
+    // App-wide emit already reaches the tray WebView; do not deliver twice.
 }
 
 fn show_tray_panel_for_app<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
@@ -5734,7 +5741,7 @@ mod tests {
         wait_for_child_exit, youtube_deep_link_request_from_args, youtube_import_navigation_path,
         BackendAccess, BackendCommandSpec, BackendManager, BackendStatus,
         BackendStatusChangeTracker, DesktopHotkeyState, NativeDeviceObserveOnlyLogState,
-        ShellMenuSmokeAction, TrayIconKind, TrayStatus, TrayStatusInner, UiLocale,
+        ShellMenuSmokeAction, TrayIconKind, TrayState, TrayStatus, TrayStatusInner, UiLocale,
         YoutubeDeepLinkRequest, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT,
         BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE,
         MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT,
@@ -7673,6 +7680,41 @@ mod tests {
             tray_icon_kind(&recording_during_update),
             TrayIconKind::Recording
         );
+    }
+
+    #[test]
+    fn tray_status_skips_unchanged_updates_but_preserves_each_public_transition() {
+        let state = TrayState::default();
+        for _ in 0..100 {
+            let (status, changed) = state.update(|inner| inner.recording_active = false);
+            assert!(!changed);
+            assert!(!status.recording_active);
+        }
+        assert!(state.update(|inner| inner.recording_active = true).1);
+        assert!(!state.update(|inner| inner.recording_active = true).1);
+        assert!(
+            state
+                .update(|inner| inner.recording_mode = "meeting".into())
+                .1
+        );
+        assert!(state.update(|inner| inner.update_available = true).1);
+        assert!(state.update(|inner| inner.update_installing = true).1);
+        assert!(
+            state
+                .update(|inner| inner.update_version = Some("1.2.3".into()))
+                .1
+        );
+        assert!(
+            state
+                .update(|inner| inner.update_message = "Installing".into())
+                .1
+        );
+        let (status, changed) = state.update(|_| {});
+        assert!(!changed);
+        assert!(status.recording_active && status.update_available && status.update_installing);
+        assert_eq!(status.recording_mode, "meeting");
+        assert_eq!(status.update_version.as_deref(), Some("1.2.3"));
+        assert_eq!(status.update_message, "Installing");
     }
 
     #[test]

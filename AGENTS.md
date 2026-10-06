@@ -328,6 +328,9 @@ Frontend and shell:
 - `Frontend/client/src/main.tsx` starts the initial locale catalog and only the
   selected main/tray/overlay module together, then waits for both before React
   renders. Keep the overlay's transparent document markers ahead of its import.
+  Main and tray also prefetch their bounded initial native backend access during
+  module loading. Reuse that startup promise at mount without blocking the
+  localized loader; normal health/restart checks must still refresh access.
 - `Frontend/client/src/hooks/use-backend-status.tsx` subscribes to the native
   `backend-status-changed` invalidation before its initial authoritative query.
   Coalesce concurrent checks and retain one follow-up for events received during
@@ -772,6 +775,12 @@ Packaging and scripts:
   Labels are bounded plain-text previews; empty text stays visibly disabled.
   Copy validates the selected ID and final status again, runs off the UI
   dispatcher, and uses an owned Scriber HWND for Windows clipboard ownership.
+  Entering Recent Transcripts may reuse an in-flight read from that opening;
+  a new native opening must still invalidate it. Refresh shortcut labels on
+  opening, never on recording/update status events. Subscribe before reading
+  initial tray status, bound listener setup, and reject late snapshots after
+  newer events. Native unchanged status skips icon/menu/event work; app-wide
+  status delivery already reaches the tray and must not be duplicated.
 - Rust registers both live-mic shortcuts and the Meeting shortcut after the
   token-protected backend identity is ready. Fresh installs default to
   `Ctrl+Shift+D` for Live Mic, `Ctrl+Shift+F` for post-processing, and

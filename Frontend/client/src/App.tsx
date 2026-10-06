@@ -14,8 +14,8 @@ import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "
 import { showPostProcessingFallbackToast, type CredentialSettingsRequest } from "@/lib/post-processing-fallback-toast";
 import { useToast } from "@/hooks/use-toast";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { isTauriRuntime, loadBackendBaseUrlFromTauri, setTrayRecordingState } from "@/lib/backend";
-import { withPromiseTimeout } from "@/lib/fetch-with-timeout";
+import { isTauriRuntime, setTrayRecordingState } from "@/lib/backend";
+import { isInitialBackendAccessReady, loadInitialBackendAccess } from "@/lib/initial-backend-access";
 import { preloadPrimaryTabData } from "@/lib/tab-data-preload";
 import { flushFrontendPerformanceReport, setFrontendPerformanceReportingEnabled } from "@/lib/frontend-performance";
 import { ToastAction } from "@/components/ui/toast";
@@ -610,19 +610,13 @@ function FrontendPerformanceFlushBridge() {
 }
 
 function App() {
-  const [backendBaseReady, setBackendBaseReady] = useState(!isTauriRuntime());
+  const [backendBaseReady, setBackendBaseReady] = useState(isInitialBackendAccessReady);
 
   useEffect(() => {
     let cancelled = false;
-    void withPromiseTimeout(loadBackendBaseUrlFromTauri(), 5_000, "Initial Tauri backend lookup")
-      .catch((error) => {
-        console.debug("Initial Tauri backend lookup failed; continuing with health fallback.", error);
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setBackendBaseReady(true);
-        }
-      });
+    void loadInitialBackendAccess().then(() => {
+      if (!cancelled) setBackendBaseReady(true);
+    });
     return () => {
       cancelled = true;
     };

@@ -73,12 +73,16 @@ def test_tauri_backend_status_trusts_supervisor_readiness() -> None:
 
 
 def test_app_initial_tauri_lookup_has_deadline_and_fallback() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
+    app_source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "initial-backend-access.ts").read_text(
+        encoding="utf-8"
+    )
+    assert "loadInitialBackendAccess()" in app_source
 
     assert "withPromiseTimeout(" in source
     assert '"Initial Tauri backend lookup"' in source
     assert "continuing with health fallback" in source
-    assert "setBackendBaseReady(true)" in source
+    assert "setBackendBaseReady(true)" in app_source
 
     backend_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
     assert '"Tauri backend access"' in backend_source
@@ -1896,7 +1900,8 @@ def test_tray_panel_exposes_meetings_shortcut_and_installed_version() -> None:
     assert "shortcut={meetingShortcut}" in tray_source
     assert 'runAction("open_meetings")' in tray_source
     assert "value?.meetingHotkey" in tray_source
-    assert "loadRegisteredShortcuts(false)" in tray_source
+    assert "loadRegisteredShortcuts()" in tray_source
+    assert "let value = await getGlobalHotkeyStatus();" in tray_source
     assert "const requestId = ++shortcutLoadRequestRef.current;" in tray_source
     assert "requestId === shortcutLoadRequestRef.current" in tray_source
     assert 'className="min-h-0 flex-1 overflow-y-auto overscroll-contain py-2.5 pr-1"' in tray_source

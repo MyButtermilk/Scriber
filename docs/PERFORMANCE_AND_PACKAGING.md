@@ -115,6 +115,34 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 ## Implemented Performance Work
 
+### App startup and tray work (2026-10-06)
+
+Main and tray WebViews request initial native backend access alongside locale
+and module loading. Their React access gate reuses the same bounded promise;
+an already completed lookup no longer adds a loader render and mount-time IPC
+round trip. The localized shell does not wait for this request, and the overlay
+does not request it. Health checks retain fresh access lookup for backend
+restarts. Rust starts the background supervisor after atomic launch configuration
+and overlay app-handle registration, before constructing the hidden overlay and
+reconciling autostart. Single-instance exclusion still precedes backend effects.
+
+Tray status subscriptions survive access readiness and subscribe before reading
+the initial snapshot. Revisions reject delayed snapshots after newer events;
+a bounded fallback permits the initial read when listener setup stalls. Native
+unchanged status skips icon/menu/event work, and one app-wide emission replaces
+duplicate delivery to the tray. Shortcut labels refresh on opening instead of
+on every recording/update event. Entering Recent Transcripts reuses an ongoing
+read, while each native opening still forces fresh history and copying still
+resolves the selected ID against durable backend content.
+
+Compared with commit `52a3b22d`, the same deterministic component fixtures reduce
+hotkey queries for 100 status events from 100 to 0 and history reads when entering
+Recent Transcripts during its opening fetch from 2 to 1. The startup fixture
+uses a simulated 200-ms module load and 120-ms access lookup to verify overlap,
+not an installed Windows latency claim. Chromium smoke covers the main and
+Settings routes; installed cold-start timing and native tray interaction still
+require the Windows release smoke.
+
 ### Progress updates and write amplification (2026-10-06)
 
 Transcript saves compare the actual FTS projection after the parent write has
