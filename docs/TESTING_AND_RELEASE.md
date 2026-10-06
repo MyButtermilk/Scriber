@@ -514,6 +514,11 @@ Web/API/jobs:
 - `tests/test_web_api_reliability.py`
 - `tests/test_web_api_timeouts.py`
 
+Startup recovery tests capture registered tasks directly because completed tasks
+may leave the running-task map before the startup scan returns. They also force
+that ordering while preserving assertions on durable results and avoiding source
+or provider replay.
+
 Performance/packaging:
 
 - `tests/perf/test_hot_path_tracer.py`
