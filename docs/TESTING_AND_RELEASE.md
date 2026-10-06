@@ -143,7 +143,11 @@ zero unobserved `shield`/Future exception contexts.
 HTTP seam: invalid start commands fail before admission; repeated cancellation
 cannot skip cleanup or lease release; and Stop reserves a finalizer before
 native shutdown, commits `finalizing`, opens the worker gate, then delivers the
-pending cancellation.
+pending cancellation. The real SQLite-lock cancellation test observes task
+completion with a bounded `asyncio.wait`, then checks `CancelledError` separately;
+its observer must not inject another cancellation through `wait_for`. The
+ten-second settlement guard permits Windows CI scheduling delays while still
+rejecting stranded work and retaining all lease/finalizer/recorder assertions.
 `tests/api/test_meeting_capture_routes.py` registers the extracted start,
 pause, resume, and stop routes, proves normalization into one immutable start
 command, pins the four-method controller port, and verifies that `create_app`
