@@ -9,6 +9,7 @@ interface SettingsBootstrapData {
 }
 
 interface SettingsBootstrapResources {
+  isCurrent: () => boolean;
   settings: Promise<SettingsResponse>;
   microphones: Promise<MicrophonesResponse>;
   autostart: Promise<AutostartStatus>;
@@ -41,6 +42,7 @@ export function loadSettingsBootstrapResources({
   const microphones = fetchBootstrapJson<MicrophonesResponse>("/api/microphones");
   const autostart = getAutostartStatus().catch(() => ({ enabled: false, available: false }));
   const resources: SettingsBootstrapResources = {
+    isCurrent: () => requestGeneration === bootstrapGeneration,
     settings,
     microphones,
     autostart,

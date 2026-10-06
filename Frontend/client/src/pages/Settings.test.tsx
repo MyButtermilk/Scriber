@@ -77,6 +77,20 @@ it("shows persisted settings before slow devices and autostart, and keeps them a
   expect(shell).toHaveClass("opacity-100");
   expect(view.container.textContent).toContain("Ctrl + Alt + X");
   expect(toast).toHaveBeenCalledTimes(1);
+  expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Failed to load microphones" }));
+});
+
+it("reports only the primary settings error when settings and microphones both fail", async () => {
+  vi.mocked(fetchWithTimeout).mockImplementation(async (url) =>
+    String(url).endsWith("/api/settings")
+      ? new Response("settings failed", { status: 500 })
+      : String(url).endsWith("/api/microphones")
+        ? new Response("devices failed", { status: 500 })
+        : Response.json({ items: [], models: [], available: false, profiles: [] }),
+  );
+  mount();
+  await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
+  expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Failed to load settings" }));
 });
 
 it("ignores a late microphone error after leaving settings", async () => {

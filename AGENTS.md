@@ -331,6 +331,10 @@ Frontend and shell:
   Main and tray also prefetch their bounded initial native backend access during
   module loading. Reuse that startup promise at mount without blocking the
   localized loader; normal health/restart checks must still refresh access.
+  Idle Settings preloading publishes the settings resource independently of
+  microphone discovery. Before writing the query cache, verify the bootstrap
+  generation and unchanged query state so a late preload cannot replace a save
+  or an independent query response, even within the same millisecond.
 - `Frontend/client/src/hooks/use-backend-status.tsx` subscribes to the native
   `backend-status-changed` invalidation before its initial authoritative query.
   Coalesce concurrent checks and retain one follow-up for events received during
@@ -781,6 +785,8 @@ Packaging and scripts:
   initial tray status, bound listener setup, and reject late snapshots after
   newer events. Native unchanged status skips icon/menu/event work; app-wide
   status delivery already reaches the tray and must not be duplicated.
+  A failed or stalled opened-listener registration must still perform the
+  initial shortcut/history read. Dispose timers and late listeners on unmount.
 - Rust registers both live-mic shortcuts and the Meeting shortcut after the
   token-protected backend identity is ready. Fresh installs default to
   `Ctrl+Shift+D` for Live Mic, `Ctrl+Shift+F` for post-processing, and
@@ -2217,9 +2223,14 @@ Already implemented and should not be regressed:
   for a 3,000-event stream; lower that ceiling when work drops, never raise it
   to admit a regression. Measured 2026-10-05 on 6,000 segments: about 2.3x less
   merge time than the former per-event copy-and-sort.
-- Meeting library rows prefetch their detail on pointer enter and keyboard
-  focus with the detail query's own 30-second stale time; never prefetch the
-  selected Meeting or one pending discard.
+- Meeting library rows prefetch detail after 150 ms of sustained pointer or
+  keyboard-focus intent, with the query's own 30-second stale time. Keep one
+  speculative request active, cancel unused owned requests on leave, and retain
+  requests adopted by navigation or observed elsewhere. Never cancel an existing
+  consumer's request or prefetch the selected Meeting or one pending discard.
+  Review matching uses one pass; build the membership set only for active
+  filters and reuse visible rows for timeline matches. Unfiltered previous/next
+  navigation still needs the ordered IDs.
 - Chunked/offloaded upload writes and export/cleanup work where practical.
 - JobStore and latency metrics store connection reuse.
 - App-owned aiohttp provider connection reuse with DNS caching and bounded

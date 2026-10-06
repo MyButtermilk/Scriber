@@ -113,6 +113,7 @@ import {
   reviewTimeRangeBounds,
   type ReviewTimeRange,
 } from "@/lib/meeting-review-timeline";
+import { createMeetingDetailPrefetch } from "@/lib/meeting-detail-prefetch";
 import {
   Dialog,
   DialogContent,
@@ -1460,18 +1461,26 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     selectedCalendarEventId,
   ]);
   const deletingSelectedMeeting = Boolean(selectedId && meetingPendingDelete?.id === selectedId);
-  // Pointer/focus intent prefetch: the detail request overlaps the user's click
-  // instead of starting after navigation. A fresh cache entry is not refetched.
+  const meetingDetailPrefetch = useMemo(
+    () =>
+      createMeetingDetailPrefetch(
+        queryClient,
+        (id, signal) => fetchJson<MeetingDetail>(`/api/meetings/${id}`, signal),
+        MEETING_DETAIL_STALE_TIME_MS,
+      ),
+    [queryClient],
+  );
+  useEffect(() => () => meetingDetailPrefetch.dispose(), [meetingDetailPrefetch]);
+  useEffect(() => {
+    if (selectedId) meetingDetailPrefetch.forget(selectedId, true);
+    if (meetingPendingDelete?.id) meetingDetailPrefetch.forget(meetingPendingDelete.id);
+  }, [meetingDetailPrefetch, meetingPendingDelete?.id, selectedId]);
   const prefetchMeetingDetail = useCallback(
-    (meetingId: string) => {
+    (meetingId: string, source: "pointer" | "focus") => {
       if (!meetingId || meetingId === selectedId || meetingId === meetingPendingDelete?.id) return;
-      void queryClient.prefetchQuery({
-        queryKey: ["/api/meetings", meetingId],
-        queryFn: ({ signal }) => fetchJson<MeetingDetail>(`/api/meetings/${meetingId}`, signal),
-        staleTime: MEETING_DETAIL_STALE_TIME_MS,
-      });
+      meetingDetailPrefetch.enter(meetingId, source);
     },
-    [meetingPendingDelete?.id, queryClient, selectedId],
+    [meetingDetailPrefetch, meetingPendingDelete?.id, selectedId],
   );
   const detailQuery = useQuery<MeetingDetail>({
     queryKey: ["/api/meetings", selectedId],
@@ -2563,12 +2572,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       }),
     [groupedSegments, localeTag, reviewSpeakerId, reviewTimeBounds, transcriptSearch],
   );
-  const reviewMatchIdSet = useMemo(() => new Set(reviewMatchIds), [reviewMatchIds]);
   const reviewFiltersActive = Boolean(transcriptSearch.trim() || reviewSpeakerId || reviewTimeRange !== "all");
+  const reviewMatchIdSet = useMemo(
+    () => (reviewFiltersActive ? new Set(reviewMatchIds) : null),
+    [reviewFiltersActive, reviewMatchIds],
+  );
   const visibleTranscriptSegments = useMemo(
-    () =>
-      reviewFiltersActive ? groupedSegments.filter((segment) => reviewMatchIdSet.has(segment.id)) : groupedSegments,
-    [groupedSegments, reviewFiltersActive, reviewMatchIdSet],
+    () => (reviewMatchIdSet ? groupedSegments.filter((segment) => reviewMatchIdSet.has(segment.id)) : groupedSegments),
+    [groupedSegments, reviewMatchIdSet],
   );
   const reviewMatchIndex = useMemo(
     () => (reviewMatchId ? reviewMatchIds.indexOf(reviewMatchId) : -1),
@@ -2657,9 +2668,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     [liveSegments, playbackMix?.durationMs, playbackMixOriginMs],
   );
   const reviewTimelineMarkers = useMemo(() => {
-    const matchingSegments = reviewFiltersActive
-      ? groupedSegments.filter((segment) => reviewMatchIdSet.has(segment.id))
-      : [];
+    const matchingSegments = reviewFiltersActive ? visibleTranscriptSegments : [];
     const step = Math.max(1, Math.ceil(matchingSegments.length / 120));
     const citationSegmentIds = new Set<string>();
     [analysis?.decisions, analysis?.risks, analysis?.openQuestions].forEach((items) => {
@@ -2697,7 +2706,15 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
           label: t("Cited evidence"),
         })),
     ];
-  }, [analysis, detail?.actionItems, detail?.notes, groupedSegments, reviewFiltersActive, reviewMatchIdSet, t]);
+  }, [
+    analysis,
+    detail?.actionItems,
+    detail?.notes,
+    groupedSegments,
+    reviewFiltersActive,
+    visibleTranscriptSegments,
+    t,
+  ]);
   const canPlaySpeakerSamples =
     hasPlayableAudio && playbackMixEndMs - playbackMixOriginMs >= MEETING_SPEAKER_SAMPLE_MIN_MS;
   const playableSpeakerIds = useMemo(
@@ -3041,9 +3058,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               >
                 <button
                   type="button"
-                  onClick={() => setLocation(`/meetings/${meeting.id}`)}
-                  onPointerEnter={() => prefetchMeetingDetail(meeting.id)}
-                  onFocus={() => prefetchMeetingDetail(meeting.id)}
+                  onClick={() => {
+                    meetingDetailPrefetch.forget(meeting.id, true);
+                    setLocation(`/meetings/${meeting.id}`);
+                  }}
+                  onPointerEnter={() => prefetchMeetingDetail(meeting.id, "pointer")}
+                  onPointerLeave={() => meetingDetailPrefetch.leave(meeting.id, "pointer")}
+                  onFocus={() => prefetchMeetingDetail(meeting.id, "focus")}
+                  onBlur={() => meetingDetailPrefetch.leave(meeting.id, "focus")}
                   className="min-w-0 flex-1 rounded-[10px] px-2 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-primary"
                 >
                   <div className="flex items-center justify-between gap-2">

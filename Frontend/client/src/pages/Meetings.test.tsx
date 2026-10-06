@@ -259,7 +259,8 @@ it("Meeting intent prefetch deduplicates pointer/focus and reuses fresh detail d
   const row = screen.getByText(other.title).closest("button")!;
   fireEvent.pointerEnter(row);
   fireEvent.focus(row);
-  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(fetch).not.toHaveBeenCalled();
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
   expect(String(fetch.mock.calls[0]?.[0])).toContain("/api/meetings/meeting-2");
   await act(async () => {
     finish(new Response(JSON.stringify(other)));
@@ -268,4 +269,38 @@ it("Meeting intent prefetch deduplicates pointer/focus and reuses fresh detail d
   fireEvent.focus(row);
   expect(fetch).toHaveBeenCalledTimes(1);
   expect(client.getQueryData(["/api/meetings", other.id])).toEqual(other);
+});
+
+it("does not fetch details when the pointer crosses ten meeting rows without dwelling", async () => {
+  const items = Array.from({ length: 10 }, (_, i) => meeting(`other-${i}`));
+  client.setQueryData(MEETING_HISTORY_QUERY_KEY, {
+    pages: [{ items, total: items.length, offset: 0, activeMeeting: null }],
+    pageParams: [0],
+  });
+  const fetch = vi.fn(async () => Response.json(items[0]));
+  vi.stubGlobal("fetch", fetch);
+  renderMeeting();
+  for (const item of items) {
+    const row = screen.getByText(item.title).closest("button")!;
+    fireEvent.pointerEnter(row);
+    fireEvent.pointerLeave(row);
+  }
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 180));
+  });
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it("keeps unfiltered match navigation and restores all rows after clearing a filter", () => {
+  renderMeeting();
+  observed.scrollToIndex.mockClear();
+  fireEvent.click(screen.getByRole("button", { name: "Next match" }));
+  expect(observed.scrollToIndex).toHaveBeenCalledWith(1, { align: "center" });
+  const search = screen.getByTestId("meeting-review-search");
+  fireEvent.change(search, { target: { value: "passage 1" } });
+  expect(screen.getByTestId("meeting-transcript-segment-segment-1")).toHaveTextContent("Review passage 1");
+  expect(screen.queryByTestId("meeting-transcript-segment-segment-0")).not.toBeInTheDocument();
+  fireEvent.change(search, { target: { value: "" } });
+  expect(screen.getByText("Review passage 0")).toBeInTheDocument();
+  expect(screen.getByText("Review passage 2")).toBeInTheDocument();
 });

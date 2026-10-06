@@ -539,13 +539,17 @@ export default function TrayPanel() {
     if (!backendReady) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
     const refresh = () => {
+      clearTimeout(fallbackTimer);
+      if (disposed) return;
       clearTimeout(blurTimerRef.current);
       setError("");
       void loadRegisteredShortcuts();
       void loadRecentTranscripts();
     };
     if (isTauriRuntime()) {
+      fallbackTimer = setTimeout(refresh, 2_000);
       // Listen before the initial read: the first show can precede WebView
       // startup, while every subsequent show (even already focused) emits this.
       void listen("scriber-tray-opened", refresh)
@@ -557,11 +561,12 @@ export default function TrayPanel() {
           }
         })
         .catch(() => {
-          if (!disposed) setRecentError(t("Could not load recent transcripts."));
+          refresh();
         });
     } else refresh();
     return () => {
       disposed = true;
+      clearTimeout(fallbackTimer);
       unlisten?.();
       shortcutLoadRequestRef.current += 1;
       cancelRecentRequest();

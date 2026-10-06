@@ -252,6 +252,15 @@ scroll work, changed row keys, independent idle preloads, and cancellation.
 Summary contents tests additionally bound heading layout reads and verify
 scroll jumps, layout shifts, table fallbacks and navigation targets.
 
+Review follow-up: real-bootstrap preload tests delay microphone/settings reads
+across saves and invalidation, including independent same-timestamp query writes.
+Settings tests distinguish device-only failure from combined failure. Tray tests
+exercise failed/stalled opened-listener setup and cleanup. Meeting prefetch tests
+use the real QueryClient to check dwell, cancellation ownership, navigation,
+observed queries, stale responses and cache reuse; a real-page fixture crosses
+ten rows without starting detail requests. Review search checks 216 combinations
+against the preserved filter reference and verifies unfiltered navigation.
+
 Settings and logging UI: `npm run test:components` includes deferred-resource
 and real-page Settings tests for independent loading, device failure, unmount,
 request sharing, expiry and stale-cache races. The 1,200-row Debug Console test

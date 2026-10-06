@@ -388,6 +388,45 @@ it("falls back to a status read when listener registration fails", async () => {
   expect(mocks.status).toHaveBeenCalledTimes(1);
 });
 
+it("loads shortcuts and history even when the opened listener fails", async () => {
+  mocks.listenSetup.mockImplementation(async (event) => {
+    if (event === "scriber-tray-opened") throw new Error("listener unavailable");
+  });
+  mocks.fetch.mockResolvedValue(response([item("fresh", "Fresh text")]));
+  const { default: TrayPanel } = await import("./TrayPanel");
+  const view = render(<TrayPanel />);
+  await view.findByText(/Ctrl.*F9/);
+  await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(1));
+  fireEvent.click(view.getByRole("button", { name: /Recent Transcripts/ }));
+  await view.findByRole("button", { name: /Fresh text/ });
+  expect(mocks.hotkeys).toHaveBeenCalledTimes(1);
+});
+
+it("bounds a stalled opened listener and cleans it up without a late refresh", async () => {
+  let finishListener!: () => void;
+  mocks.listenSetup.mockImplementation((event) =>
+    event === "scriber-tray-opened"
+      ? new Promise<void>((resolve) => {
+          finishListener = resolve;
+        })
+      : Promise.resolve(),
+  );
+  const { default: TrayPanel } = await import("./TrayPanel");
+  vi.useFakeTimers();
+  const view = render(<TrayPanel />);
+  await act(async () => {});
+  await act(async () => vi.advanceTimersByTimeAsync(1999));
+  expect(mocks.hotkeys).not.toHaveBeenCalled();
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  expect(mocks.hotkeys).toHaveBeenCalledTimes(1);
+  expect(mocks.fetch).toHaveBeenCalledTimes(1);
+  view.unmount();
+  await act(async () => finishListener());
+  expect(mocks.cleanups).toContain("scriber-tray-opened");
+  expect(mocks.hotkeys).toHaveBeenCalledTimes(1);
+  expect(mocks.fetch).toHaveBeenCalledTimes(1);
+});
+
 it("bounds stalled listener setup and cleans a listener arriving after unmount", async () => {
   let finishListener!: () => void;
   mocks.listenSetup.mockImplementation((event) =>

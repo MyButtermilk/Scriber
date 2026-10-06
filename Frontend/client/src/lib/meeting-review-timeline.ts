@@ -113,15 +113,20 @@ export function createReviewPlaybackLookup(segments: readonly PlaybackSegment[])
 
 export function matchingReviewSegmentIds(segments: readonly ReviewTimelineSegment[], search: ReviewSearch): string[] {
   const query = search.query.trim().toLocaleLowerCase();
-  return segments
-    .filter((segment) => !search.speakerId || segment.speakerId === search.speakerId)
-    .filter((segment) => search.fromMs == null || segment.endMs > search.fromMs)
-    .filter((segment) => search.toMs == null || segment.startMs < search.toMs)
-    .filter(
-      (segment) =>
-        !query || segment.text.toLocaleLowerCase().includes(query) || segment.label.toLocaleLowerCase().includes(query),
+  const matches: string[] = [];
+  for (const segment of segments) {
+    if (search.speakerId && segment.speakerId !== search.speakerId) continue;
+    if (search.fromMs != null && !(segment.endMs > search.fromMs)) continue;
+    if (search.toMs != null && !(segment.startMs < search.toMs)) continue;
+    if (
+      query &&
+      !segment.text.toLocaleLowerCase().includes(query) &&
+      !segment.label.toLocaleLowerCase().includes(query)
     )
-    .map((segment) => segment.id);
+      continue;
+    matches.push(segment.id);
+  }
+  return matches;
 }
 
 export function nextReviewMatchId(

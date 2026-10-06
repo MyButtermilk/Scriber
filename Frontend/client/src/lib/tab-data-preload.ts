@@ -6,7 +6,7 @@ import {
   type TranscriptHistoryPage,
   type TranscriptHistoryType,
 } from "@/hooks/use-transcript-history-query";
-import { loadSettingsBootstrap } from "@/lib/settings-bootstrap";
+import { loadSettingsBootstrapResources } from "@/lib/settings-bootstrap";
 import type { TranscriptHistoryItem } from "@/lib/api-types";
 import type { MeetingsResponse } from "@/lib/api-types";
 import { ACTIVE_MEETING_QUERY_PATH } from "@/lib/meeting-cache";
@@ -44,9 +44,14 @@ async function warmPrimaryTabData(queryClient: QueryClient, isCancelled: () => b
 }
 
 async function warmSettings(queryClient: QueryClient, isCancelled: () => boolean) {
-  const bootstrap = await loadSettingsBootstrap().catch(() => null);
-  if (bootstrap && !isCancelled()) {
-    queryClient.setQueryData(["/api/settings"], bootstrap.settings);
+  const queryKey = ["/api/settings"];
+  const initialState = queryClient.getQueryState(queryKey);
+  const resources = loadSettingsBootstrapResources();
+  const settings = await resources.settings.catch(() => null);
+  // A save, invalidation, or independent query response may have superseded
+  // this read. Compare state identity, not millisecond timestamps.
+  if (settings && !isCancelled() && resources.isCurrent() && queryClient.getQueryState(queryKey) === initialState) {
+    queryClient.setQueryData(queryKey, settings);
   }
 }
 

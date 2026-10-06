@@ -79,6 +79,37 @@ test("review search keeps live-only meeting text searchable before a canonical t
   assert.deepEqual(matchingReviewSegmentIds([segments[0]], { query: "preview" }), ["live-preview"]);
 });
 
+test("single-pass review filtering preserves reference order and every filter combination", () => {
+  const rows = Array.from({ length: 240 }, (_, i) => ({
+    ...segments[i % segments.length],
+    id: String(i),
+    startMs: i * 500,
+    endMs: i * 500 + 1000,
+    text: i % 3 ? "Budget für März" : "Launch decision",
+  }));
+  for (const query of ["", "   ", "BUDGET", "märz", "speaker b", "missing"]) {
+    for (const speakerId of [undefined, "speaker-a", "speaker-b", "missing"]) {
+      for (const fromMs of [undefined, 1000, 5000]) {
+        for (const toMs of [undefined, 5000, 10_000]) {
+          const normalized = query.trim().toLocaleLowerCase();
+          const expected = rows
+            .filter((row) => !speakerId || row.speakerId === speakerId)
+            .filter((row) => fromMs == null || row.endMs > fromMs)
+            .filter((row) => toMs == null || row.startMs < toMs)
+            .filter(
+              (row) =>
+                !normalized ||
+                row.text.toLocaleLowerCase().includes(normalized) ||
+                row.label.toLocaleLowerCase().includes(normalized),
+            )
+            .map((row) => row.id);
+          assert.deepEqual(matchingReviewSegmentIds(rows, { query, speakerId, fromMs, toMs }), expected);
+        }
+      }
+    }
+  }
+});
+
 test("indexed playback preserves priorities, stable ties, end boundaries and backward seeks", () => {
   const input = [
     ...segments,

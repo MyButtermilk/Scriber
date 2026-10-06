@@ -2843,10 +2843,14 @@ export default function Settings() {
         }
         if (!cancelled) setInputDevices(microphonePayload.devices || []);
       })
-      .catch((error: unknown) => {
+      .catch(async (error: unknown) => {
+        // A primary settings failure already has its own error presentation.
+        // Device discovery must not add a duplicate or misleading settings toast.
+        const settings = await resources.settings.catch(() => null);
+        if (!settings) return;
         if (cancelled) return;
         toast({
-          title: translateNow("Failed to load settings"),
+          title: translateNow("Failed to load microphones"),
           description: localizedSettingsErrorNow(error, "The requested settings action failed."),
           duration: 4000,
         });

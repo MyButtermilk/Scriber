@@ -115,6 +115,33 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 ## Implemented Performance Work
 
+### Review follow-up: stale Settings and speculative work (2026-10-06)
+
+Idle Settings preload now awaits only the settings resource. Its publication
+requires both a current bootstrap generation and the exact unchanged query
+state observed before the read. This closes the pre-existing race where a save
+was replaced by old settings after slow microphone discovery. State identity
+also protects independent writes sharing a millisecond timestamp. Microphone
+failures have a device-specific localized toast; simultaneous primary Settings
+failure produces only the primary error. Failed/stalled tray-opened listener
+setup has a bounded initial shortcut/history fallback with unmount cleanup.
+
+Meeting detail prefetch requires 150 ms of pointer/focus dwell, keeps only the
+latest candidate and one speculative request, and cancels unused owned requests.
+Navigation and other query observers retain ownership of their requests. The
+component fixture crossing ten rows without dwelling now makes zero requests;
+focused tests cover cancellation, ignored aborts, cache reuse and navigation.
+Review filtering performs one traversal instead of four filters plus a map,
+avoids the unfiltered membership set, and reuses filtered rows for timeline
+markers. Ordered IDs remain available for unfiltered previous/next navigation.
+
+The submitted review's synthetic timings were not reproduced on an installed
+Windows build and are not treated as startup KPIs. Large-database cold-cache
+index migration timing and React commit profiling for long live Meetings remain
+measurement tasks. The proposed concurrent overlay-creation race is not
+established: hotkey and shell-IPC overlay creation dispatch onto the same UI
+thread as setup. No speculative migration or overlay lifecycle changes were made.
+
 ### App startup and tray work (2026-10-06)
 
 Main and tray WebViews request initial native backend access alongside locale

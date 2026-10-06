@@ -3502,7 +3502,10 @@ async def exercise_meeting_end_to_end(
     ):
         await asyncio.sleep(0.1)
     if not {"action-item", "speaker", "note"}.issubset(backend.meeting_requests):
-        raise RuntimeError(f"Meeting edits did not reach backend: {backend.meeting_requests}")
+        state = await cdp.evaluate(
+            "({errors: window.__scriberSmoke, notes: [...document.querySelectorAll('[data-testid=meeting-workspace-note]')].map(n => ({value: n.value, visible: !!n.getClientRects().length})), text: document.body.innerText.slice(-2000)})"
+        )
+        raise RuntimeError(f"Meeting edits did not reach backend: {backend.meeting_requests}; browser={state}")
 
     await click_button("Ask meeting")
     chat_prepared = await cdp.evaluate(

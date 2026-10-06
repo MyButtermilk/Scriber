@@ -263,6 +263,7 @@ export const settingsTranslations = {
   "Outlook disconnected": "Outlook getrennt",
   "Outlook action failed": "Outlook-Aktion fehlgeschlagen",
   "Failed to load settings": "Einstellungen konnten nicht geladen werden",
+  "Failed to load microphones": "Mikrofone konnten nicht geladen werden",
   "Could not load settings": "Einstellungen konnten nicht geladen werden",
   "The requested settings action failed.": "Die angeforderte Einstellungsaktion ist fehlgeschlagen.",
   "Save failed": "Speichern fehlgeschlagen",
