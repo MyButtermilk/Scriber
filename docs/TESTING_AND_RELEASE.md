@@ -283,6 +283,26 @@ tests/runtime/test_debug_logs.py tests/test_logging_opt_out.py
 tests/runtime/test_diagnostic_preferences.py -q`; Windows lock-specific cases
 run on Windows CI.
 
+Typing and streaming isolation: Settings tests type into custom vocabulary, both
+prompts and a custom OpenRouter model code. They require zero page-wide tooltip
+renders (the former page rendered 22 per keystroke) and check debounced and blur
+saves of the newest text, prompt reset, localized-default replacement and code
+canonicalization. Live Mic tests stream 20 interim events, clock ticks and a
+final without rendering the history toolbar, and type a history search without
+rendering the recording stage. Notes tests type and save without rendering the
+autosave owner and keep the restart-on-edit delay; the Meetings chat test allows
+one composer render per keystroke and checks view persistence, sending and
+clearing. For real-browser timing,
+build baseline and candidate with `npx vite build --outDir <dir>` and run
+`python scripts/diagnostics/benchmark_frontend_interactions.py --dist <dir>
+--scenario <name>` with identical arguments. It serves that build against the
+synthetic smoke backend in headless Chromium and reports in-page and CDP script
+time per event, plus commits and committed fiber changes from a separate
+instrumented run. Fiber props/state identity changes approximate rendering
+work; they are not exact render calls or DOM mutations. In-page elapsed time
+measures event processing, not time until displayed pixels; CDP reports script
+CPU time. These are informational browser measurements, not WebView2 latency.
+
 Startup and tray: the component suite covers native access prefetch before
 module completion, one shared bounded startup lookup, browser/overlay bypass,
 and locale-before-render. Tray tests bound hotkey reads during status bursts,

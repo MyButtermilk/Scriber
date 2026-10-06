@@ -10,6 +10,7 @@ import Meetings from "./Meetings";
 const observed = vi.hoisted(() => ({
   transcriptRenders: 0,
   rowFormats: 0,
+  i18nReads: 0,
   itemKeys: [] as Array<(index: number) => string | number>,
   scrollToIndex: vi.fn(),
   apiRequest: vi.fn(),
@@ -21,6 +22,8 @@ vi.mock("@/i18n", async (importOriginal) => {
   return {
     ...actual,
     useI18n: () => {
+      // Every rendered Meetings component that shows text reads translations.
+      observed.i18nReads++;
       const context = actual.useI18n();
       let formatNumber = formatters.get(context.formatNumber);
       if (!formatNumber) {
@@ -326,6 +329,39 @@ it("keeps unfiltered match navigation and restores all rows after clearing a fil
   fireEvent.change(search, { target: { value: "" } });
   expect(screen.getByText("Review passage 0")).toBeInTheDocument();
   expect(screen.getByText("Review passage 2")).toBeInTheDocument();
+});
+
+it("typing a meeting question renders only the composer and keeps the draft across views", async () => {
+  renderMeeting();
+  fireEvent.click(screen.getByTestId("meeting-workspace-tab-chat"));
+  const questionField = () => screen.getByPlaceholderText<HTMLTextAreaElement>("What did we decide about the launch?");
+  const askButton = () =>
+    screen.getAllByRole("button", { name: "Ask meeting" }).find((button) => !button.dataset.testid)!;
+  expect(askButton()).toBeDisabled();
+  observed.i18nReads = 0;
+
+  let question = "";
+  for (const character of "What did we decide?") {
+    question += character;
+    fireEvent.change(questionField(), { target: { value: question } });
+  }
+
+  expect(questionField()).toHaveValue(question);
+  expect(askButton()).toBeEnabled();
+  // One composer render per keystroke; the whole Meetings page rendered before.
+  expect(observed.i18nReads).toBe(question.length);
+  fireEvent.click(screen.getByTestId("meeting-workspace-tab-notes"));
+  fireEvent.click(screen.getByTestId("meeting-workspace-tab-chat"));
+  expect(questionField()).toHaveValue(question);
+
+  observed.apiRequest.mockResolvedValueOnce(
+    new Response(JSON.stringify({ message: { content: "Launch moves to Friday.", citations: [] } })),
+  );
+  fireEvent.click(askButton());
+  expect(await screen.findByText("Launch moves to Friday.")).toBeInTheDocument();
+  expect(observed.apiRequest).toHaveBeenCalledWith("POST", "/api/meetings/meeting-1/chat", { question });
+  expect(questionField()).toHaveValue("");
+  expect(askButton()).toBeDisabled();
 });
 
 it("typing a correction renders only its row, and Escape retains the original text", () => {

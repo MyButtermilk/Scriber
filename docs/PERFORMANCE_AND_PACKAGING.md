@@ -115,6 +115,71 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 ## Implemented Performance Work
 
+### Typing and live-stream render isolation (2026-10-06)
+
+Frequently changing text no longer re-renders whole pages. Settings keeps
+custom vocabulary, the summary and live-cleanup prompts, and both custom
+OpenRouter model codes in `lib/text-draft-store.ts` stores; a keystroke updates
+only the subscribed field. Loads, resets, rollback and canonicalization write
+the store, while blur saves and "Use" read it. Vocabulary autosave keeps its
+650-ms debounce and the localized-default prompt replacement still rechecks
+every change, now through store subscriptions. Live Mic interim/final text,
+status, warnings and the elapsed clock live in the memoized `LiveMicStage`;
+history query, search and cards stay in the page. The Meetings page still owns
+each note queue, pagehide flush and autosave delay, but only
+`MeetingNotesEditor` subscribes to the draft. The chat question is a page-owned
+store read by `MeetingChatComposer`, so it survives view switches and is
+cleared on Meeting change or a successful answer as before.
+
+Component tests use exact spy counts and fail against the previous code:
+
+| Interaction | Before | After |
+| --- | ---: | ---: |
+| Settings-wide tooltip renders, 24 vocabulary keystrokes | 528 | 0 |
+| Settings-wide tooltip renders, 48 prompt keystrokes | 1,056 | 0 |
+| Settings-wide tooltip renders, 11 custom-model keystrokes | 242 | 0 |
+| Live Mic history-toolbar renders, 20 interim events + clock + final | 22 | 0 |
+| Live Mic stage renders, 13 history-search keystrokes | 13 | 0 |
+| Notes autosave-owner renders, 24 keystrokes | 24 | 0 |
+| Meetings `useI18n` calls, 19 question keystrokes | 114 | 19 |
+
+Informational Chromium timings used production builds of `79b812a` and this
+change in headless Chromium 151 on a Linux 5-vCPU Xeon container: five runs of
+60 events, median of run medians. "In-page" spans synthetic input or WebSocket
+dispatch through handlers, the React commit and the following task; it measures
+input/event processing, not time until pixels are displayed. "Script CPU" is
+CDP `ScriptDuration` over the window divided by events, including harness
+overhead. Fiber changes come from a separate instrumented run and count
+committed fibers whose props/state identity changed. They approximate
+re-rendered work; they are not exact render invocations or DOM mutations.
+
+| Event | In-page | Script CPU | Component fibers | Host fibers |
+| --- | ---: | ---: | ---: | ---: |
+| Settings vocabulary keystroke | 21.7 → 0.7 ms | 18.95 → 0.50 ms | 2,051 → 2.0 | 2,130 → 1.0 |
+| Live Mic interim transcript | 2.1 → 0.7 ms | 2.61 → 0.91 ms | 59.0 → 1.0 | 150.5 → 21.4 |
+| Live-Meeting note keystroke | 3.2 → 0.8 ms | 3.61 → 0.74 ms | 88.2 → 5.2 | 203.5 → 6.5 |
+
+Settings run medians varied from 17.65 to 41.6 ms before and 0.5 to 1.9 ms
+after. The Meeting fixture had 400 live segments. Exploratory three-run checks
+showed the same 2,051 component fiber changes per keystroke for the summary
+prompt and a custom model field before, and two to three afterwards. The chat
+composer has deterministic coverage only. Setup adds one small store per field
+and one subscription per mounted field; no network, storage or cache behavior
+changed. In paired dev-server smoke runs the Settings tab transition took
+1,669.4 ms on the baseline and 1,473.0 ms on this change; one earlier
+full-route candidate run took 2,569.7 ms, above the 2,000-ms smoke budget.
+The paired repeat passed without changing that budget, but does not establish
+the cause of the outlier. These are not installed WebView2 or whole-app latency
+results.
+
+Remaining measured candidates: Live Mic history search still re-renders the
+history section (2.8 → 2.2 ms, about 60 → 57 component fiber changes per
+keystroke). API keys, Azure fields, speaker rename, the voice-enrollment name
+and slider drags still re-render all of Settings. YouTube/File progress events
+refetch every loaded history page; with four pages loaded, 20 synthetic
+progress events caused 80 page requests. That path needs an exact row-patch
+contract before it can change.
+
 ### Live Meeting projection and row rendering (2026-10-06)
 
 Meeting transcript rows now have their own memo boundaries. Editing passes

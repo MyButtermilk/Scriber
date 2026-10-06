@@ -95,6 +95,27 @@ function NotesHarness({
   );
 }
 
+function CountingNotesOwner({ renders, saveNote }: { renders: { count: number }; saveNote: SaveMeetingNote }) {
+  // Stands in for the Meetings page, which owns the hook and renders the editor.
+  renders.count += 1;
+  const generationRef = useRef(generationSequence());
+  const autosave = useMeetingNotesAutosave({
+    debounceMs: 700,
+    initialBody: "",
+    meetingId: "meeting-a",
+    nextWriteGeneration: generationRef.current,
+    onError: () => undefined,
+    onSaved: () => undefined,
+    saveNote,
+    writerId: TEST_WRITER_ID,
+  });
+  return (
+    <LocaleProvider>
+      <MeetingNotesEditor autosave={autosave} />
+    </LocaleProvider>
+  );
+}
+
 async function advanceAutosave(): Promise<void> {
   await act(async () => {
     vi.advanceTimersByTime(700);
@@ -406,6 +427,63 @@ describe("MeetingNotesEditor autosave", () => {
     expect(new TextEncoder().encode(String(requestInit?.body)).byteLength).toBeGreaterThan(
       MEETING_NOTE_KEEPALIVE_PAYLOAD_MAX_BYTES,
     );
+  });
+
+  it("typing and saving notes render only the editor, not the autosave owner", async () => {
+    const saveNote = vi.fn<SaveMeetingNote>(async (_meetingId, body, writeOrder) =>
+      note(body, { generation: writeOrder.generation, applied: true }),
+    );
+    const renders = { count: 0 };
+    render(<CountingNotesOwner renders={renders} saveNote={saveNote} />);
+    const editor = screen.getByRole("textbox", { name: "Live notes" });
+    renders.count = 0;
+
+    let body = "";
+    for (const character of "Decision: ship on Friday") {
+      body += character;
+      fireEvent.change(editor, { target: { value: body } });
+    }
+    expect(editor).toHaveValue(body);
+    expect(screen.getByLabelText("Unsaved changes")).toBeInTheDocument();
+    // The Meetings page owns this hook; it previously re-rendered per keystroke.
+    expect(renders.count).toBe(0);
+
+    await advanceAutosave();
+    expect(saveNote).toHaveBeenCalledTimes(1);
+    expect(saveNote).toHaveBeenLastCalledWith("meeting-a", body, { writerId: TEST_WRITER_ID, generation: 1 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByLabelText("Notes autosave and AI regeneration never overwrites them.")).toBeInTheDocument();
+    expect(renders.count).toBe(0);
+  });
+
+  it("restarts the autosave delay on each edit and saves only the newest text", async () => {
+    const saveNote = vi.fn<SaveMeetingNote>(async (_meetingId, body, writeOrder) =>
+      note(body, { generation: writeOrder.generation, applied: true }),
+    );
+    render(<NotesHarness saveNote={saveNote} />);
+    const editor = screen.getByRole("textbox", { name: "Live notes" });
+
+    fireEvent.change(editor, { target: { value: "a" } });
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    fireEvent.change(editor, { target: { value: "ab" } });
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(saveNote).not.toHaveBeenCalled();
+    fireEvent.change(editor, { target: { value: "a" } });
+    fireEvent.change(editor, { target: { value: "ab" } });
+    await act(async () => {
+      vi.advanceTimersByTime(699);
+    });
+    expect(saveNote).not.toHaveBeenCalled();
+    await advanceAutosave();
+    expect(saveNote).toHaveBeenCalledTimes(1);
+    expect(saveNote).toHaveBeenLastCalledWith("meeting-a", "ab", { writerId: TEST_WRITER_ID, generation: 1 });
   });
 
   it("keeps a failed draft dirty and retries the latest body", async () => {

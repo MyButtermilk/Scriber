@@ -2183,6 +2183,22 @@ Already implemented and should not be regressed:
   native autostart. Preserve shared bootstrap requests, cache expiry, generation
   guards, and in-flight detachment on invalidation; late peripheral results must
   not overwrite user edits or notify after unmount.
+- Settings keeps custom vocabulary, the summary and live-cleanup prompts, and
+  both custom OpenRouter model codes in `lib/text-draft-store.ts` stores, not
+  page state. A keystroke renders only its field. Loads, resets, rollback and
+  canonicalization write the store; blur saves and "Use" read it. Vocabulary
+  autosave and localized-default prompt replacement subscribe to their store
+  with the former debounce/recheck semantics. Tests require zero page-wide
+  tooltip renders while typing.
+- Live Mic interim text, elapsed time, status and warnings stay inside the
+  memoized `LiveMicStage`; history query, search and cards stay in the page.
+  The stage receives only the history refresh callback for a finished session.
+- The Meetings page owns each note queue, pagehide flush and autosave delay
+  without subscribing to drafts; `MeetingNotesEditor` subscribes through
+  `useMeetingNotesAutosaveSnapshot`. Restart the delay only when draft text or
+  dirtiness changes, as the former render-driven effect did. The page-owned
+  chat question is a draft store read by `MeetingChatComposer`; Meeting
+  switches and successful answers still clear it, view switches keep it.
 - Meeting transcript rows keep separate memo boundaries. Pass draft/saving
   state only to the affected row, and keep playback callbacks independent of
   unrelated detail changes. The page-local display projector consumes immutable

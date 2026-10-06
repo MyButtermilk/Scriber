@@ -28,7 +28,7 @@ export type SaveMeetingNote = (
   writeOrder: MeetingNoteWriteOrder,
 ) => Promise<MeetingNote>;
 
-interface MeetingNotesAutosaveSnapshot {
+export interface MeetingNotesAutosaveSnapshot {
   body: string;
   error: Error | null;
   isDirty: boolean;
@@ -58,9 +58,16 @@ export interface UseMeetingNotesAutosaveOptions {
   writerId?: string;
 }
 
-export interface UseMeetingNotesAutosaveResult extends MeetingNotesAutosaveSnapshot {
+/**
+ * Stable per-Meeting autosave handle. The owner (the Meetings page) does not
+ * subscribe to draft changes; editors read them with
+ * `useMeetingNotesAutosaveSnapshot`, so a keystroke renders only the editor.
+ */
+export interface UseMeetingNotesAutosaveResult {
+  getSnapshot: () => MeetingNotesAutosaveSnapshot;
   retry: () => void;
   setBody: (body: string) => void;
+  subscribe: (listener: () => void) => () => void;
 }
 
 function utf8ByteLength(value: string): number {
@@ -606,8 +613,6 @@ export function useMeetingNotesAutosave({
     writerId: stableWriterId.current,
   });
 
-  const snapshot = useSyncExternalStore(queue.subscribe, queue.getSnapshot, queue.getSnapshot);
-
   useEffect(() => {
     queue.hydrate(initialBody);
   }, [initialBody, queue]);
@@ -631,10 +636,24 @@ export function useMeetingNotesAutosave({
   }, [queue]);
 
   useEffect(() => {
-    if (!snapshot.isDirty) return;
-    const handle = window.setTimeout(queue.requestSave, debounceMs);
-    return () => window.clearTimeout(handle);
-  }, [debounceMs, queue, snapshot.body, snapshot.isDirty]);
+    // Restart the delay whenever the draft text or dirtiness changes, exactly
+    // as a render-driven effect would, but without rendering the owner.
+    let handle: number | null = null;
+    let scheduledFor: Pick<MeetingNotesAutosaveSnapshot, "body" | "isDirty"> | null = null;
+    const schedule = () => {
+      const snapshot = queue.getSnapshot();
+      if (scheduledFor && scheduledFor.body === snapshot.body && scheduledFor.isDirty === snapshot.isDirty) return;
+      scheduledFor = { body: snapshot.body, isDirty: snapshot.isDirty };
+      if (handle !== null) window.clearTimeout(handle);
+      handle = snapshot.isDirty ? window.setTimeout(queue.requestSave, debounceMs) : null;
+    };
+    schedule();
+    const unsubscribe = queue.subscribe(schedule);
+    return () => {
+      unsubscribe();
+      if (handle !== null) window.clearTimeout(handle);
+    };
+  }, [debounceMs, queue]);
 
   const setBody = useCallback(
     (body: string) => {
@@ -646,9 +665,12 @@ export function useMeetingNotesAutosave({
     queue.requestSave();
   }, [queue]);
 
-  return {
-    ...snapshot,
-    retry,
-    setBody,
-  };
+  return useMemo(
+    () => ({ getSnapshot: queue.getSnapshot, retry, setBody, subscribe: queue.subscribe }),
+    [queue, retry, setBody],
+  );
+}
+
+export function useMeetingNotesAutosaveSnapshot(autosave: UseMeetingNotesAutosaveResult): MeetingNotesAutosaveSnapshot {
+  return useSyncExternalStore(autosave.subscribe, autosave.getSnapshot, autosave.getSnapshot);
 }

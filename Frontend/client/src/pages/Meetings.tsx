@@ -38,6 +38,7 @@ import {
   X,
 } from "lucide-react";
 import { apiUrl } from "@/lib/backend";
+import { type TextDraftStore, useTextDraft, useTextDraftStore } from "@/lib/text-draft-store";
 import { apiRequest, OUTLOOK_SYNC_REQUEST_TIMEOUT_MS } from "@/lib/queryClient";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import {
@@ -1149,6 +1150,34 @@ const MeetingLevelMeter = memo(function MeetingLevelMeter({
   );
 });
 
+// The page owns the question so it survives view switches; typing renders only this composer.
+function MeetingChatComposer({
+  store,
+  pending,
+  onAsk,
+}: {
+  store: TextDraftStore;
+  pending: boolean;
+  onAsk: (question: string) => void;
+}) {
+  const { t } = useI18n();
+  const question = useTextDraft(store);
+  return (
+    <>
+      <Textarea
+        value={question}
+        onChange={(event) => store.set(event.target.value)}
+        placeholder={t("What did we decide about the launch?")}
+        rows={3}
+      />
+      <Button disabled={!question.trim() || pending} onClick={() => onAsk(question)}>
+        {pending && <WavePhysicsLoader className="mr-2" size="inline" />}
+        {t("Ask meeting")}
+      </Button>
+    </>
+  );
+}
+
 const MeetingWorkspaceTabs = memo(function MeetingWorkspaceTabs({
   value,
   onChange,
@@ -1251,7 +1280,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const calendarSelectionInitializedRef = useRef(false);
   const selectedCalendarSubjectRef = useRef("");
   const [workspaceView, setWorkspaceView] = useState<MeetingWorkspaceView>("transcript");
-  const [chatQuestion, setChatQuestion] = useState("");
+  const chatQuestionStore = useTextDraftStore();
   const [chatAnswer, setChatAnswer] = useState<{ content: string; citations: string[] } | null>(null);
   const audioLevelsRef = useRef({ microphone: 0, system: 0 });
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -1602,13 +1631,13 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     savedVoicePreviewRef.current?.pause();
     savedVoicePreviewProfileIdRef.current = "";
     audioRef.current?.pause();
-    setChatQuestion("");
+    chatQuestionStore.set("");
     setChatAnswer(null);
     setTranscriptSearch("");
     setRetryFinalProvider("");
     setEditingMeetingTitle(false);
     setMeetingTitleDraft("");
-  }, [selectedId]);
+  }, [chatQuestionStore, selectedId]);
 
   useEffect(
     () => () => {
@@ -2466,7 +2495,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     onSuccess: (payload, variables) => {
       if (variables.id !== selectedId) return;
       setChatAnswer(payload.message);
-      setChatQuestion("");
+      chatQuestionStore.set("");
     },
     onError: (error, variables) => {
       if (variables.id === selectedId) {
@@ -4291,19 +4320,11 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                               )}
                             </div>
                           )}
-                          <Textarea
-                            value={chatQuestion}
-                            onChange={(event) => setChatQuestion(event.target.value)}
-                            placeholder={t("What did we decide about the launch?")}
-                            rows={3}
+                          <MeetingChatComposer
+                            store={chatQuestionStore}
+                            pending={chatMutation.isPending}
+                            onAsk={(question) => chatMutation.mutate({ id: detail.id, question })}
                           />
-                          <Button
-                            disabled={!chatQuestion.trim() || chatMutation.isPending}
-                            onClick={() => chatMutation.mutate({ id: detail.id, question: chatQuestion })}
-                          >
-                            {chatMutation.isPending && <WavePhysicsLoader className="mr-2" size="inline" />}
-                            {t("Ask meeting")}
-                          </Button>
                         </div>
                       ) : workspaceView === "notes" ? (
                         <div className="max-w-2xl">
