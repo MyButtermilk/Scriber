@@ -115,6 +115,35 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 ## Implemented Performance Work
 
+### Live Meeting projection and row rendering (2026-10-06)
+
+Meeting transcript rows now have their own memo boundaries. Editing passes
+the draft only to the active row, and playback callbacks depend on the Meeting
+identity and audio assets rather than every detail update. Unchanged segment
+display objects survive live updates. A page-local projector checks unchanged
+array positions first and uses weak segment keys for reordered rows; it resolves
+labels again when speaker metadata or locale changes. Immutable query snapshots
+remain authoritative for text, timing, edits and live/canonical revisions.
+
+Deterministic component tests reproduce the former unnecessary work:
+
+| Interaction with three visible rows | Before | After |
+| --- | ---: | ---: |
+| Row renders across 20 correction keystrokes | 60 | 20 |
+| Existing visible row renders after an offscreen live append | 3 | 0 |
+| Row renders crossing a playback segment boundary | 3 | 2 |
+
+`npm run benchmark:meeting-display` validates complete output equivalence for
+100 single-segment updates to a 12,000-segment synthetic snapshot. On Linux /
+Node 26.5.0, nine-run medians after three warmups were **62.069 → 23.935 ms**
+for display projection, with **1,200,000 → 100** new display objects. The initial
+projection costs **0.787 → 2.245 ms**; the extra bookkeeping pays back on
+subsequent updates. Tests gate one label resolution and one new display object
+for one changed segment, plus no recopying of unchanged transcript bodies.
+Timings are informational CPU measurements, not installed Windows latency or
+whole-Meeting render time. Other derived arrays and cache work remain outside
+this benchmark.
+
 ### Review follow-up: stale Settings and speculative work (2026-10-06)
 
 Idle Settings preload now awaits only the settings resource. Its publication

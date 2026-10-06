@@ -245,6 +245,16 @@ edit-version handling, and pointer/focus prefetch deduplication. The component
 test replaces virtualizer geometry because JSDOM has no layout; installed
 WebView scrolling still belongs to the browser/Windows smoke gate.
 
+`npm run benchmark:meeting-display` compares display projection against the
+original map-and-copy reference for 100 updates to 12,000 synthetic segments.
+It validates complete output equivalence, counts new display objects, and reports
+initial projection cost separately from update timings. Tests require one label
+resolution and one new display for a single changed segment, preserve reordered
+rows and locale/speaker changes, and count real row duration-format calls:
+20 keystrokes format 20 rows, an offscreen live append formats no existing row,
+and playback crossing a segment boundary formats only the old and new active rows.
+The row tests keep actual React markup and callbacks, mocking virtualizer geometry.
+
 Shared UI performance: `npm run benchmark:formatters` compares cached and fresh
 Intl date/number formatting. Frontend tests cover construction counts, locale
 and option changes, bounded eviction, summary parser reuse, virtual-history

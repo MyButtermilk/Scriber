@@ -2183,6 +2183,14 @@ Already implemented and should not be regressed:
   native autostart. Preserve shared bootstrap requests, cache expiry, generation
   guards, and in-flight detachment on invalidation; late peripheral results must
   not overwrite user edits or notify after unmount.
+- Meeting transcript rows keep separate memo boundaries. Pass draft/saving
+  state only to the affected row, and keep playback callbacks independent of
+  unrelated detail changes. The page-local display projector consumes immutable
+  segment snapshots and a stable label resolver; change resolver identity when
+  speaker metadata or locale changes. Its positional fast path and weak-key
+  fallback must preserve text, timing, revision, speaker and locale updates.
+  Tests bound row formatting and new display objects; benchmark CPU timings
+  remain informational and include the initial projection cost.
 - Debug Console keeps virtualizer key callbacks and level counts stable for
   unchanged log snapshots. Memoized log messages receive stable copy callbacks
   and row-local feedback; serialize raw structured JSON only when opened.

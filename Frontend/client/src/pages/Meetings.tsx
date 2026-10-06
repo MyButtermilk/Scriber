@@ -113,6 +113,7 @@ import {
   reviewTimeRangeBounds,
   type ReviewTimeRange,
 } from "@/lib/meeting-review-timeline";
+import { createMeetingSegmentProjector, type DisplayMeetingSegment } from "@/lib/meeting-segment-display";
 import { createMeetingDetailPrefetch } from "@/lib/meeting-detail-prefetch";
 import {
   Dialog,
@@ -480,7 +481,205 @@ function highlightTranscriptMatch(text: string, query: string) {
   );
 }
 
-type DisplayMeetingSegment = MeetingSegment & { label: string };
+const MeetingTranscriptRow = memo(function MeetingTranscriptRow({
+  segment,
+  active,
+  search,
+  hasPlayableAudio,
+  onPlay,
+  canAssignSpeakers,
+  onAssignSpeaker,
+  canEdit,
+  editing,
+  draft,
+  setDraft,
+  beginEdit,
+  cancelEdit,
+  saving,
+  onSave,
+  onUndo,
+}: {
+  segment: DisplayMeetingSegment;
+  active: boolean;
+  search: string;
+  hasPlayableAudio: boolean;
+  onPlay: (startMs: number) => void;
+  canAssignSpeakers: boolean;
+  onAssignSpeaker: (speakerId: string) => void;
+  canEdit: boolean;
+  editing: boolean;
+  draft: string;
+  setDraft: (draft: string) => void;
+  beginEdit: (segment: DisplayMeetingSegment) => void;
+  cancelEdit: () => void;
+  saving: boolean;
+  onSave: (segment: DisplayMeetingSegment, text: string) => void;
+  onUndo: (segment: DisplayMeetingSegment) => void;
+}) {
+  const { t, formatNumber } = useI18n();
+  return (
+    <div
+      aria-current={active ? "true" : undefined}
+      className={`group grid w-full grid-cols-[112px_minmax(0,1fr)] gap-3 rounded-xl border-l-2 px-3 py-3 outline-none transition-colors duration-[var(--duration-quick)] motion-reduce:transition-none sm:grid-cols-[128px_minmax(0,1fr)] ${active ? "border-primary bg-primary/[0.07] shadow-[inset_0_1px_0_hsl(var(--background)/0.45)]" : "border-transparent hover:bg-muted/50 focus-within:bg-muted/35"}`}
+      tabIndex={canEdit ? 0 : -1}
+      onKeyDown={(event) => {
+        if (canEdit && event.key.toLocaleLowerCase() === "e" && event.target === event.currentTarget) {
+          event.preventDefault();
+          beginEdit(segment);
+        }
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => onPlay(segment.startMs)}
+        disabled={!hasPlayableAudio}
+        className="self-start rounded-lg text-left text-ui-micro tabular-nums outline-none enabled:active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-default"
+        title={
+          hasPlayableAudio
+            ? t("Play {{start}} to {{end}}", {
+                start: formatOffset(segment.startMs),
+                end: formatOffset(segment.endMs),
+              })
+            : t("Saved audio is unavailable")
+        }
+        aria-label={t("Play transcript segment from {{start}} to {{end}}", {
+          start: formatOffset(segment.startMs),
+          end: formatOffset(segment.endMs),
+        })}
+      >
+        <span className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 font-mono">
+          <span className="font-sans text-muted-foreground">{t("Start")}</span>
+          <span className="text-right font-medium text-primary">{formatOffset(segment.startMs)}</span>
+          <span className="font-sans text-muted-foreground">{t("End")}</span>
+          <span className="text-right font-medium text-primary">{formatOffset(segment.endMs)}</span>
+          <span className="font-sans text-muted-foreground">{t("Duration")}</span>
+          <span className="text-right text-muted-foreground">
+            {formatNumber(segment.durationMs / 1000, {
+              minimumFractionDigits: 1,
+              maximumFractionDigits: 1,
+            })}{" "}
+            s
+          </span>
+        </span>
+        {segment.alignmentQuality === "estimated" && (
+          <span
+            className="mt-1 block font-sans text-ui-micro font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300"
+            title={t("Exact word timing was not available, so this time was estimated.")}
+          >
+            {t("Estimated timing")}
+          </span>
+        )}
+      </button>
+      <div className="min-w-0">
+        <div className="flex min-w-0 items-center gap-2">
+          {canAssignSpeakers && segment.speakerId ? (
+            <button
+              type="button"
+              onClick={() => onAssignSpeaker(segment.speakerId!)}
+              data-testid={`meeting-transcript-speaker-${segment.id}`}
+              data-speaker-id={segment.speakerId}
+              className="group/speaker inline-flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-xs font-semibold text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary"
+              title={t("Assign a speaker name to {{speaker}}", { speaker: segment.label })}
+              aria-label={t("Assign a speaker name to {{speaker}}", { speaker: segment.label })}
+            >
+              <span className="truncate">{highlightTranscriptMatch(segment.label, search)}</span>
+              <Pencil
+                className="h-3 w-3 shrink-0 opacity-50 transition-opacity group-hover/speaker:opacity-80 group-focus-visible/speaker:opacity-80 motion-reduce:transition-none"
+                aria-hidden="true"
+              />
+            </button>
+          ) : (
+            <span className="truncate text-xs font-semibold text-muted-foreground">
+              {highlightTranscriptMatch(segment.label, search)}
+            </span>
+          )}
+          {segment.editVersion > 0 && (
+            <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-ui-micro">
+              {t("Edited")}
+            </Badge>
+          )}
+        </div>
+        {editing ? (
+          <div className="mt-2 space-y-2">
+            <Textarea
+              data-testid={`meeting-segment-edit-input-${segment.id}`}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              rows={3}
+              autoFocus
+              aria-label={t("Edit transcript for {{speaker}} at {{time}}", {
+                speaker: segment.label,
+                time: formatOffset(segment.startMs),
+              })}
+              className="text-sm leading-6"
+              onKeyDown={(event) => {
+                if (event.key === "Escape") cancelEdit();
+                if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && draft.trim()) {
+                  onSave(segment, draft.trim());
+                  cancelEdit();
+                }
+              }}
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                data-testid={`meeting-segment-edit-save-${segment.id}`}
+                type="button"
+                size="sm"
+                className="h-8 active:scale-[0.97]"
+                disabled={!draft.trim() || saving}
+                onClick={() => {
+                  onSave(segment, draft.trim());
+                  cancelEdit();
+                }}
+              >
+                {saving && <WavePhysicsLoader className="mr-1.5" size="inline" />}
+                {t("Save correction")}
+              </Button>
+              <Button type="button" size="sm" variant="ghost" className="h-8 active:scale-[0.97]" onClick={cancelEdit}>
+                <X className="mr-1.5 h-3.5 w-3.5" />
+                {t("Cancel")}
+              </Button>
+              <span className="text-ui-micro text-muted-foreground">{t("Ctrl+Enter saves · Esc cancels")}</span>
+            </div>
+          </div>
+        ) : (
+          <>
+            <p className="mt-1 text-sm leading-6">{highlightTranscriptMatch(segment.text, search)}</p>
+            {canEdit && (
+              <div className="mt-2 flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+                <Button
+                  data-testid={`meeting-segment-edit-${segment.id}`}
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-[11px] active:scale-[0.97]"
+                  onClick={() => beginEdit(segment)}
+                >
+                  <Pencil className="mr-1.5 h-3 w-3" />
+                  {t("Edit")}
+                </Button>
+                {segment.editVersion > 0 && (
+                  <Button
+                    data-testid={`meeting-segment-undo-${segment.id}`}
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2 text-[11px] active:scale-[0.97]"
+                    disabled={saving}
+                    onClick={() => onUndo(segment)}
+                  >
+                    <Undo2 className="mr-1.5 h-3 w-3" />
+                    {t("Undo latest")}
+                  </Button>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+});
 
 const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
   segments,
@@ -515,20 +714,20 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
   onSave: (segment: DisplayMeetingSegment, text: string) => void;
   onUndo: (segment: DisplayMeetingSegment) => void;
 }) {
-  const { t, formatNumber } = useI18n();
+  const { t } = useI18n();
   const scrollRef = useRef<HTMLDivElement>(null);
   const programmaticScrollRef = useRef(false);
   const [followLatest, setFollowLatest] = useState(true);
   const [editingId, setEditingId] = useState("");
   const [draft, setDraft] = useState("");
-  const beginEdit = (segment: DisplayMeetingSegment) => {
+  const beginEdit = useCallback((segment: DisplayMeetingSegment) => {
     setEditingId(segment.id);
     setDraft(segment.text);
-  };
-  const cancelEdit = () => {
+  }, []);
+  const cancelEdit = useCallback(() => {
     setEditingId("");
     setDraft("");
-  };
+  }, []);
   const segmentIndexes = useMemo(() => new Map(segments.map((segment, index) => [segment.id, index])), [segments]);
   const getItemKey = useCallback((index: number) => segments[index]?.id ?? index, [segments]);
   const virtualizer = useVirtualizer({
@@ -608,174 +807,24 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
                 className="absolute left-0 top-0 w-full pb-1"
                 style={{ transform: `translateY(${virtualRow.start}px)` }}
               >
-                <div
-                  aria-current={active ? "true" : undefined}
-                  className={`group grid w-full grid-cols-[112px_minmax(0,1fr)] gap-3 rounded-xl border-l-2 px-3 py-3 outline-none transition-colors duration-[var(--duration-quick)] motion-reduce:transition-none sm:grid-cols-[128px_minmax(0,1fr)] ${active ? "border-primary bg-primary/[0.07] shadow-[inset_0_1px_0_hsl(var(--background)/0.45)]" : "border-transparent hover:bg-muted/50 focus-within:bg-muted/35"}`}
-                  tabIndex={canEdit ? 0 : -1}
-                  onKeyDown={(event) => {
-                    if (canEdit && event.key.toLocaleLowerCase() === "e" && event.target === event.currentTarget) {
-                      event.preventDefault();
-                      beginEdit(segment);
-                    }
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => onPlay(segment.startMs)}
-                    disabled={!hasPlayableAudio}
-                    className="self-start rounded-lg text-left text-ui-micro tabular-nums outline-none enabled:active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-default"
-                    title={
-                      hasPlayableAudio
-                        ? t("Play {{start}} to {{end}}", {
-                            start: formatOffset(segment.startMs),
-                            end: formatOffset(segment.endMs),
-                          })
-                        : t("Saved audio is unavailable")
-                    }
-                    aria-label={t("Play transcript segment from {{start}} to {{end}}", {
-                      start: formatOffset(segment.startMs),
-                      end: formatOffset(segment.endMs),
-                    })}
-                  >
-                    <span className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 font-mono">
-                      <span className="font-sans text-muted-foreground">{t("Start")}</span>
-                      <span className="text-right font-medium text-primary">{formatOffset(segment.startMs)}</span>
-                      <span className="font-sans text-muted-foreground">{t("End")}</span>
-                      <span className="text-right font-medium text-primary">{formatOffset(segment.endMs)}</span>
-                      <span className="font-sans text-muted-foreground">{t("Duration")}</span>
-                      <span className="text-right text-muted-foreground">
-                        {formatNumber(segment.durationMs / 1000, {
-                          minimumFractionDigits: 1,
-                          maximumFractionDigits: 1,
-                        })}{" "}
-                        s
-                      </span>
-                    </span>
-                    {segment.alignmentQuality === "estimated" && (
-                      <span
-                        className="mt-1 block font-sans text-ui-micro font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300"
-                        title={t("Exact word timing was not available, so this time was estimated.")}
-                      >
-                        {t("Estimated timing")}
-                      </span>
-                    )}
-                  </button>
-                  <div className="min-w-0">
-                    <div className="flex min-w-0 items-center gap-2">
-                      {canAssignSpeakers && segment.speakerId ? (
-                        <button
-                          type="button"
-                          onClick={() => onAssignSpeaker(segment.speakerId!)}
-                          data-testid={`meeting-transcript-speaker-${segment.id}`}
-                          data-speaker-id={segment.speakerId}
-                          className="group/speaker inline-flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-xs font-semibold text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary"
-                          title={t("Assign a speaker name to {{speaker}}", { speaker: segment.label })}
-                          aria-label={t("Assign a speaker name to {{speaker}}", { speaker: segment.label })}
-                        >
-                          <span className="truncate">{highlightTranscriptMatch(segment.label, search)}</span>
-                          <Pencil
-                            className="h-3 w-3 shrink-0 opacity-50 transition-opacity group-hover/speaker:opacity-80 group-focus-visible/speaker:opacity-80 motion-reduce:transition-none"
-                            aria-hidden="true"
-                          />
-                        </button>
-                      ) : (
-                        <span className="truncate text-xs font-semibold text-muted-foreground">
-                          {highlightTranscriptMatch(segment.label, search)}
-                        </span>
-                      )}
-                      {segment.editVersion > 0 && (
-                        <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-ui-micro">
-                          {t("Edited")}
-                        </Badge>
-                      )}
-                    </div>
-                    {editingId === segment.id ? (
-                      <div className="mt-2 space-y-2">
-                        <Textarea
-                          data-testid={`meeting-segment-edit-input-${segment.id}`}
-                          value={draft}
-                          onChange={(event) => setDraft(event.target.value)}
-                          rows={3}
-                          autoFocus
-                          aria-label={t("Edit transcript for {{speaker}} at {{time}}", {
-                            speaker: segment.label,
-                            time: formatOffset(segment.startMs),
-                          })}
-                          className="text-sm leading-6"
-                          onKeyDown={(event) => {
-                            if (event.key === "Escape") cancelEdit();
-                            if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && draft.trim()) {
-                              onSave(segment, draft.trim());
-                              cancelEdit();
-                            }
-                          }}
-                        />
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Button
-                            data-testid={`meeting-segment-edit-save-${segment.id}`}
-                            type="button"
-                            size="sm"
-                            className="h-8 active:scale-[0.97]"
-                            disabled={!draft.trim() || savingSegmentId === segment.id}
-                            onClick={() => {
-                              onSave(segment, draft.trim());
-                              cancelEdit();
-                            }}
-                          >
-                            {savingSegmentId === segment.id && <WavePhysicsLoader className="mr-1.5" size="inline" />}
-                            {t("Save correction")}
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            className="h-8 active:scale-[0.97]"
-                            onClick={cancelEdit}
-                          >
-                            <X className="mr-1.5 h-3.5 w-3.5" />
-                            {t("Cancel")}
-                          </Button>
-                          <span className="text-ui-micro text-muted-foreground">
-                            {t("Ctrl+Enter saves · Esc cancels")}
-                          </span>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <p className="mt-1 text-sm leading-6">{highlightTranscriptMatch(segment.text, search)}</p>
-                        {canEdit && (
-                          <div className="mt-2 flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
-                            <Button
-                              data-testid={`meeting-segment-edit-${segment.id}`}
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 px-2 text-[11px] active:scale-[0.97]"
-                              onClick={() => beginEdit(segment)}
-                            >
-                              <Pencil className="mr-1.5 h-3 w-3" />
-                              {t("Edit")}
-                            </Button>
-                            {segment.editVersion > 0 && (
-                              <Button
-                                data-testid={`meeting-segment-undo-${segment.id}`}
-                                type="button"
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 px-2 text-[11px] active:scale-[0.97]"
-                                disabled={savingSegmentId === segment.id}
-                                onClick={() => onUndo(segment)}
-                              >
-                                <Undo2 className="mr-1.5 h-3 w-3" />
-                                {t("Undo latest")}
-                              </Button>
-                            )}
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
+                <MeetingTranscriptRow
+                  segment={segment}
+                  active={active}
+                  search={search}
+                  hasPlayableAudio={hasPlayableAudio}
+                  onPlay={onPlay}
+                  canAssignSpeakers={canAssignSpeakers}
+                  onAssignSpeaker={onAssignSpeaker}
+                  canEdit={canEdit}
+                  editing={editingId === segment.id}
+                  draft={editingId === segment.id ? draft : ""}
+                  setDraft={setDraft}
+                  beginEdit={beginEdit}
+                  cancelEdit={cancelEdit}
+                  saving={savingSegmentId === segment.id}
+                  onSave={onSave}
+                  onUndo={onUndo}
+                />
               </div>
             );
           })}
@@ -2548,19 +2597,20 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     });
     return names;
   }, [detail?.speakers, t]);
+  const [projectSegments] = useState(createMeetingSegmentProjector);
+  const segmentDisplayLabel = useCallback(
+    (segment: MeetingSegment) => {
+      const rawLabel =
+        (segment.speakerId ? genericSpeakerNames.get(segment.speakerId) : "") ||
+        segment.speakerLabel ||
+        (segment.source === "microphone" ? "You" : "Meeting audio");
+      return rawLabel === "You" || rawLabel === "Meeting audio" ? t(rawLabel) : rawLabel;
+    },
+    [genericSpeakerNames, t],
+  );
   const groupedSegments = useMemo(
-    () =>
-      liveSegments.map((segment) => {
-        const rawLabel =
-          (segment.speakerId ? genericSpeakerNames.get(segment.speakerId) : "") ||
-          segment.speakerLabel ||
-          (segment.source === "microphone" ? "You" : "Meeting audio");
-        return {
-          ...segment,
-          label: rawLabel === "You" || rawLabel === "Meeting audio" ? t(rawLabel) : rawLabel,
-        };
-      }),
-    [genericSpeakerNames, liveSegments, t],
+    () => projectSegments(liveSegments, segmentDisplayLabel),
+    [liveSegments, projectSegments, segmentDisplayLabel],
   );
   const reviewTimeBounds = useMemo(() => reviewTimeRangeBounds(reviewTimeRange), [reviewTimeRange]);
   const reviewMatchIds = useMemo(
@@ -2765,7 +2815,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   }, [detail?.audioAssets]);
   const playSegment = useCallback(
     (startMs: number) => {
-      if (!detail) return;
+      if (!detail?.id) return;
       speakerSnippetEndMsRef.current = null;
       savedVoicePreviewRef.current?.pause();
       savedVoicePreviewProfileIdRef.current = "";
@@ -2786,7 +2836,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         audioRef.current?.load();
       }
     },
-    [detail, hasPlayableAudio, playLoadedAudio],
+    [detail?.id, hasPlayableAudio, playLoadedAudio],
   );
   const playSpeakerSnippet = useCallback(
     (speakerId: string) => {

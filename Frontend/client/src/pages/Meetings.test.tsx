@@ -9,10 +9,31 @@ import Meetings from "./Meetings";
 
 const observed = vi.hoisted(() => ({
   transcriptRenders: 0,
+  rowFormats: 0,
   itemKeys: [] as Array<(index: number) => string | number>,
   scrollToIndex: vi.fn(),
   apiRequest: vi.fn(),
 }));
+vi.mock("@/i18n", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/i18n")>();
+  type Formatter = ReturnType<typeof actual.useI18n>["formatNumber"];
+  const formatters = new WeakMap<Formatter, Formatter>();
+  return {
+    ...actual,
+    useI18n: () => {
+      const context = actual.useI18n();
+      let formatNumber = formatters.get(context.formatNumber);
+      if (!formatNumber) {
+        formatNumber = (value, options) => {
+          if (options?.minimumFractionDigits === 1 && options.maximumFractionDigits === 1) observed.rowFormats++;
+          return context.formatNumber(value, options);
+        };
+        formatters.set(context.formatNumber, formatNumber);
+      }
+      return { ...context, formatNumber };
+    },
+  };
+});
 vi.mock("@/contexts/WebSocketContext", () => ({
   useWebSocketContext: () => ({ isConnected: true }),
   useSharedWebSocket: () => ({ isConnected: true }),
@@ -168,8 +189,10 @@ it("timeupdates within one segment do not rerender transcript rows; seeks still 
   expect(observed.scrollToIndex).not.toHaveBeenCalled();
   expect(screen.getByTestId("meeting-transcript-segment-segment-0")).toHaveAttribute("data-playback-active", "true");
 
+  observed.rowFormats = 0;
   audio.currentTime = 12;
   fireEvent.timeUpdate(audio);
+  expect(observed.rowFormats).toBe(2);
   expect(observed.transcriptRenders - initialRenders).toBe(1);
   expect(observed.itemKeys.at(-1)).toBe(itemKey);
   expect(screen.getByTestId("meeting-transcript-segment-segment-1")).toHaveAttribute("data-playback-active", "true");
@@ -303,4 +326,72 @@ it("keeps unfiltered match navigation and restores all rows after clearing a fil
   fireEvent.change(search, { target: { value: "" } });
   expect(screen.getByText("Review passage 0")).toBeInTheDocument();
   expect(screen.getByText("Review passage 2")).toBeInTheDocument();
+});
+
+it("typing a correction renders only its row, and Escape retains the original text", () => {
+  renderMeeting();
+  fireEvent.click(screen.getByTestId("meeting-segment-edit-segment-0"));
+  observed.rowFormats = 0;
+  for (let i = 1; i <= 20; i++) {
+    fireEvent.change(screen.getByTestId("meeting-segment-edit-input-segment-0"), {
+      target: { value: `Correction ${i}` },
+    });
+  }
+  expect(observed.rowFormats).toBe(20);
+  fireEvent.keyDown(screen.getByTestId("meeting-segment-edit-input-segment-0"), { key: "Escape" });
+  expect(screen.getByText("Review passage 0")).toBeInTheDocument();
+  expect(screen.queryByTestId("meeting-segment-edit-input-segment-0")).not.toBeInTheDocument();
+});
+
+it("an incoming live segment leaves unchanged visible rows unrendered", async () => {
+  const detail = meeting();
+  detail.audioAssets = [];
+  detail.state = "recording";
+  detail.segments = detail.segments.map((segment) => ({ ...segment, revision: "live" }));
+  renderMeeting(detail);
+  observed.rowFormats = 0;
+  await act(async () => {
+    client.setQueryData<MeetingDetail>(["/api/meetings", detail.id], (current) => ({
+      ...current!,
+      segments: [...current!.segments, { ...detail.segments[0], id: "new-segment", startMs: 40_000 }],
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(observed.rowFormats).toBe(0);
+
+  await act(async () => {
+    client.setQueryData<MeetingDetail>(["/api/meetings", detail.id], (current) => ({
+      ...current!,
+      segments: current!.segments.map((segment) =>
+        segment.id === "segment-1" ? { ...segment, text: "Updated live passage" } : segment,
+      ),
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(screen.getByText("Updated live passage")).toBeInTheDocument();
+  expect(observed.rowFormats).toBe(1);
+});
+
+it("memoized rows refresh speaker labels and translations without a segment text change", async () => {
+  const detail = meeting();
+  detail.segments = detail.segments.map((segment) => ({ ...segment, speakerLabel: "" }));
+  renderMeeting(detail);
+  const row = () => screen.getByTestId("meeting-transcript-segment-segment-0");
+  expect(row()).toHaveTextContent("Meeting audio");
+  await act(async () => {
+    window.dispatchEvent(new StorageEvent("storage", { key: LANGUAGE_STORAGE_KEY, newValue: "de" }));
+  });
+  await waitFor(() => expect(row()).not.toHaveTextContent("Meeting audio"));
+  expect(row()).toHaveTextContent("Review passage 0");
+  await act(async () => {
+    client.setQueryData<MeetingDetail>(["/api/meetings", detail.id], (current) => ({
+      ...current!,
+      segments: current!.segments.map((segment) =>
+        segment.id === "segment-0" ? { ...segment, speakerLabel: "Ada" } : segment,
+      ),
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(row()).toHaveTextContent("Ada");
+  expect(row()).toHaveTextContent("Review passage 0");
 });
