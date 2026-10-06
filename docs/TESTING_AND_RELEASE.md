@@ -252,6 +252,18 @@ scroll work, changed row keys, independent idle preloads, and cancellation.
 Summary contents tests additionally bound heading layout reads and verify
 scroll jumps, layout shifts, table fallbacks and navigation targets.
 
+Settings and logging UI: `npm run test:components` includes deferred-resource
+and real-page Settings tests for independent loading, device failure, unmount,
+request sharing, expiry and stale-cache races. The 1,200-row Debug Console test
+uses the real virtualizer with JSDOM geometry and bounds key work on unchanged
+refresh/scroll; log-message tests bound metadata traversal and closed-JSON
+serialization while checking full redacted copy output. Run the browser smoke
+with `--routes /settings,/debug --fast-tab-switch` for real DOM interaction.
+Backend logging regression coverage remains `python -m pytest
+tests/runtime/test_debug_logs.py tests/test_logging_opt_out.py
+tests/runtime/test_diagnostic_preferences.py -q`; Windows lock-specific cases
+run on Windows CI.
+
 Long-file stitching: `python scripts/diagnostics/benchmark_transcription_merge.py`
 checks exact words/warnings against the preserved reference before reporting
 timing and traced alignment memory. Run `python -m pytest

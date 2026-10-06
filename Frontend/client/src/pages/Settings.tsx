@@ -69,7 +69,7 @@ import {
   setGlobalHotkeyCaptureActive,
   setAutostartEnabled as setDesktopAutostartEnabled,
 } from "@/lib/backend";
-import { invalidateSettingsBootstrap, loadSettingsBootstrap } from "@/lib/settings-bootstrap";
+import { invalidateSettingsBootstrap, loadSettingsBootstrapResources } from "@/lib/settings-bootstrap";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { responseErrorMessage } from "@/lib/request-errors";
 import type {
@@ -2827,15 +2827,38 @@ export default function Settings() {
       return service || "soniox-realtime";
     };
 
+    const resources = loadSettingsBootstrapResources();
+    void resources.autostart.then((autostart) => {
+      if (cancelled) return;
+      setAutostartEnabled(autostart.enabled || false);
+      setAutostartAvailable(autostart.available || false);
+    });
+    void resources.microphones
+      .then(async (microphones) => {
+        if (cancelled) return;
+        let microphonePayload = microphones;
+        if (!Array.isArray(microphonePayload.devices)) {
+          const response = await fetchWithTimeout(apiUrl("/api/microphones"), { credentials: "include" }, 10_000);
+          if (response.ok) microphonePayload = (await response.json()) as MicrophonesResponse;
+        }
+        if (!cancelled) setInputDevices(microphonePayload.devices || []);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        toast({
+          title: translateNow("Failed to load settings"),
+          description: localizedSettingsErrorNow(error, "The requested settings action failed."),
+          duration: 4000,
+        });
+      });
+
     const load = async () => {
       try {
         setSettingsError("");
-        const { settings, microphones: mics, autostart } = await loadSettingsBootstrap();
+        const settings = await resources.settings;
         if (cancelled) return;
 
         const keys = settings.apiKeys || {};
-        setAutostartEnabled(autostart.enabled || false);
-        setAutostartAvailable(autostart.available || false);
         setHotkey(settings.hotkey || settings.hotkeyRaw || "Ctrl + Shift + D");
         setPostProcessingHotkey(
           settings.postProcessingHotkey || settings.postProcessingHotkeyRaw || "Ctrl + Shift + F",
@@ -2941,19 +2964,10 @@ export default function Settings() {
         setCredentialReadyKeys(loadedCredentialReadyKeys);
         setSavedKeys(loadedCredentialReadyKeys);
 
-        let microphonePayload = mics;
-        if (!Array.isArray(microphonePayload.devices)) {
-          const micsRes = await fetchWithTimeout(apiUrl("/api/microphones"), { credentials: "include" }, 10_000);
-          if (cancelled) return;
-          if (micsRes.ok) {
-            microphonePayload = (await micsRes.json()) as MicrophonesResponse;
-          }
-        }
-        setInputDevices(microphonePayload.devices || []);
-
-        // Show page immediately - don't wait for model info
+        // Device discovery and native autostart must not delay usable settings.
         setSettingsLoaded(true);
       } catch (e: any) {
+        if (cancelled) return;
         setSettingsLoaded(true); // Still mark as loaded even on error
         setSettingsError(localizedSettingsErrorNow(e, "The requested settings action failed."));
         toast({

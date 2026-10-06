@@ -1423,6 +1423,8 @@ class FrontendSmokeBackend:
                 "apiVersion": "1",
                 "configured": True,
                 "connected": self.outlook_connected,
+                "calendars": [],
+                "selectedCalendarId": "",
                 "scopes": ["User.Read", "Calendars.Read", "offline_access"],
                 "lastSyncAt": "2026-06-01T11:45:00Z" if self.outlook_synced else "",
                 "lastError": "",
@@ -2123,7 +2125,10 @@ async def wait_for_interaction_state(
         if last_state.get("ok"):
             return last_state
         await asyncio.sleep(0.25)
-    raise RuntimeError(f"Timed out waiting for interaction '{label}'. Last state: {last_state}")
+    browser_errors = await cdp.evaluate("window.__scriberSmoke || {}", timeout=5)
+    raise RuntimeError(
+        f"Timed out waiting for interaction '{label}'. Last state: {last_state}. Browser errors: {browser_errors}"
+    )
 
 
 async def exercise_interface_locale_switch(
@@ -4222,7 +4227,7 @@ async def exercise_meeting_settings(
   const analysisTrigger = section.querySelector('button[aria-label="Meeting summary model"]');
   const retentionTrigger = section.querySelector('button[aria-label="Default meeting audio retention"]');
   const smartTurn = section.querySelector('[role="switch"][aria-label="Keep meeting live sentences together across short pauses"]');
-  const aec = section.querySelector('[role="switch"][aria-label="Reduce speaker echo in meetings"]');
+  const aec = section.querySelector('[role="switch"][aria-label="Clean up meeting audio"]');
   const autoAnalyze = section.querySelector('[role="switch"][aria-label="Automatically analyze completed meetings"]');
   if (!finalTrigger || !analysisTrigger || !retentionTrigger || !smartTurn || !aec || !autoAnalyze) {
     return { ok: false, reason: 'missing meeting pipeline control' };

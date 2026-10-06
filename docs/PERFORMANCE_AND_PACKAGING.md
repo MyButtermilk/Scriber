@@ -184,6 +184,35 @@ tables or generated snapshot grids use the original document-order scan.
 Tests cover forward/backward jumps, bottom-of-document selection, tied/missing
 headings, replacement summaries, layout shifts and explicit navigation targets.
 
+### Settings and log-console rendering (2026-10-06)
+
+Settings consumes shared bootstrap resources independently: persisted values
+make the page visible as soon as their response is decoded. Microphone discovery
+and native autostart update their own controls later; a device failure no longer
+hides or prevents initialization of saved settings. Idle preloading still shares
+these requests and the 15-second complete-snapshot cache. Invalidating settings
+also detaches the in-flight snapshot, and a generation guard prevents older
+requests from repopulating the cache after a save or forced refresh. Late results
+and errors after leaving the page are ignored.
+
+The Debug Console retains virtualizer key callbacks for unchanged results and
+calculates level counts once per log snapshot. Log-message render boundaries
+reuse unchanged metadata; stable copy callbacks and row-local copy feedback
+avoid invalidating every visible message. Raw structured JSON is serialized and
+mounted only when its disclosure is opened, and copying reuses that string.
+
+The real TanStack virtualizer/JSDOM regression fixture with 1,200 records counted
+2,412 key calls for an unchanged refresh before the change; both refresh and
+scroll now pass a ceiling of fewer than 100 calls. Twenty unrelated parent
+renders previously read the instrumented context field 60 times and now read it
+zero times. Closed raw JSON previously serialized once on initial render and now
+serializes zero times. All three gates fail against the preceding implementation.
+Deferred-resource tests prove Settings becomes usable while both secondary
+requests remain pending, without relying on a wall-clock speedup estimate.
+These checks measure frontend work, not native log-write throughput or installed
+Windows startup latency. Diagnostic writer, redaction, and opt-out behavior is
+unchanged.
+
 ### Shared UI and history read paths (2026-10-05)
 
 The Live Mic, YouTube, and File histories keep stable item-key callbacks, and

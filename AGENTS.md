@@ -2164,6 +2164,13 @@ Already implemented and should not be regressed:
   most 64 timestamp reads per seek on 12,000 overlapping synthetic segments.
   `npm run benchmark:meeting-review` reports informational CPU timings and
   index construction cost; it is not an installed Windows latency claim.
+- Settings renders persisted values independently of microphone discovery and
+  native autostart. Preserve shared bootstrap requests, cache expiry, generation
+  guards, and in-flight detachment on invalidation; late peripheral results must
+  not overwrite user edits or notify after unmount.
+- Debug Console keeps virtualizer key callbacks and level counts stable for
+  unchanged log snapshots. Memoized log messages receive stable copy callbacks
+  and row-local feedback; serialize raw structured JSON only when opened.
 - Paginated transcript endpoints and virtualized history lists.
 - Shared history virtualizers and the Live Mic/YouTube/File callers keep stable
   item-key functions; scrolling must not reconstruct every loaded row's key.
