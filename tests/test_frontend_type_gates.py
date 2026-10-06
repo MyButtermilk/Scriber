@@ -694,7 +694,7 @@ def test_live_mic_history_uses_snippets_period_sections_and_stable_virtual_rows(
     assert "getItemGroup={(item)" not in page_source
     assert "const getTranscriptHistoryGroup = useCallback(" in page_source
     reference_section = page_source[
-        page_source.index("const historyLocalDay =") : page_source.index("const activeSessionIdRef")
+        page_source.index("const historyLocalDay =") : page_source.index("const deleteTranscript = useCallback(")
     ]
     assert "const historyLocalDay = new Date().toDateString();" in reference_section
     assert "const historyReferenceTime = useMemo(() => {" in reference_section
@@ -2274,7 +2274,9 @@ def test_meeting_workspace_scopes_drafts_playback_and_imports_to_durable_state()
     ).read_text(encoding="utf-8")
     settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
-    assert 'setChatQuestion("");' in meetings
+    assert "const chatQuestionStore = useTextDraftStore();" in meetings
+    assert meetings.count('chatQuestionStore.set("");') == 2
+    assert "}, [chatQuestionStore, selectedId]);" in meetings
     assert "variables.id !== selectedId" in meetings
     assert 'setTranscriptSearch("");' in meetings
     assert 'from "@/components/meeting/useMeetingNotesAutosave"' in meetings
