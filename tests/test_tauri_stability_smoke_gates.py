@@ -67,6 +67,16 @@ def test_backend_relock_and_frontend_navigation_preserve_runtime_identity() -> N
     assert "navigationId <= lastNavigationIdRef.current" in app
 
 
+def test_tray_creation_stays_off_synchronous_windows_dispatchers() -> None:
+    lib = read_script("Frontend/src-tauri/src/lib.rs")
+    assert "async fn show_tray_panel(" in lib
+    events = lib.split("fn request_tray_panel_from_event", 1)[1].split("fn show_tray_panel_for_app", 1)[0]
+    assert "tauri::async_runtime::spawn_blocking" in events
+    tray = lib.split("fn install_tray", 1)[1].split("fn show_tray_panel_for_app", 1)[0]
+    assert "show_tray_panel_for_app(tray.app_handle())" not in tray
+    assert "request_tray_panel_from_event(tray.app_handle())" in tray
+
+
 def test_main_window_close_hides_to_tray_without_destroying_restore_target() -> None:
     lib = read_script("Frontend/src-tauri/src/lib.rs")
 

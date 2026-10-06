@@ -770,7 +770,9 @@ Packaging and scripts:
   a headless tray process whose main window no longer exists. Explicit tray
   Quit and app exit still use the bounded graceful backend/audio cleanup path.
 - The custom tray WebView keeps all action targets visible without a scroll
-  container. Rows share
+  container. Create it from an async command or background event task because
+  synchronous WebView2 creation can deadlock Windows IPC. Serialize competing
+  show requests. Rows share
   the available height; supplementary descriptions collapse before actions.
   The native window fits the monitor work area in logical pixels, including
   high-DPI displays. Verify normal, update, error, and recent-history views

@@ -1603,7 +1603,7 @@ fn set_tray_recording_state(
 }
 
 #[tauri::command]
-fn show_tray_panel(app: AppHandle) -> Result<(), String> {
+async fn show_tray_panel(app: AppHandle) -> Result<(), String> {
     show_tray_panel_for_app(&app)
 }
 
@@ -2222,9 +2222,7 @@ fn install_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
             if should_show_tray_panel_for_event(&event) {
-                if let Err(err) = show_tray_panel_for_app(tray.app_handle()) {
-                    write_shell_log(&format!("tray panel show failed from tray click: {err}"));
-                }
+                request_tray_panel_from_event(tray.app_handle());
             }
         });
 
@@ -2274,9 +2272,7 @@ fn handle_shell_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
             let _ = hide_tray_panel_for_app(app);
         }
         MENU_ITEM_INSTALL_UPDATE => {
-            if let Err(err) = show_tray_panel_for_app(app) {
-                write_shell_log(&format!("tray update panel show failed: {err}"));
-            }
+            request_tray_panel_from_event(app);
             if let Err(err) = app.emit(TRAY_STATUS_EVENT, tray_status_for_app(app)) {
                 write_shell_log(&format!("tray update status emit failed: {err}"));
             }
@@ -3179,7 +3175,20 @@ fn emit_tray_status_for_app<R: Runtime>(app: &AppHandle<R>, status: &TrayStatus)
     // App-wide emit already reaches the tray WebView; do not deliver twice.
 }
 
+fn request_tray_panel_from_event<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(err) = show_tray_panel_for_app(&app) {
+            write_shell_log(&format!("tray panel show failed: {err}"));
+        }
+    });
+}
+
 fn show_tray_panel_for_app<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    // WebView2 creation cannot run in a synchronous command/event handler.
+    // Serialize background requests so repeated clicks cannot create two windows.
+    static SHOW_LOCK: Mutex<()> = Mutex::new(());
+    let _show_guard = lock_unpoisoned(&SHOW_LOCK);
     let window = if let Some(window) = app.get_webview_window(TRAY_PANEL_LABEL) {
         window
     } else {
