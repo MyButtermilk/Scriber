@@ -129,7 +129,7 @@ def test_settings_bootstrap_cache_rejects_stale_inflight_results() -> None:
 
     assert "bootstrapGeneration += 1" in source
     assert "requestGeneration === bootstrapGeneration" in source
-    assert "inflightBootstrap === request" in source
+    assert "inflightBootstrap === resources" in source
 
 
 def test_settings_put_commits_the_server_response_to_the_global_query_cache() -> None:
@@ -421,9 +421,9 @@ def test_settings_microphones_use_shared_api_types() -> None:
     assert "MicrophoneDevice," in source
     assert "MicrophonesResponse," in source
     assert "useState<MicrophoneDevice[]>([])" in source
-    assert "(await micsRes.json()) as MicrophonesResponse" in source
+    assert "(await response.json()) as MicrophonesResponse" in source
     assert "(await res.json()) as MicrophonesResponse" in source
-    assert "let microphonePayload = mics;" in source
+    assert "let microphonePayload = microphones;" in source
     assert "if (!Array.isArray(microphonePayload.devices))" in source
     assert "fetchWithTimeout(" in source
     assert 'apiUrl("/api/microphones")' in source
