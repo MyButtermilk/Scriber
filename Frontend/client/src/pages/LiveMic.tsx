@@ -1257,6 +1257,22 @@ export default function LiveMic() {
     [queryClient],
   );
 
+  const renderHistoryItem = useCallback(
+    (item: Transcript) => (
+      <TranscriptCard
+        item={item}
+        viewMode={viewMode}
+        isDeleting={deletingId === item.id}
+        isCopying={copyingId === item.id}
+        onDelete={deleteTranscript}
+        onCopy={copyTranscript}
+        onNavigate={navigateToTranscript}
+        onHover={preloadTranscript}
+      />
+    ),
+    [copyingId, deleteTranscript, deletingId, copyTranscript, navigateToTranscript, preloadTranscript, viewMode],
+  );
+
   return (
     <div className="app-page-shell live-mic-page px-4 py-5 md:px-6 md:py-6" data-page-shell="live-mic">
       <PageIntro
@@ -1310,19 +1326,8 @@ export default function LiveMic() {
               estimateGridRowHeight={230}
               hasMore={transcriptsQuery.hasNextPage}
               isLoadingMore={transcriptsQuery.isFetchingNextPage}
-              onLoadMore={() => transcriptsQuery.fetchNextPage()}
-              renderItem={(item) => (
-                <TranscriptCard
-                  item={item}
-                  viewMode={viewMode}
-                  isDeleting={deletingId === item.id}
-                  isCopying={copyingId === item.id}
-                  onDelete={deleteTranscript}
-                  onCopy={copyTranscript}
-                  onNavigate={navigateToTranscript}
-                  onHover={preloadTranscript}
-                />
-              )}
+              onLoadMore={transcriptsQuery.fetchNextPage}
+              renderItem={renderHistoryItem}
             />
           </TranscriptHistoryPanel>
         </section>

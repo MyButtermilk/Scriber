@@ -665,6 +665,32 @@ export default function FileTranscribe() {
     return { processingItems, completedItems };
   }, [recentFromBackend]);
 
+  const renderHistoryItem = useCallback(
+    (item: TranscriptHistoryItem) => (
+      <FileCard
+        item={item}
+        viewMode={viewMode}
+        isDeleting={deletingId === item.id}
+        isCopying={copyingId === item.id}
+        onDelete={deleteTranscript}
+        onCopy={copyTranscript}
+        onSummaryRetryComplete={refreshAfterSummaryRetry}
+        onNavigate={navigateToTranscript}
+        onHover={preloadTranscript}
+      />
+    ),
+    [
+      copyingId,
+      deleteTranscript,
+      deletingId,
+      copyTranscript,
+      navigateToTranscript,
+      preloadTranscript,
+      refreshAfterSummaryRetry,
+      viewMode,
+    ],
+  );
+
   return (
     <div className="app-page-shell transcription-page file-page px-4 py-5 md:px-6 md:py-6" data-page-shell="file">
       <PageIntro
@@ -825,20 +851,8 @@ export default function FileTranscribe() {
             getItemKey={transcriptHistoryItemKey}
             hasMore={transcriptsQuery.hasNextPage}
             isLoadingMore={transcriptsQuery.isFetchingNextPage}
-            onLoadMore={() => transcriptsQuery.fetchNextPage()}
-            renderItem={(item) => (
-              <FileCard
-                item={item}
-                viewMode={viewMode}
-                isDeleting={deletingId === item.id}
-                isCopying={copyingId === item.id}
-                onDelete={deleteTranscript}
-                onCopy={copyTranscript}
-                onSummaryRetryComplete={refreshAfterSummaryRetry}
-                onNavigate={navigateToTranscript}
-                onHover={preloadTranscript}
-              />
-            )}
+            onLoadMore={transcriptsQuery.fetchNextPage}
+            renderItem={renderHistoryItem}
           />
         </TranscriptHistoryPanel>
       </div>

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { LocaleProvider } from "@/i18n";
@@ -85,4 +86,56 @@ it("rebuilds history keys when a new result replaces the current list", () => {
   view.rerender(content("new-result"));
   expect(screen.getByText("new-result")).toBeInTheDocument();
   expect(screen.queryByText("old-result")).not.toBeInTheDocument();
+});
+
+it("unrelated parent input does not revisit visible history rows or reconnect pagination", () => {
+  const items = Array.from({ length: 10_000 }, (_, id) => ({ id: `entry-${id}` }));
+  const key = vi.fn((item: { id: string }) => item.id);
+  const renderItem = vi.fn((item: { id: string }) => <span>{item.id}</span>);
+  const loadMore = vi.fn();
+  const observe = vi.fn();
+  const disconnect = vi.fn();
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      observe = observe;
+      disconnect = disconnect;
+    },
+  );
+  function HistoryOwner() {
+    const [search, setSearch] = useState("");
+    return (
+      <>
+        <input aria-label="Uncommitted search" value={search} onChange={(event) => setSearch(event.target.value)} />
+        <div data-app-scroll-container>
+          <VirtualTranscriptHistory
+            items={items}
+            viewMode="list"
+            getItemKey={key}
+            renderItem={renderItem}
+            hasMore
+            onLoadMore={loadMore}
+          />
+        </div>
+      </>
+    );
+  }
+  render(
+    <LocaleProvider>
+      <HistoryOwner />
+    </LocaleProvider>,
+  );
+  expect(screen.getByText("entry-0")).toBeInTheDocument();
+  renderItem.mockClear();
+  key.mockClear();
+  observe.mockClear();
+  disconnect.mockClear();
+  const search = screen.getByRole("textbox", { name: "Uncommitted search" });
+  for (let i = 1; i <= 20; i++) fireEvent.change(search, { target: { value: "x".repeat(i) } });
+  expect(search).toHaveValue("x".repeat(20));
+  expect(renderItem).not.toHaveBeenCalled();
+  expect(key).not.toHaveBeenCalled();
+  expect(observe).not.toHaveBeenCalled();
+  expect(disconnect).not.toHaveBeenCalled();
+  expect(loadMore).not.toHaveBeenCalled();
 });

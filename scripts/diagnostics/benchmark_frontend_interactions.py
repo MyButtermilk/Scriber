@@ -141,6 +141,12 @@ SCENARIOS: dict[str, dict[str, str]] = {
     "settings-summary-prompt": {"route": "/settings", "placeholder": "Summarize the key points"},
     "settings-custom-model": {"route": "/settings", "placeholder": "author/model"},
     "live-mic-interim": {"route": "/"},
+    "live-mic-history-search": {"route": "/", "selector": 'input[aria-label="Search recording history"]'},
+    "file-history-search": {"route": "/file", "selector": 'input[aria-label="Search file transcript history"]'},
+    "youtube-history-search": {
+        "route": "/youtube",
+        "selector": 'input[aria-label="Search YouTube transcript history"]',
+    },
     "meeting-notes": {"route": "/meetings/meeting-smoke-1", "selector": '[data-testid="meeting-workspace-note"]'},
     "meeting-chat": {
         "route": "/meetings/meeting-smoke-1",

@@ -1622,6 +1622,81 @@ function DraftTextarea({ store, onChange, ...props }: DraftTextareaProps) {
   );
 }
 
+function VisualizerBarCountSetting({
+  initialCount,
+  overlayStyle,
+  onSave,
+}: {
+  initialCount: number;
+  overlayStyle: OverlayVisualizerStyle;
+  onSave: (count: number) => Promise<unknown>;
+}) {
+  const { t, locale, formatNumber } = useI18n();
+  const { toast } = useToast();
+  const [visualizerBarCount, setVisualizerBarCount] = useState(initialCount);
+  const savedCountRef = useRef(initialCount);
+  const draftRevisionRef = useRef(0);
+  const pendingWritesRef = useRef(0);
+
+  useEffect(() => {
+    savedCountRef.current = initialCount;
+    draftRevisionRef.current += 1;
+    setVisualizerBarCount(initialCount);
+  }, [initialCount]);
+
+  const handleChange = (value: number[]) => {
+    draftRevisionRef.current += 1;
+    setVisualizerBarCount(normalizeVisualizerBarCount(value[0], savedCountRef.current));
+  };
+  const handleCommit = async (value: number[]) => {
+    const savedVisualizerBarCount = savedCountRef.current;
+    const count = normalizeVisualizerBarCount(value[0], savedVisualizerBarCount);
+    // Returning to the saved value must still follow an outstanding write.
+    if (count === savedVisualizerBarCount && pendingWritesRef.current === 0) return;
+    const revision = draftRevisionRef.current;
+    pendingWritesRef.current += 1;
+    try {
+      await onSave(count);
+      savedCountRef.current = count;
+    } catch (error) {
+      // A failed older commit must not move a newer drag back underneath the pointer.
+      if (revision === draftRevisionRef.current) setVisualizerBarCount(savedCountRef.current);
+      toast({
+        title: t("Save failed"),
+        description: localizedSettingsError(error, "The requested settings action failed.", locale, t),
+        duration: 4000,
+      });
+    } finally {
+      pendingWritesRef.current -= 1;
+    }
+  };
+
+  return (
+    <SettingLine
+      label={t("Visualizer bars")}
+      description={
+        overlayStyle === "bars"
+          ? t("Current count: {{count}}", { count: formatNumber(visualizerBarCount) })
+          : t("Controls Live Mic and the classic bar overlay.")
+      }
+    >
+      <div className="flex w-full items-center gap-2">
+        <BarChart3 className="h-4 w-4 shrink-0 text-slate-500" />
+        <Slider
+          aria-label={t("Visualizer bars")}
+          value={[visualizerBarCount]}
+          onValueChange={handleChange}
+          onValueCommit={handleCommit}
+          min={MIN_VISUALIZER_BAR_COUNT}
+          max={MAX_VISUALIZER_BAR_COUNT}
+          step={1}
+          className="min-w-[132px] flex-1"
+        />
+      </div>
+    </SettingLine>
+  );
+}
+
 function maskedSecret(value: string): string {
   return hasValue(value) ? "************" : "";
 }
@@ -2019,8 +2094,7 @@ export default function Settings() {
   const [postProcessingEngine, setPostProcessingEngine] = useState<PostProcessingEngine>("cloud");
   const [localPolishingVariant, setLocalPolishingVariant] = useState<LocalPolishingVariant>("qad_q4_0");
   const [language, setLanguage] = useState("auto");
-  const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
-  const [savedVisualizerBarCount, setSavedVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
+  const [initialVisualizerBarCount, setInitialVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
   const [overlayVisualizerStyle, setOverlayVisualizerStyle] = useState<OverlayVisualizerStyle>(
     DEFAULT_OVERLAY_VISUALIZER_STYLE,
   );
@@ -2956,8 +3030,7 @@ export default function Settings() {
         setPostProcessingEnabled(settings.postProcessingEnabled !== false);
         postProcessingPromptStore.set(settings.postProcessingPrompt || defaultPostProcessingPrompt(getCurrentLocale()));
         const loadedVisualizerBarCount = normalizeVisualizerBarCount(settings.visualizerBarCount);
-        setVisualizerBarCount(loadedVisualizerBarCount);
-        setSavedVisualizerBarCount(loadedVisualizerBarCount);
+        setInitialVisualizerBarCount(loadedVisualizerBarCount);
         setOverlayVisualizerStyle(normalizeOverlayVisualizerStyle(settings.overlayVisualizerStyle));
         setDiagnosticLoggingEnabled(settings.diagnosticLoggingEnabled !== false);
         setMicAlwaysOn(settings.micAlwaysOn === true);
@@ -4376,29 +4449,6 @@ export default function Settings() {
     }
   };
 
-  const handleVisualizerBarCountChange = (value: number[]) => {
-    const count = normalizeVisualizerBarCount(value[0], savedVisualizerBarCount);
-    setVisualizerBarCount(count);
-  };
-
-  const handleVisualizerBarCountCommit = async (value: number[]) => {
-    const count = normalizeVisualizerBarCount(value[0], savedVisualizerBarCount);
-    if (count === savedVisualizerBarCount) {
-      return;
-    }
-    try {
-      await updateSettings({ visualizerBarCount: count });
-      setSavedVisualizerBarCount(count);
-    } catch (e: any) {
-      setVisualizerBarCount(savedVisualizerBarCount);
-      toast({
-        title: t("Save failed"),
-        description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
-        duration: 4000,
-      });
-    }
-  };
-
   const handleAutostartChange = async (enabled: boolean) => {
     setAutostartEnabled(enabled);
     try {
@@ -5731,27 +5781,11 @@ export default function Settings() {
                   </ToggleGroup>
                 </div>
 
-                <SettingLine
-                  label={t("Visualizer bars")}
-                  description={
-                    overlayVisualizerStyle === "bars"
-                      ? t("Current count: {{count}}", { count: formatNumber(visualizerBarCount) })
-                      : t("Controls Live Mic and the classic bar overlay.")
-                  }
-                >
-                  <div className="flex w-full items-center gap-2">
-                    <BarChart3 className="h-4 w-4 shrink-0 text-slate-500" />
-                    <Slider
-                      value={[visualizerBarCount]}
-                      onValueChange={handleVisualizerBarCountChange}
-                      onValueCommit={handleVisualizerBarCountCommit}
-                      min={MIN_VISUALIZER_BAR_COUNT}
-                      max={MAX_VISUALIZER_BAR_COUNT}
-                      step={1}
-                      className="min-w-[132px] flex-1"
-                    />
-                  </div>
-                </SettingLine>
+                <VisualizerBarCountSetting
+                  initialCount={initialVisualizerBarCount}
+                  overlayStyle={overlayVisualizerStyle}
+                  onSave={(count) => updateSettings({ visualizerBarCount: count })}
+                />
               </div>
             </SettingsSubsection>
 

@@ -303,6 +303,17 @@ work; they are not exact render calls or DOM mutations. In-page elapsed time
 measures event processing, not time until displayed pixels; CDP reports script
 CPU time. These are informational browser measurements, not WebView2 latency.
 
+Slider and history follow-up: the Settings test drives drag and commit
+separately, gates zero page-wide tooltip renders for 20 movements, and covers
+save failure, newer drafts and a revert queued behind a pending write.
+`virtual-transcript-history.test.tsx` uses 10,000 entries to require zero
+visible-row callbacks during unrelated parent input; its existing real-scroll
+and replacement-data checks remain. The Live Mic page test requires zero
+virtualizer calls across 20 raw search edits and a live update on layout change.
+Source gates assert that the extracted slider still awaits the parent's
+authenticated Settings save callback. The browser diagnostic supports
+`live-mic-history-search`, `file-history-search` and `youtube-history-search`.
+
 Startup and tray: the component suite covers native access prefetch before
 module completion, one shared bounded startup lookup, browser/overlay bypass,
 and locale-before-render. Tray tests bound hotkey reads during status bursts,

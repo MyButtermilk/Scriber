@@ -1172,7 +1172,8 @@ def test_visualizer_bar_count_flows_to_live_mic_and_native_overlay() -> None:
     ).read_text(encoding="utf-8")
     api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(encoding="utf-8")
 
-    assert "await updateSettings({ visualizerBarCount: count });" in settings_source
+    assert "onSave={(count) => updateSettings({ visualizerBarCount: count })}" in settings_source
+    assert "await onSave(count);" in settings_source
     assert "await updateSettings({ overlayVisualizerStyle: style });" in settings_source
     assert "export const DEFAULT_VISUALIZER_BAR_COUNT = 45;" in helper_source
     assert "export const MIN_VISUALIZER_BAR_COUNT = 16;" in helper_source
@@ -1247,7 +1248,8 @@ def test_settings_and_youtube_mutations_use_authenticated_backend_access() -> No
     assert "await updateSettings({ favoriteMic: newFavorite });" in settings_source
     assert "await updateSettings({ hotkey });" in settings_source
     assert 'await updateSettings({ mode: mode === "press_hold" ? "push_to_talk" : "toggle" });' in settings_source
-    assert "await updateSettings({ visualizerBarCount: count });" in settings_source
+    assert "onSave={(count) => updateSettings({ visualizerBarCount: count })}" in settings_source
+    assert "await onSave(count);" in settings_source
     assert "fetchWithTimeout(" in visualizer_helper_source
     assert '{ credentials: "include", signal }' in visualizer_helper_source
 

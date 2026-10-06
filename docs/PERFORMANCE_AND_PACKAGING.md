@@ -115,6 +115,49 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 ## Implemented Performance Work
 
+### Slider drafts and stable history boundaries (2026-10-06)
+
+The Visualizer-bars control now owns its drag state and saved-value reference.
+Pointer movement updates only the count label and slider. A release uses the
+existing authenticated, serialized Settings write queue; errors restore the last
+saved count only if no newer drag has superseded that commit. Returning to the
+saved value while an earlier write is pending still queues the return value.
+Bootstrap values, normalization, locale and overlay-style changes remain live.
+
+`VirtualTranscriptHistory` now has a memo boundary. Live Mic, YouTube and File
+provide stable row-render callbacks and the query's stable next-page function.
+Unrelated search drafts, source inputs and upload UI updates therefore skip the
+visible-row pass and leave the pagination observer connected. Item snapshots,
+copy/delete/retry feedback, layout changes, scrolling and resizing still update
+through their existing props, context or internal state.
+
+Exact regression counts against `5789414`:
+
+| Workload | Before | After |
+| --- | ---: | ---: |
+| Settings-wide tooltip renders, 20 slider movements | 440 | 0 |
+| Visible-row render-function calls, 20 unrelated inputs with 10,000 loaded items | 140 | 0 |
+| Live Mic virtualizer hook calls, 20 search keystrokes | 20 | 0 |
+
+All three budget tests fail on the preceding implementation. Slider tests also
+cover one write on commit, failed-write rollback, newer-draft preservation and
+returning to the saved value behind a pending write. The virtualizer tests keep
+real scroll and replacement-result checks; the real Live Mic page test confirms
+that switching list/grid still updates the virtualizer.
+
+A production Chromium comparison (Linux, three runs of 60 search events per
+build, synthetic backend with 240 records) measured Live Mic history-search
+processing at **2.75 → 2.50 ms** median of run medians, with CDP script CPU
+**2.962 → 2.906 ms/event**. This small timing difference is informational and
+not evidence of a broad latency improvement. Separate committed-fiber tracking
+showed approximately **124 → 70 host-fiber identity changes/event**; these are
+not actual DOM-mutation counts. The deterministic work budgets above are the
+regression gates. Reproduce using
+`python scripts/diagnostics/benchmark_frontend_interactions.py --dist <build>
+--scenario live-mic-history-search --runs 3 --events 60` for each revision.
+The diagnostic also supports File and YouTube history-search inputs. No
+installed Windows or physical slider latency claim is made.
+
 ### Typing and live-stream render isolation (2026-10-06)
 
 Frequently changing text no longer re-renders whole pages. Settings keeps
@@ -172,10 +215,9 @@ The paired repeat passed without changing that budget, but does not establish
 the cause of the outlier. These are not installed WebView2 or whole-app latency
 results.
 
-Remaining measured candidates: Live Mic history search still re-renders the
-history section (2.8 → 2.2 ms, about 60 → 57 component fiber changes per
-keystroke). API keys, Azure fields, speaker rename, the voice-enrollment name
-and slider drags still re-render all of Settings. YouTube/File progress events
+Remaining candidates after the follow-up above: history search still renders
+its toolbar and page shell. API keys, Azure fields, speaker rename and the
+voice-enrollment name still re-render all of Settings. YouTube/File progress events
 refetch every loaded history page; with four pages loaded, 20 synthetic
 progress events caused 80 page requests. That path needs an exact row-patch
 contract before it can change.

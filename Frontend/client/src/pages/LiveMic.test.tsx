@@ -4,14 +4,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LANGUAGE_STORAGE_KEY, LocaleProvider } from "@/i18n";
 import type { ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { TranscriptionHistoryToolbar } from "@/components/transcription-history-toolbar";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import type { TranscriptHistoryItem } from "@/lib/api-types";
 import { useBackendActions } from "@/hooks/use-backend-status";
 import LiveMic from "./LiveMic";
 
-const { start, stop, toast, refresh, socket } = vi.hoisted(() => ({
+const { start, stop, toast, refresh, socket, history, loadMore } = vi.hoisted(() => ({
   start: vi.fn(),
   stop: vi.fn(),
   toast: vi.fn(),
   refresh: vi.fn(),
+  history: [] as TranscriptHistoryItem[],
+  loadMore: vi.fn(),
   socket: { listener: null as ((message: ScriberWebSocketMessage) => void) | null },
 }));
 vi.mock("@/contexts/WebSocketContext", () => ({
@@ -40,7 +44,12 @@ vi.mock("@/components/transcription-history-toolbar", async (importOriginal) => 
 vi.mock("@/hooks/use-transcript-auto-refresh", () => ({ useTranscriptAutoRefresh: () => ({ refreshNow: refresh }) }));
 vi.mock("@/hooks/use-transcript-history-query", () => ({
   transcriptHistoryQueryKey: () => ["/api/transcripts", "mic"],
-  useTranscriptHistoryQuery: () => ({ items: [], total: 0 }),
+  useTranscriptHistoryQuery: () => ({
+    items: history,
+    total: history.length,
+    hasNextPage: true,
+    fetchNextPage: loadMore,
+  }),
 }));
 vi.mock("@/lib/visualizer-settings", () => ({
   DEFAULT_VISUALIZER_BAR_COUNT: 32,
@@ -48,6 +57,15 @@ vi.mock("@/lib/visualizer-settings", () => ({
   normalizeVisualizerBarCount: (value: number) => value,
 }));
 vi.mock("@/lib/backend", () => ({ apiUrl: (path: string) => path }));
+
+vi.mock("@tanstack/react-virtual", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tanstack/react-virtual")>();
+  return { ...actual, useVirtualizer: vi.fn(actual.useVirtualizer) };
+});
+afterEach(() => {
+  history.length = 0;
+  vi.unstubAllGlobals();
+});
 
 type WsPayload<T> = T extends unknown ? Omit<T, "apiVersion"> : never;
 
@@ -75,7 +93,9 @@ function mount() {
   return render(
     <QueryClientProvider client={client}>
       <LocaleProvider>
-        <LiveMic />
+        <div data-app-scroll-container>
+          <LiveMic />
+        </div>
       </LocaleProvider>
     </QueryClientProvider>,
   );
@@ -204,4 +224,53 @@ describe("Live Mic render isolation", () => {
     expect(refresh).toHaveBeenCalledOnce();
     expect(screen.getByTestId("live-mic-transcript-output")).toHaveTextContent("Saved dictation");
   });
+});
+
+it("keeps the real history virtualizer idle while typing in the Live Mic search", () => {
+  window.localStorage.setItem(LANGUAGE_STORAGE_KEY, "en");
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+    x: 0,
+    y: 0,
+    top: 0,
+    left: 0,
+    bottom: 600,
+    right: 900,
+    width: 900,
+    height: 600,
+    toJSON: () => ({}),
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(600);
+  history.push({
+    id: "history-1",
+    title: "Saved dictation",
+    type: "mic",
+    status: "completed",
+    date: "2026-10-06",
+    duration: "1:00",
+  });
+  mount();
+  expect(screen.getByText("Saved dictation")).toBeInTheDocument();
+  vi.mocked(useVirtualizer).mockClear();
+  const search = screen.getByRole("searchbox", { name: "Search recording history" });
+  for (let i = 1; i <= 20; i++) fireEvent.change(search, { target: { value: "x".repeat(i) } });
+  expect(search).toHaveValue("x".repeat(20));
+  expect(vi.mocked(useVirtualizer)).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("radio", { name: "List view" }));
+  expect(vi.mocked(useVirtualizer)).toHaveBeenCalled();
 });

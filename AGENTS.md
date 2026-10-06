@@ -2190,6 +2190,14 @@ Already implemented and should not be regressed:
   autosave and localized-default prompt replacement subscribe to their store
   with the former debounce/recheck semantics. Tests require zero page-wide
   tooltip renders while typing.
+- The Visualizer-bars Settings control owns drag state and its saved-value
+  reference. Commit through the existing Settings write queue. Failed earlier
+  writes must not overwrite a newer draft, and reverting to the saved value
+  behind an outstanding write must still persist that revert.
+- `VirtualTranscriptHistory` is memoized; Live Mic/YouTube/File must keep both
+  row-render callbacks and next-page callbacks stable across unrelated inputs.
+  Include all row-visible action state in callback dependencies. Preserve
+  internal scroll/resize updates, replacement data, locale and layout changes.
 - Live Mic interim text, elapsed time, status and warnings stay inside the
   memoized `LiveMicStage`; history query, search and cards stay in the page.
   The stage receives only the history refresh callback for a finished session.

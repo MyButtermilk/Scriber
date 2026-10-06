@@ -10,6 +10,28 @@ import { defaultPostProcessingPrompt } from "@/lib/settings-presentation";
 import Settings from "./Settings";
 
 const toast = vi.hoisted(() => vi.fn());
+// Drive drag and commit separately, as Radix does for pointer movement/release.
+vi.mock("@/components/ui/slider", () => ({
+  Slider: ({
+    value,
+    onValueChange,
+    onValueCommit,
+  }: {
+    value: number[];
+    onValueChange: (value: number[]) => void;
+    onValueCommit: (value: number[]) => void;
+  }) => (
+    <input
+      aria-label="Visualizer bar count"
+      type="range"
+      min={16}
+      max={128}
+      value={value[0]}
+      onChange={(event) => onValueChange([Number(event.target.value)])}
+      onBlur={(event) => onValueCommit([Number(event.target.value)])}
+    />
+  ),
+}));
 vi.mock("@/contexts/WebSocketContext", () => ({ useSharedWebSocket: () => ({ isConnected: true }) }));
 vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast }) }));
 vi.mock("@/lib/fetch-with-timeout", () => ({ fetchWithTimeout: vi.fn() }));
@@ -249,4 +271,73 @@ it("ignores a late microphone error after leaving settings", async () => {
     finishAutostart({ enabled: false, available: true });
   });
   expect(toast).not.toHaveBeenCalled();
+});
+
+it("dragging the bar-count slider updates only its control and saves once on commit", async () => {
+  await mountLoaded({ visualizerBarCount: 45 });
+  const slider = screen.getByLabelText("Visualizer bar count");
+  vi.mocked(InfoTooltip).mockClear();
+  for (let count = 46; count <= 65; count++) fireEvent.change(slider, { target: { value: String(count) } });
+  expect(slider).toHaveValue("65");
+  expect(screen.getByText("Current count: 65")).toBeInTheDocument();
+  expect(settingsPuts()).toEqual([]);
+  expect(vi.mocked(InfoTooltip).mock.calls.length).toBe(0);
+  fireEvent.blur(slider);
+  await waitFor(() => expect(settingsPuts()).toEqual([{ visualizerBarCount: 65 }]));
+});
+
+it("rolls a failed bar-count commit back to the last saved count", async () => {
+  await mountLoaded({ visualizerBarCount: 70 });
+  const slider = screen.getByLabelText("Visualizer bar count");
+  vi.mocked(fetchWithTimeout).mockResolvedValueOnce(new Response("save failed", { status: 500 }));
+  fireEvent.change(slider, { target: { value: "80" } });
+  fireEvent.blur(slider);
+  await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Save failed" })));
+  expect(slider).toHaveValue("70");
+  expect(screen.getByText("Current count: 70")).toBeInTheDocument();
+});
+
+it("does not replace a newer slider draft when an earlier save fails", async () => {
+  await mountLoaded({ visualizerBarCount: 45 });
+  const slider = screen.getByLabelText("Visualizer bar count");
+  let finish!: (response: Response) => void;
+  vi.mocked(fetchWithTimeout).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  fireEvent.change(slider, { target: { value: "60" } });
+  fireEvent.blur(slider);
+  await waitFor(() => expect(settingsPuts()).toHaveLength(1));
+  fireEvent.change(slider, { target: { value: "75" } });
+  await act(async () => {
+    finish(new Response("save failed", { status: 500 }));
+  });
+  await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Save failed" })));
+  expect(slider).toHaveValue("75");
+  fireEvent.blur(slider);
+  await waitFor(() => expect(settingsPuts()).toEqual([{ visualizerBarCount: 60 }, { visualizerBarCount: 75 }]));
+});
+
+it("persists a return to the saved slider value behind an outstanding commit", async () => {
+  await mountLoaded({ visualizerBarCount: 45 });
+  const slider = screen.getByLabelText("Visualizer bar count");
+  let finish!: (response: Response) => void;
+  vi.mocked(fetchWithTimeout).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  fireEvent.change(slider, { target: { value: "60" } });
+  fireEvent.blur(slider);
+  await waitFor(() => expect(settingsPuts()).toHaveLength(1));
+  fireEvent.change(slider, { target: { value: "45" } });
+  fireEvent.blur(slider);
+  await act(async () => {
+    finish(Response.json({ visualizerBarCount: 60 }));
+  });
+  await waitFor(() => expect(settingsPuts()).toEqual([{ visualizerBarCount: 60 }, { visualizerBarCount: 45 }]));
+  expect(slider).toHaveValue("45");
 });

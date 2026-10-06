@@ -778,6 +778,36 @@ export default function Youtube() {
     [queryClient],
   );
 
+  const renderHistoryItem = useCallback(
+    (item: TranscriptHistoryItem) => (
+      <YoutubeVideoCard
+        item={item}
+        viewMode={viewMode}
+        isDeleting={deletingId === item.id}
+        isCopying={copyingId === item.id}
+        isRetryingTranscription={retryingTranscriptId === item.id}
+        onDelete={deleteTranscript}
+        onCopy={copyTranscript}
+        onTranscriptionRetry={retryYoutubeTranscription}
+        onSummaryRetryComplete={refreshAfterSummaryRetry}
+        onNavigate={navigateToTranscript}
+        onHover={preloadTranscript}
+      />
+    ),
+    [
+      copyingId,
+      deleteTranscript,
+      deletingId,
+      copyTranscript,
+      navigateToTranscript,
+      preloadTranscript,
+      refreshAfterSummaryRetry,
+      retryYoutubeTranscription,
+      retryingTranscriptId,
+      viewMode,
+    ],
+  );
+
   return (
     <div className="app-page-shell transcription-page youtube-page px-4 py-5 md:px-6 md:py-6" data-page-shell="youtube">
       <PageIntro
@@ -1049,22 +1079,8 @@ export default function Youtube() {
             getItemKey={transcriptHistoryItemKey}
             hasMore={transcriptsQuery.hasNextPage}
             isLoadingMore={transcriptsQuery.isFetchingNextPage}
-            onLoadMore={() => transcriptsQuery.fetchNextPage()}
-            renderItem={(item) => (
-              <YoutubeVideoCard
-                item={item}
-                viewMode={viewMode}
-                isDeleting={deletingId === item.id}
-                isCopying={copyingId === item.id}
-                isRetryingTranscription={retryingTranscriptId === item.id}
-                onDelete={deleteTranscript}
-                onCopy={copyTranscript}
-                onTranscriptionRetry={retryYoutubeTranscription}
-                onSummaryRetryComplete={refreshAfterSummaryRetry}
-                onNavigate={navigateToTranscript}
-                onHover={preloadTranscript}
-              />
-            )}
+            onLoadMore={transcriptsQuery.fetchNextPage}
+            renderItem={renderHistoryItem}
           />
         </TranscriptHistoryPanel>
       </div>

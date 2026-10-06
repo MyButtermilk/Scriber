@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import {
@@ -58,7 +58,7 @@ function defaultGroupHeader(group: TranscriptHistoryGroup, itemCount: number) {
   );
 }
 
-export function VirtualTranscriptHistory<TItem>({
+function VirtualTranscriptHistoryView<TItem>({
   items,
   viewMode,
   renderItem,
@@ -316,3 +316,6 @@ export function VirtualTranscriptHistory<TItem>({
     </div>
   );
 }
+
+// Preserve generic item inference while skipping unchanged parent renders.
+export const VirtualTranscriptHistory = memo(VirtualTranscriptHistoryView) as typeof VirtualTranscriptHistoryView;
