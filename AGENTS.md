@@ -769,7 +769,13 @@ Packaging and scripts:
   single-instance show actions must reveal that same WebView again; do not leave
   a headless tray process whose main window no longer exists. Explicit tray
   Quit and app exit still use the bounded graceful backend/audio cleanup path.
-- The custom tray WebView refreshes recent transcripts on every native show
+- The custom tray WebView keeps all action targets visible without a scroll
+  container. Rows share
+  the available height; supplementary descriptions collapse before actions.
+  The native window fits the monitor work area in logical pixels, including
+  high-DPI displays. Verify normal, update, error, and recent-history views
+  at 668, 560, and 480 logical pixels high when changing this layout. It refreshes
+  recent transcripts on every native show
   through `scriber-tray-opened`, and after installing its listener on first
   startup. Abort and generation guards prevent older requests from replacing
   newer history. The Transcript routes' `/recent` and `/{id}/copy` reads use

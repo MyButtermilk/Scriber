@@ -33,7 +33,7 @@ use tauri::{
     image::Image,
     menu::Menu,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, LogicalPosition, Manager, Runtime, WebviewUrl, WebviewWindow,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -3190,8 +3190,6 @@ fn show_tray_panel_for_app<R: Runtime>(app: &AppHandle<R>) -> Result<(), String>
         )
         .title("Scriber Tray")
         .inner_size(TRAY_PANEL_WIDTH, TRAY_PANEL_HEIGHT)
-        .min_inner_size(TRAY_PANEL_WIDTH, TRAY_PANEL_HEIGHT)
-        .max_inner_size(TRAY_PANEL_WIDTH, TRAY_PANEL_HEIGHT)
         .resizable(false)
         .decorations(false)
         .transparent(true)
@@ -3239,18 +3237,29 @@ fn position_tray_panel_window<R: Runtime>(window: &WebviewWindow<R>) -> tauri::R
     if let Some(monitor) = monitor {
         let work_area = monitor.work_area();
         let scale = monitor.scale_factor().max(0.25);
+        let work_width = f64::from(work_area.size.width) / scale;
+        let work_height = f64::from(work_area.size.height) / scale;
+        let (panel_width, panel_height) = tray_panel_size_for_work_area(work_width, work_height);
+        window.set_size(LogicalSize::new(panel_width, panel_height))?;
         let (x, y) = tray_panel_position_for_work_area(
             f64::from(work_area.position.x) / scale,
             f64::from(work_area.position.y) / scale,
-            f64::from(work_area.size.width) / scale,
-            f64::from(work_area.size.height) / scale,
-            TRAY_PANEL_WIDTH,
-            TRAY_PANEL_HEIGHT,
+            work_width,
+            work_height,
+            panel_width,
+            panel_height,
             TRAY_PANEL_MARGIN,
         );
         window.set_position(LogicalPosition::new(x, y))?;
     }
     Ok(())
+}
+
+fn tray_panel_size_for_work_area(work_width: f64, work_height: f64) -> (f64, f64) {
+    (
+        TRAY_PANEL_WIDTH.min((work_width - 2.0 * TRAY_PANEL_MARGIN).max(1.0)),
+        TRAY_PANEL_HEIGHT.min((work_height - 2.0 * TRAY_PANEL_MARGIN).max(1.0)),
+    )
 }
 
 fn tray_panel_position_for_work_area(
@@ -7715,6 +7724,31 @@ mod tests {
         assert_eq!(status.recording_mode, "meeting");
         assert_eq!(status.update_version.as_deref(), Some("1.2.3"));
         assert_eq!(status.update_message, "Installing");
+    }
+
+    #[test]
+    fn tray_panel_fits_the_scaled_monitor_work_area() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let width = 1920.0 / scale;
+            let height = 1040.0 / scale;
+            let (panel_width, panel_height) = super::tray_panel_size_for_work_area(width, height);
+            let (x, y) = super::tray_panel_position_for_work_area(
+                -width,
+                0.0,
+                width,
+                height,
+                panel_width,
+                panel_height,
+                super::TRAY_PANEL_MARGIN,
+            );
+            assert!(x >= -width);
+            assert!(y >= 0.0);
+            assert!(x + panel_width <= 0.0);
+            assert!(y + panel_height <= height);
+            assert!(panel_width <= super::TRAY_PANEL_WIDTH);
+            assert!(panel_height <= super::TRAY_PANEL_HEIGHT);
+        }
+        assert_eq!(super::tray_panel_size_for_work_area(0.0, 0.0), (1.0, 1.0));
     }
 
     #[test]

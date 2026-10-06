@@ -1906,7 +1906,8 @@ def test_tray_panel_exposes_meetings_shortcut_and_installed_version() -> None:
     assert "let value = await getGlobalHotkeyStatus();" in tray_source
     assert "const requestId = ++shortcutLoadRequestRef.current;" in tray_source
     assert "requestId === shortcutLoadRequestRef.current" in tray_source
-    assert 'className="min-h-0 flex-1 overflow-y-auto overscroll-contain py-2.5 pr-1"' in tray_source
+    assert "overflow-y-auto" not in tray_source
+    assert 'className="tray-panel-actions flex h-full flex-col gap-1"' in tray_source
     assert '"open_meetings" => {' in shell_source
     assert 'show_main_window_path(app, "/meetings")?;' in shell_source
     assert "const TRAY_PANEL_HEIGHT: f64 = 668.0;" in shell_source

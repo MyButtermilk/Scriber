@@ -164,7 +164,7 @@ function TrayRow({
       onClick={disabled ? undefined : onClick}
       disabled={disabled}
       className={cn(
-        "group flex h-[42px] w-full items-center gap-3 rounded-[12px] px-3 text-left outline-none transition-colors duration-150",
+        "tray-action-row group flex h-[42px] w-full items-center gap-3 rounded-[12px] px-3 text-left outline-none transition-colors duration-150",
         "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white/80",
         variant === "default" && "text-slate-950 hover:bg-slate-950/[0.055]",
         variant === "primary" && "bg-blue-50 text-blue-700 hover:bg-blue-100",
@@ -195,7 +195,7 @@ function TrayRow({
         {detail ? (
           <span
             className={cn(
-              "mt-px block truncate text-[11px] leading-[13px]",
+              "tray-action-detail mt-px block truncate text-[11px] leading-[13px]",
               variant === "update" ? "text-white/78" : "text-slate-500",
             )}
           >
@@ -237,7 +237,7 @@ function RecentTranscriptRow({
       onClick={onCopy}
       disabled={disabled}
       className={cn(
-        "group flex h-[46px] w-full items-center gap-3 rounded-[12px] px-3 text-left outline-none transition-colors duration-150",
+        "tray-recent-row group flex h-[46px] w-full items-center gap-3 rounded-[12px] px-3 text-left outline-none transition-colors duration-150",
         "text-slate-950 hover:bg-slate-950/[0.055]",
         "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white/80",
         copied && "bg-emerald-50 text-emerald-700",
@@ -683,14 +683,14 @@ export default function TrayPanel() {
   })();
 
   return (
-    <main className="flex h-screen w-screen items-center justify-center bg-transparent p-2 text-slate-950 antialiased">
+    <main className="tray-panel flex h-screen w-screen items-center justify-center bg-transparent p-2 text-slate-950 antialiased">
       <motion.section
         initial={{ opacity: 0, y: 10, scale: 0.985 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-        className="flex h-full w-full flex-col overflow-hidden rounded-[24px] border border-white/70 bg-[rgba(248,250,252,0.96)] p-4 shadow-[0_26px_70px_-34px_rgba(15,23,42,0.78),0_8px_24px_-20px_rgba(15,23,42,0.45)] backdrop-blur-2xl"
+        className="tray-panel-surface flex h-full w-full flex-col overflow-hidden rounded-[24px] border border-white/70 bg-[rgba(248,250,252,0.96)] p-4 shadow-[0_26px_70px_-34px_rgba(15,23,42,0.78),0_8px_24px_-20px_rgba(15,23,42,0.45)] backdrop-blur-2xl"
       >
-        <header className="flex items-center gap-3 pb-3">
+        <header className="tray-panel-header flex shrink-0 items-center gap-3 pb-3">
           <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-slate-200/80 bg-white shadow-[0_12px_28px_-22px_rgba(15,23,42,0.75)]">
             <img src="/favicon.svg" alt="" className="h-8 w-8 object-contain" draggable={false} />
           </div>
@@ -715,7 +715,7 @@ export default function TrayPanel() {
         <div className="h-px bg-slate-200/80" />
 
         {view === "main" && showUpdateInstallBanner ? (
-          <div className="pt-2.5">
+          <div className="tray-panel-update shrink-0 pt-2.5">
             <motion.button
               type="button"
               whileTap={installing || status.updateInstalling ? undefined : { scale: 0.985 }}
@@ -745,9 +745,9 @@ export default function TrayPanel() {
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain py-2.5 pr-1">
+        <div className="tray-panel-body min-h-0 flex-1 overflow-hidden py-2">
           {view === "main" ? (
-            <div className="flex flex-col gap-1.5">
+            <div className="tray-panel-actions flex h-full flex-col gap-1">
               <TrayRow
                 icon={status.recordingActive ? Square : Mic}
                 label={status.recordingActive ? t("Stop Recording") : t("Start Live Transcription")}
@@ -798,7 +798,7 @@ export default function TrayPanel() {
               />
             </div>
           ) : (
-            <div className="flex h-full flex-col gap-1.5">
+            <div className="tray-panel-recent flex h-full flex-col gap-1">
               <div className="flex items-center gap-2 px-1 pb-1">
                 <button
                   type="button"
@@ -869,7 +869,7 @@ export default function TrayPanel() {
         </div>
 
         {view === "main" ? (
-          <div className="border-t border-slate-200/80 pt-2.5">
+          <div className="tray-panel-footer shrink-0 border-t border-slate-200/80 pt-2.5">
             <div className="flex flex-col gap-1.5">
               <TrayRow icon={RotateCw} label={t("Restart Application")} onClick={() => void runAction("restart_app")} />
               <TrayRow icon={LogOut} label={t("Quit Application")} onClick={() => void runAction("quit")} />
@@ -878,7 +878,7 @@ export default function TrayPanel() {
         ) : null}
 
         {error || recentError ? (
-          <div className="rounded-[14px] border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-medium leading-4 text-red-700">
+          <div className="tray-panel-error shrink-0 rounded-[14px] border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-medium leading-4 text-red-700">
             {t(error || recentError)}
           </div>
         ) : null}

@@ -389,7 +389,13 @@ durable store. Run Rust library tests for preview ownership/revisions, native
 rotation with real active-file/archive sharing locks, and bounded clipboard-open
 retries without touching the user's clipboard; run `native-overlay-state.test.ts`
 and `TrayPanel.test.tsx` for renderer ordering, every-show refresh, obsolete
-responses, and visible-entry copy IDs. Python gates include
+responses, and visible-entry copy IDs.
+`TrayPanel` layout checks must also use a real browser/WebView: at 386 pixels
+wide and 668, 560, and 480 logical pixels high, verify all action bounds and
+pointer hit targets, with no overflowing scroll container, for normal,
+recording, update-available, error, and eight-item recent-history states.
+Repeat at 100%, 125%, 150%, and 200% scale. The Rust tray work-area test checks
+the corresponding native window bounds. Python gates include
 `tests/data/test_transcript_artifact_store.py`,
 `tests/api/test_transcript_routes.py`, and `tests/test_file_job_diagnostics.py`.
 Logging changes also require the File/Podcast route and job tests plus
