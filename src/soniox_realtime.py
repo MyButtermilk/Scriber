@@ -3,8 +3,8 @@
 
 """Handshake authentication adapter for the pinned Pipecat 1.5 Soniox client.
 
-Only connection setup differs; token parsing, endpointing, keepalive and
-reconnect orchestration remain inherited. Retain the class name because the
+Connection setup and error privacy differ; token parsing, endpointing, keepalive
+and reconnect orchestration remain inherited. Retain the class name because the
 pipeline's manual-finalization and cleanup paths identify Soniox by name.
 """
 
@@ -24,7 +24,7 @@ from pipecat.services.soniox.stt import (
 from websockets.asyncio.client import connect as websocket_connect
 from websockets.protocol import State
 
-from src.soniox_websocket import soniox_connect_options
+from src.soniox_websocket import connect_soniox_websocket
 
 
 class SonioxSTTService(PipecatSonioxSTTService):
@@ -37,7 +37,7 @@ class SonioxSTTService(PipecatSonioxSTTService):
 
             logger.debug("Connecting to Soniox STT")
 
-            websocket = await websocket_connect(self._url, **soniox_connect_options(self._api_key))
+            websocket = await connect_soniox_websocket(self._url, self._api_key, connect_factory=websocket_connect)
             self._websocket = websocket
 
             if not self._websocket:
@@ -88,3 +88,25 @@ class SonioxSTTService(PipecatSonioxSTTService):
             # Never forward transport exception text/objects: they can retain
             # the upgrade request, including its Authorization header.
             await self.push_error(error_msg=f"Unable to connect to Soniox ({type(exc).__name__})")
+
+    async def _get_websocket(self):
+        # Authentication errors can arrive immediately after opening, without
+        # `tokens`. Supply that field for the pinned parser and omit raw error
+        # text, which may echo credentials. Successful token messages pass intact.
+        async for message in super()._get_websocket():
+            try:
+                content = json.loads(message)
+            except ValueError, TypeError:
+                raise ConnectionError("Invalid Soniox realtime response") from None
+            if not isinstance(content, dict):
+                raise ConnectionError("Invalid Soniox realtime response")
+            if content.get("error_code") or content.get("error_message"):
+                code = content.get("error_code")
+                content = {
+                    "tokens": content.get("tokens", []),
+                    "error_code": code if type(code) is int and 100 <= code <= 599 else 500,
+                    "error_message": "Soniox realtime request rejected",
+                    "finished": content.get("finished", False),
+                }
+                message = json.dumps(content)
+            yield message

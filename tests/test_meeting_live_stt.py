@@ -6,6 +6,7 @@ import json
 import pytest
 
 from src.meeting_live_stt import MeetingLiveTranscriber, SonioxMeetingStream
+from src.soniox_region import soniox_realtime_websocket_url
 
 _CLOSED = object()
 
@@ -18,6 +19,8 @@ class FakeWebSocket:
         self.fail_binary_once = fail_binary_once
 
     async def send(self, value):
+        if isinstance(value, str) and value:
+            assert "api_key" not in json.loads(value)
         if isinstance(value, bytes) and self.fail_binary_once:
             self.fail_binary_once = False
             raise ConnectionError("synthetic network loss")
@@ -74,7 +77,9 @@ async def _append(items, value):
 
 
 @pytest.mark.asyncio
-async def test_soniox_meeting_stream_uses_selected_realtime_region():
+@pytest.mark.parametrize("region", ["us", "eu"])
+async def test_soniox_meeting_stream_uses_selected_realtime_region(region):
+    url = soniox_realtime_websocket_url(region)
     websocket = FakeWebSocket()
     connected_urls = []
 
@@ -93,13 +98,14 @@ async def test_soniox_meeting_stream_uses_selected_realtime_region():
         on_segment=lambda segment: _append([], segment),
         on_gap=lambda source, reason: _append([], (source, reason)),
         connect_factory=connect,
-        realtime_url="wss://stt-rt.eu.soniox.com/transcribe-websocket",
+        realtime_url=url,
     )
 
     await stream.start()
     await stream.stop()
 
-    assert connected_urls == ["wss://stt-rt.eu.soniox.com/transcribe-websocket"]
+    assert connected_urls == [url]
+    assert "secret" not in websocket.sent[0]
 
 
 @pytest.mark.asyncio
@@ -398,13 +404,16 @@ async def test_soniox_meeting_stream_reconnects_after_send_failure_and_marks_one
 
 
 @pytest.mark.asyncio
-async def test_soniox_meeting_stream_retries_connect_without_duplicate_gap_markers():
+@pytest.mark.parametrize("region", ["us", "eu"])
+async def test_soniox_meeting_stream_retries_connect_without_duplicate_gap_markers(region):
     first = FakeWebSocket()
     recovered = FakeWebSocket()
     attempts = 0
     gaps = []
+    url = soniox_realtime_websocket_url(region)
 
     async def connect(_url, **kwargs):
+        assert _url == url
         assert kwargs["additional_headers"] == {"Authorization": "Bearer secret"}
         nonlocal attempts
         attempts += 1
@@ -416,6 +425,7 @@ async def test_soniox_meeting_stream_retries_connect_without_duplicate_gap_marke
 
     stream = SonioxMeetingStream(
         meeting_id="meeting-3",
+        realtime_url=url,
         source="system",
         api_key="secret",
         model="stt-rt-v5",

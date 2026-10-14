@@ -1280,14 +1280,14 @@ class LocalSonioxReplayServer:
             return
         self._connected = True
         try:
+            if websocket.request.headers.get("Authorization") != "Bearer local-replay":
+                raise RuntimeError("provider replay Soniox credential sentinel mismatch")
             raw_config = await asyncio.wait_for(websocket.recv(), timeout=10.0)
             if not isinstance(raw_config, str):
                 raise RuntimeError("provider replay Soniox configuration is not JSON")
             config = json.loads(raw_config)
             if not isinstance(config, dict):
                 raise RuntimeError("provider replay Soniox configuration is invalid")
-            if websocket.request.headers.get("Authorization") != "Bearer local-replay":
-                raise RuntimeError("provider replay Soniox credential sentinel mismatch")
             if "api_key" in config:
                 raise RuntimeError("provider replay Soniox legacy authentication is forbidden")
             if config.get("model") != "stt-rt-v5":

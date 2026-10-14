@@ -1455,10 +1455,13 @@ Packaging and scripts:
   fallback when bundled ffmpeg cannot produce WebM, not an API-rejection retry.
 - Soniox realtime authenticates every WebSocket upgrade (including reconnects)
   with `Authorization: Bearer`; start messages must not contain `api_key`.
-  `src/soniox_realtime.py` adapts pinned Pipecat 1.5 connection setup only;
+  `src/soniox_realtime.py` adapts pinned Pipecat 1.5 connection setup and
+  error frames (including authentication errors without tokens);
   preserve its inherited parser and lifecycle and the `SonioxSTTService` name
   used by manual-stop/cleanup. Keep transport wire logging disabled so DEBUG
-  cannot expose credentials. Installed replay enforces the same handshake.
+  cannot expose credentials. The shared transport boundary strips raw exception
+  and close-reason text while retaining normal/error closure classes and codes.
+  Installed replay enforces the same handshake.
 - Soniox realtime live transcription defaults to `stt-rt-v5`. Keep
   `SCRIBER_SONIOX_RT_MODEL` as an override for temporary compatibility, but do
   not restore `stt-rt-v4` as the code default.
