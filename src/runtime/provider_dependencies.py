@@ -36,7 +36,7 @@ class ProviderRuntimeDependencyError(RuntimeError):
 
 STANDARD_PROVIDER_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("pipecat.services.soniox.stt", "Soniox realtime STT provider"),
-    ("src.soniox_realtime_stt", "Soniox connection-time authentication adapter"),
+    ("src.soniox_realtime", "Soniox connection-time authentication adapter"),
     ("src.assemblyai_async_stt", "AssemblyAI async STT adapter"),
     ("pipecat.services.assemblyai.stt", "AssemblyAI realtime STT provider"),
     ("src.mistral_stt", "Mistral realtime and async STT adapters"),

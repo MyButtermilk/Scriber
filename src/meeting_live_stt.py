@@ -164,11 +164,12 @@ class SonioxMeetingStream:
         )
 
     async def _open_websocket(self) -> Any:
-        websocket = await connect_soniox_websocket(
-            self.realtime_url, self.api_key, connect_factory=self.connect_factory
-        )
+        websocket = None
         language_hints = [] if not self.language or self.language == "auto" else [self.language.split("-", 1)[0]]
         try:
+            websocket = await connect_soniox_websocket(
+                self.realtime_url, self.api_key, connect_factory=self.connect_factory
+            )
             await websocket.send(
                 json.dumps(
                     {
@@ -185,9 +186,13 @@ class SonioxMeetingStream:
                     }
                 )
             )
-        except Exception:
-            await websocket.close()
-            raise
+        except BaseException as exc:
+            if websocket is not None:
+                with suppress(Exception):
+                    await websocket.close()
+            if not isinstance(exc, Exception):
+                raise
+            raise RuntimeError(f"Soniox connection setup failed ({type(exc).__name__})") from None
         return websocket
 
     def enqueue(self, pcm: bytes) -> None:

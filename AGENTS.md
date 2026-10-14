@@ -1453,15 +1453,18 @@ Packaging and scripts:
   do not restore `stt-async-v4` as the code default. Direct Soniox async upload
   prefers WebM/Opus, which the provider accepts; WAV is only a local encoding
   fallback when bundled ffmpeg cannot produce WebM, not an API-rejection retry.
+- Soniox realtime authenticates every WebSocket upgrade (including reconnects)
+  with `Authorization: Bearer`; start messages must not contain `api_key`.
+  `src/soniox_realtime.py` adapts pinned Pipecat 1.5 connection setup and
+  error frames (including authentication errors without tokens);
+  preserve its inherited parser and lifecycle and the `SonioxSTTService` name
+  used by manual-stop/cleanup. Keep transport wire logging disabled so DEBUG
+  cannot expose credentials. The shared transport boundary strips raw exception
+  and close-reason text while retaining normal/error closure classes and codes.
+  Installed replay enforces the same handshake.
 - Soniox realtime live transcription defaults to `stt-rt-v5`. Keep
   `SCRIBER_SONIOX_RT_MODEL` as an override for temporary compatibility, but do
   not restore `stt-rt-v4` as the code default.
-- Soniox WebSockets authenticate with `Authorization: Bearer <API_KEY>` at
-  connection time, including every reconnect in both regions. Never include
-  `api_key` in the start message. `soniox_websocket.py` keeps wire logging
-  private; `soniox_realtime_stt.py` adapts pinned Pipecat 1.5 connection setup
-  while retaining its transcription and reconnect lifecycle. The local replay
-  server requires the same header contract with only its inert sentinel key.
 - Soniox data residency defaults to `SCRIBER_SONIOX_REGION=us`. Settings may
   select only `us` or `eu`; persist the choice independently of the API key.
   Every Soniox boundary in one session must resolve from that same choice:

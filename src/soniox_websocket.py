@@ -11,9 +11,16 @@ from websockets.frames import Close
 # websockets DEBUG logs include the complete HTTP upgrade headers and frames.
 # Keep this logger private (outside logging's registry), even when root DEBUG
 # logging is enabled. Provider lifecycle diagnostics belong to the callers.
-_WIRE_LOGGER = logging.Logger("scriber.soniox.websocket", level=logging.CRITICAL + 1)
-_WIRE_LOGGER.addHandler(logging.NullHandler())
+_WIRE_LOGGER = logging.Logger("scriber.soniox.websocket")
 _WIRE_LOGGER.propagate = False
+_WIRE_LOGGER.disabled = True
+
+
+def soniox_connect_options(api_key: str) -> dict:
+    return {
+        "additional_headers": {"Authorization": f"Bearer {api_key}"},
+        "logger": _WIRE_LOGGER,
+    }
 
 
 async def _private_operation(operation: Awaitable[Any]) -> Any:
@@ -62,8 +69,7 @@ async def connect_soniox_websocket(url: str, api_key: str, *, connect_factory: C
     try:
         websocket = await (connect_factory or connect)(
             url,
-            additional_headers={"Authorization": f"Bearer {api_key}"},
-            logger=_WIRE_LOGGER,
+            **soniox_connect_options(api_key),
         )
         return _PrivateSonioxWebSocket(websocket)
     except Exception as exc:
