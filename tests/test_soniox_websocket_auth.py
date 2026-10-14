@@ -29,6 +29,8 @@ class Socket:
 
     async def __aiter__(self):
         for message in self.messages:
+            if isinstance(message, BaseException):
+                raise message
             yield message
 
 
@@ -210,6 +212,71 @@ async def test_real_upgrade_sends_bearer_header_without_debug_log_leak(caplog):
     assert "Sec-WebSocket-Protocol" not in requests[0].headers
     assert KEY not in requests[0].path
     assert KEY not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["send", "ping", "close", "receive"])
+@pytest.mark.parametrize("code", [1000, 1008])
+async def test_transport_errors_preserve_close_class_and_code_without_reason(operation, code):
+    from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
+    from websockets.frames import Close
+
+    error_type = ConnectionClosedOK if code == 1000 else ConnectionClosedError
+    error = error_type(Close(code, KEY), Close(code, KEY), True)
+    socket = Socket([error])
+    if operation != "receive":
+        getattr(socket, operation).side_effect = error
+    websocket = await soniox_websocket.connect_soniox_websocket(
+        "wss://synthetic.invalid", KEY, connect_factory=AsyncMock(return_value=socket)
+    )
+    with pytest.raises(error_type) as caught:
+        if operation == "receive":
+            await anext(websocket)
+        elif operation == "send":
+            await websocket.send(b"audio")
+        else:
+            await getattr(websocket, operation)()
+    assert caught.value.rcvd.code == code
+    assert caught.value.sent.code == code
+    assert caught.value.rcvd_then_sent is True
+    assert KEY not in str(caught.value)
+    assert KEY not in repr(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_real_server_close_reason_never_reaches_pipecat_logs_or_errors(service):
+    from websockets.exceptions import ConnectionClosedError
+
+    closed = asyncio.Event()
+
+    async def handler(websocket):
+        await websocket.recv()
+        await websocket.close(code=1008, reason=f"Invalid API key {KEY}")
+        closed.set()
+
+    server_logger = logging.Logger("test.soniox.server", level=logging.CRITICAL + 1)
+    server_logger.propagate = False
+    frames = []
+    service.push_frame = AsyncMock(side_effect=lambda frame, *_args, **_kwargs: frames.append(frame))
+    service._reconnect_on_error = False
+    logs = []
+    sink = logger.add(lambda message: logs.append(str(message)), level="DEBUG")
+    try:
+        async with serve(handler, "127.0.0.1", 0, logger=server_logger) as server:
+            service._url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+            await service._connect_websocket()
+            await asyncio.wait_for(closed.wait(), timeout=2)
+            with pytest.raises(ConnectionClosedError):
+                await service._websocket.send(b"audio")
+            assert not await service._verify_connection()
+            await service._receive_task_handler(service._report_error)
+        assert frames
+        assert any("1008" in frame.error for frame in frames)
+        assert KEY not in "".join(logs)
+        assert KEY not in repr(frames)
+    finally:
+        logger.remove(sink)
+        await service.cleanup()
 
 
 @pytest.mark.asyncio
