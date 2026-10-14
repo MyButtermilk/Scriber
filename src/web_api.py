@@ -133,6 +133,7 @@ from src.audio_prepare import (
     prepare_provider_audio_file,
 )
 from src.config import Config
+from src.core.error_diagnostics import exception_diagnostics
 from src.core.error_taxonomy import ErrorCategory, classify_error_message, is_retryable
 from src.core.hot_path_tracer import HotPathTracer
 from src.core.logging_setup import emit_event, run_diagnostic_write, setup_logging
@@ -4704,7 +4705,6 @@ class ScriberWebController:
         active = False
         if (
             force_route_restart
-            and self._mic_prewarm.is_active
             and not self._is_listening
             and not self._is_stopping
             and self._meeting_store.active() is None
@@ -4713,10 +4713,9 @@ class ScriberWebController:
             # Merely calling resume used to keep the old prewarm ID alive, so
             # the hotkey path had to rediscover/reject it at user-interaction
             # time.
-            await asyncio.to_thread(
-                self._mic_prewarm.stop,
-                reason="settings_route_changed",
-            )
+            active = await to_thread_cancellation_barrier(self._mic_prewarm.restart_for_route_change)
+            self._start_mic_watchdog()
+            return active
         if self._is_listening or self._is_stopping or self._meeting_store.active() is not None:
             await asyncio.to_thread(self._mic_prewarm.pause_for_active_capture)
         else:
@@ -4817,6 +4816,7 @@ class ScriberWebController:
         favorite_restored = False
         restored_device_id = ""
         restored_device_label = ""
+        mic_route_changed = False
 
         if favorite and favorite != "default":
             favorite_restored, restored_device_id, restored_device_label = devices_contain_name(devices, favorite)
@@ -4827,6 +4827,7 @@ class ScriberWebController:
                 and restored_device_id != Config.MIC_DEVICE
             ):
                 Config.set_mic_device(restored_device_id)
+                mic_route_changed = True
                 logger.info(f"[DeviceMonitor] Favorite mic restored: {restored_device_label}")
 
         payload: dict[str, Any] = {
@@ -4858,7 +4859,7 @@ class ScriberWebController:
                         auto_resume=default_changed,
                     )
         if not self._is_listening and not self._is_stopping:
-            await self._sync_idle_mic_prewarm_after_settings()
+            await self._sync_idle_mic_prewarm_after_settings(force_route_restart=mic_route_changed)
 
     async def _reconnect_meeting_after_device_change(
         self, meeting: dict[str, Any], *, reason: str, auto_resume: bool
@@ -6159,6 +6160,10 @@ class ScriberWebController:
         self._provider_router.record_success(provider)
 
     def _record_provider_failure(self, provider: str, error: Exception | str) -> None:
+        # Native capture fails before the provider can accept audio. Counting
+        # those failures would incorrectly open a healthy provider's circuit.
+        if provider_user_error(provider, error).provider == "microphone":
+            return
         self._provider_router.record_failure(provider, error)
 
     def _retry_delay_seconds(self, attempts: int) -> float:
@@ -9518,6 +9523,17 @@ class ScriberWebController:
         except asyncio.CancelledError:
             pass
         except Exception as exc:  # pragma: no cover - runtime dependent
+            diagnostics = exception_diagnostics(exc)
+            try:
+                diagnostics_getter = getattr(self._pipeline, "last_error_diagnostics", None)
+                if callable(diagnostics_getter):
+                    pipeline_diagnostics = diagnostics_getter()
+                    if isinstance(pipeline_diagnostics, dict):
+                        diagnostics.update(pipeline_diagnostics)
+            except Exception as diagnostics_exc:
+                logger.warning(
+                    "Pipeline failure diagnostics unavailable (error_type={})", type(diagnostics_exc).__name__
+                )
             logger.error(
                 "Pipeline error (error_type={})",
                 type(exc).__name__,
@@ -9543,11 +9559,11 @@ class ScriberWebController:
             )
             self._emit_workflow_event(
                 message=f"Pipeline task failed: {user_msg}",
-                event="pipeline.session.failed",
+                event="pipeline.audio.failed" if info.provider == "microphone" else "pipeline.session.failed",
                 workflow="live_mic",
-                stage="pipeline_error",
+                stage="audio_start" if info.provider == "microphone" else "pipeline_error",
                 level="ERROR",
-                component="pipeline",
+                component="microphone" if info.provider == "microphone" else "pipeline",
                 session_id=session_id,
                 record=self._current,
                 provider=self._active_provider,
@@ -9555,7 +9571,7 @@ class ScriberWebController:
                 outcome="failure",
                 error_category=category.value,
                 meta={
-                    "error_type": type(exc).__name__,
+                    **diagnostics,
                     "provider_error_code": info.code,
                 },
             )
@@ -12611,6 +12627,17 @@ class ScriberWebController:
             def on_pipeline_error(error_msg: str):
                 if session_id != self._session_id:
                     return
+                diagnostics = exception_diagnostics(error_msg)
+                try:
+                    diagnostics_getter = getattr(self._pipeline, "last_error_diagnostics", None)
+                    if callable(diagnostics_getter):
+                        pipeline_diagnostics = diagnostics_getter()
+                        if isinstance(pipeline_diagnostics, dict):
+                            diagnostics.update(pipeline_diagnostics)
+                except Exception as diagnostics_exc:
+                    logger.warning(
+                        "Pipeline failure diagnostics unavailable (error_type={})", type(diagnostics_exc).__name__
+                    )
                 logger.error("Pipeline error callback received")
                 if provider_replay_execution is not None:
                     provider_replay_execution.fail("provider_failed")
@@ -12632,11 +12659,11 @@ class ScriberWebController:
                 )
                 self._emit_workflow_event(
                     message=f"Pipeline error: {user_msg}",
-                    event="pipeline.provider.failed",
+                    event="pipeline.audio.failed" if info.provider == "microphone" else "pipeline.provider.failed",
                     workflow="live_mic",
-                    stage="pipeline_error",
+                    stage="audio_start" if info.provider == "microphone" else "pipeline_error",
                     level="ERROR",
-                    component="pipeline",
+                    component="microphone" if info.provider == "microphone" else "pipeline",
                     session_id=session_id,
                     record=rec,
                     provider=self._active_provider,
@@ -12644,7 +12671,7 @@ class ScriberWebController:
                     outcome="failure",
                     error_category=category.value,
                     meta={
-                        "error_type": "ProviderErrorFrame",
+                        **diagnostics,
                         "provider_error_code": info.code,
                     },
                 )

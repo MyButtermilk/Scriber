@@ -1227,7 +1227,12 @@ Packaging and scripts:
   compatibility probes; Rust's actual opened-endpoint comparison remains the
   fail-closed authority. Native device events and microphone/favorite Settings
   changes must invalidate the resolution cache and rebuild idle prewarm before
-  the next hotkey. A capture without a valid leased route keeps the normal
+  the next hotkey. Favorite restoration during device refresh must also rebuild
+  a prewarm start whose native response is still in flight. Invalidate its
+  generation and settle its cleanup before publishing the current route; an
+  unconfirmed native stop retains ownership and blocks replacement. Never
+  weaken the exact route/configuration match at adoption to hide stale metadata.
+  A capture without a valid leased route keeps the normal
   fresh-resolution path. The reverse stop handoff is equally overlap-first:
   a replacement prewarm must successfully call `IAudioClient.Start()` and
   report ready before Tauri drains the active capture sidecar. A failed prewarm
@@ -2130,6 +2135,13 @@ Packaging and scripts:
   Off closes and drains diagnostic writers, including optional metric workers,
   while shell child pipes continue draining without writing files. Re-enabling
   appends to existing logs. Transcript and durable job writes are unaffected.
+  Live Mic failures retain bounded exception types and code-only stack/cause
+  locations plus content-free native startup counters and durations. Keep this
+  metadata visible through the Debug Console projection; never include exception
+  messages, frame locals, source lines, device identities, or absolute paths.
+  Diagnostic collection is best effort and must not prevent failure delivery or
+  capture cleanup. Native microphone failures must not count against the selected
+  STT provider's circuit or be presented as that provider's error.
   `operation_diagnostics.py` records authenticated mutations by route template,
   never bodies, query strings, concrete IDs, or raw exception messages. Keep
   HTTP completion separate from background-job completion and distinct latency

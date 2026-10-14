@@ -215,6 +215,52 @@ def test_structured_log_context_caps_legacy_metric_dumps(monkeypatch, tmp_path):
     assert len(public_meta) < len(oversized_meta)
 
 
+def test_recording_failure_code_locations_survive_file_to_console_projection(monkeypatch, tmp_path):
+    path = tmp_path / "latest.structured.jsonl"
+    monkeypatch.setattr(debug_logs, "_candidate_log_files", lambda: [path])
+    monkeypatch.setattr(debug_logs, "load_clear_offsets", lambda: {})
+    diagnostics = {
+        "error_type": "RuntimeError",
+        "error_stack": ["src.pipeline:start:4002", "pipecat.pipeline.worker:run:100"],
+        "error_causes": [
+            {"error_type": "TimeoutError", "error_stack": ["asyncio.tasks:wait_for:507"]},
+        ],
+        "provider_error_code": "unknown",
+        "audio_start": {
+            "prewarmRequested": True,
+            "prewarmAdopted": True,
+            "firstLiveFrameTimeoutMs": 1500,
+            "firstLiveFrameWaitMs": 1000,
+            "deviceSelectionMs": 20,
+            "captureStartResponseMs": 200,
+            "framePipeFramesRead": 9,
+            "framePipePrebufferFramesRead": 8,
+            "framePipeLiveFramesRead": 1,
+            "callbackCount": 9,
+            "liveCaptureReady": True,
+            "sidecarStopConfirmed": False,
+            "captureRouteSource": "prewarmLease",
+        },
+    }
+    record = {
+        "record": {
+            "message": "Pipeline task failed",
+            "level": {"name": "ERROR"},
+            "extra": {
+                "event": "pipeline.session.failed",
+                "workflow": "live_mic",
+                "meta": {**diagnostics, "error": "PRIVATE_ERROR", "transcript": "PRIVATE_TRANSCRIPT"},
+            },
+        },
+    }
+    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    payload = debug_logs.collect_debug_logs(limit=20)
+
+    assert payload["items"][0]["context"]["meta"] == diagnostics
+    assert "PRIVATE" not in json.dumps(payload)
+
+
 def test_clear_marker_resets_when_log_file_is_replaced(monkeypatch, tmp_path):
     data_dir = tmp_path / "data"
     logs_dir = data_dir / "logs"

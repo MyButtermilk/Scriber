@@ -1847,7 +1847,9 @@ def test_rust_prototype_stop_keeps_reader_alive_until_sidecar_eos(monkeypatch):
     ]
 
 
-def test_rust_prototype_start_waits_for_live_frame_after_callbacking_prebuffer(monkeypatch):
+@pytest.mark.parametrize("live_start_delay", [0.0, 0.75])
+def test_rust_prototype_start_waits_for_live_frame_after_callbacking_prebuffer(monkeypatch, live_start_delay):
+    monkeypatch.delenv("SCRIBER_RUST_AUDIO_FIRST_FRAME_TIMEOUT_SEC", raising=False)
     prebuffer_audio = np.full((16, 1), 100, dtype=np.int16)
     live_audio = np.full((16, 1), 200, dtype=np.int16)
     prebuffer_frame = encode_audio_frame(
@@ -1946,7 +1948,6 @@ def test_rust_prototype_start_waits_for_live_frame_after_callbacking_prebuffer(m
         device="default",
         shell_call=shell_call,
         reader_factory=lambda *_args, **_kwargs: GatedReader(),
-        first_frame_timeout_seconds=1.0,
     )
     source.open(lambda *args: calls.append(args))
     start_result: list[object] = []
@@ -1965,13 +1966,23 @@ def test_rust_prototype_start_waits_for_live_frame_after_callbacking_prebuffer(m
     np.testing.assert_array_equal(calls[0][0], prebuffer_audio)
     assert start_thread.is_alive(), "PREBUFFER must not make native capture live-ready"
 
-    release_live.set()
-    start_thread.join(timeout=1.0)
-    assert not start_thread.is_alive()
-    assert start_result == ["ready"]
-    assert len(calls) == 2
-    np.testing.assert_array_equal(calls[1][0], live_audio)
-    source.stop(close=True)
+    try:
+        # Windows may need more than 500 ms to start a replacement WASAPI
+        # client. Buffered audio alone must not end Preparing, and a healthy
+        # delayed live frame must not close the recording automatically.
+        if live_start_delay:
+            threading.Event().wait(live_start_delay)
+        release_live.set()
+        start_thread.join(timeout=2.0)
+        assert not start_thread.is_alive()
+        assert start_result == ["ready"]
+        assert commands == ["audioCaptureStart"]
+        assert len(calls) == 2
+        np.testing.assert_array_equal(calls[1][0], live_audio)
+    finally:
+        release_live.set()
+        start_thread.join(timeout=2.0)
+        source.stop(close=True)
     assert commands[-1] == "audioCaptureStop"
 
 
@@ -3107,10 +3118,68 @@ async def test_microphone_terminal_eos_failure_suppresses_last_chunk_marker(monk
 def test_rust_audio_timeout_configuration_is_finite_and_bounded(monkeypatch):
     monkeypatch.setenv("SCRIBER_RUST_AUDIO_FIRST_FRAME_TIMEOUT_SEC", "inf")
     monkeypatch.setenv("SCRIBER_RUST_AUDIO_FAILURE_COOLDOWN_SEC", "inf")
-    assert microphone._rust_first_frame_timeout_seconds() == 0.5
+    assert microphone._rust_first_frame_timeout_seconds() == 3.0
     assert microphone._rust_audio_failure_cooldown_seconds() == 60.0
 
     monkeypatch.setenv("SCRIBER_RUST_AUDIO_FIRST_FRAME_TIMEOUT_SEC", "999")
     monkeypatch.setenv("SCRIBER_RUST_AUDIO_FAILURE_COOLDOWN_SEC", "99999")
     assert microphone._rust_first_frame_timeout_seconds() == 10.0
     assert microphone._rust_audio_failure_cooldown_seconds() == 3600.0
+
+
+def test_rust_start_without_live_frames_still_stops_at_bounded_deadline(monkeypatch):
+    commands = []
+
+    def shell_call(command, *_args, **_kwargs):
+        commands.append(command)
+        return {"success": True, "payload": {"stopped": True}}
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=16,
+        device="default",
+        shell_call=shell_call,
+        first_frame_timeout_seconds=0.05,
+    )
+    source._frame_pipe = "test-pipe"
+    source.stream_id = "test-capture"
+    monkeypatch.setattr(source, "_read_frame_pipe", lambda: source._stop_event.wait(1.0))
+    with pytest.raises(RuntimeError, match="first live frame in time"):
+        source.start()
+
+    assert commands == ["audioCaptureStop"]
+    assert source.native_audio_stop_confirmed() is True
+    assert source.first_live_frame_wait_ms >= 40.0
+    assert source.fallback_reason == "rustFirstLiveFrameTimeout"
+    assert not source._reader_thread.is_alive()
+
+
+def test_microphone_startup_diagnostics_exclude_content_and_endpoint_identity():
+    mic = microphone.MicrophoneInput(sample_rate=16000, channels=1, block_size=16)
+    mic._rust_prewarm_id = "private-prewarm-id"
+    mic._frame_source = types.SimpleNamespace(
+        _first_frame_timeout_seconds=3.0,
+        diagnostic_snapshot=lambda: {
+            "firstLiveFrameWaitMs": 750.0,
+            "deviceSelectionMs": float("nan"),
+            "captureRouteSource": "prewarmLease",
+            "sidecarStopConfirmed": True,
+            "framePipeLiveFramesRead": 1,
+            "adoptedPrewarm": {"prewarmId": "private-prewarm-id"},
+            "device": "private-device",
+            "lastError": "private-content",
+            "framePipe": "private-path",
+            "callbackCount": 1,
+        },
+    )
+
+    result = mic.startup_diagnostics()
+
+    assert result["firstLiveFrameWaitMs"] == 750.0
+    assert result["firstLiveFrameTimeoutMs"] == 3000.0
+    assert result["deviceSelectionMs"] is None
+    assert result["prewarmRequested"] is True
+    assert result["prewarmAdopted"] is True
+    assert result["sidecarStopConfirmed"] is True
+    assert "private" not in str(result)

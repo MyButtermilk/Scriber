@@ -61,6 +61,10 @@ class _FakeMicPrewarmManager:
         self.active = bool(web_api.Config.MIC_ALWAYS_ON)
         return self.active
 
+    def restart_for_route_change(self) -> bool:
+        self.stop(reason="settings_route_changed")
+        return self.resume_after_active_capture()
+
     def ensure_healthy(self, *, reason: str = "watchdog", max_callback_gap_seconds=None) -> bool:
         self.ensure_calls += 1
         self.active = bool(web_api.Config.MIC_ALWAYS_ON or self.temporary)
@@ -1520,6 +1524,66 @@ async def test_device_change_bursts_are_coalesced_and_handler_failures_are_consu
 
     assert handled == [[{"deviceId": "latest"}]]
     assert ctl._device_change_task is None
+
+
+@pytest.mark.asyncio
+async def test_favorite_restore_reconciles_inflight_prewarm_route_before_hotkey(monkeypatch):
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True)
+    monkeypatch.setattr(web_api.Config, "MIC_DEVICE", "old-index")
+    monkeypatch.setattr(web_api.Config, "FAVORITE_MIC", "Favorite")
+    monkeypatch.setenv("SCRIBER_MIC_DEVICE", "old-index")
+    monkeypatch.setattr(web_api, "devices_contain_name", lambda *_args: (True, "new-index", "Favorite"))
+    ctl = ScriberWebController.__new__(ScriberWebController)
+    ctl._is_listening = False
+    ctl._is_stopping = False
+    ctl._meeting_store = types.SimpleNamespace(active=lambda: None)
+    ctl._mic_prewarm = _FakeMicPrewarmManager()
+    ctl._start_mic_watchdog = MagicMock()
+    ctl.broadcast = AsyncMock()
+
+    # A still-starting native prewarm has no published ID yet. The route change
+    # must nevertheless reach the manager's invalidation/join boundary.
+    assert ctl._mic_prewarm.is_active is False
+    await ctl._handle_devices_changed([], reason="device_added")
+    assert ctl._mic_prewarm.stop_reasons == ["settings_route_changed"]
+    assert web_api.Config.MIC_DEVICE == "new-index"
+
+    # Repeating the same inventory is not a reason to discard a healthy stream.
+    await ctl._handle_devices_changed([], reason="poll")
+    assert ctl._mic_prewarm.stop_reasons == ["settings_route_changed"]
+
+
+@pytest.mark.asyncio
+async def test_route_restart_cancellation_waits_for_native_worker(monkeypatch):
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", True)
+    entered = threading.Event()
+    release = threading.Event()
+    completed = threading.Event()
+
+    def restart():
+        entered.set()
+        assert release.wait(timeout=2)
+        completed.set()
+        return True
+
+    ctl = ScriberWebController.__new__(ScriberWebController)
+    ctl._is_listening = False
+    ctl._is_stopping = False
+    ctl._meeting_store = types.SimpleNamespace(active=lambda: None)
+    ctl._mic_prewarm = types.SimpleNamespace(restart_for_route_change=restart)
+    ctl._start_mic_watchdog = MagicMock()
+    task = asyncio.create_task(ctl._sync_idle_mic_prewarm_after_settings(force_route_restart=True))
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert task.done() is False
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert completed.is_set()
 
 
 @pytest.mark.asyncio
@@ -4003,6 +4067,79 @@ class _PrewarmAwarePipeline:
 class _EarlyFailingPrewarmPipeline(_PrewarmAwarePipeline):
     async def start(self):
         raise RuntimeError("synthetic provider initialization failure")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("diagnostics_fail", [False, True])
+async def test_pipeline_error_diagnostics_never_prevent_notification_and_emergency_stop(
+    monkeypatch, tmp_path, diagnostics_fail
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    web_api.db._close_all_connections()
+    monkeypatch.setattr(web_api.db, "_DB_PATH", tmp_path / "lifecycle.db")
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._mic_prewarm = _FakeRustMicPrewarmManager()
+
+    class PipelineWithDiagnostics(_PrewarmAwarePipeline):
+        def __init__(self, *args, on_error=None, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.on_error = on_error
+
+        def last_error_diagnostics(self):
+            if diagnostics_fail:
+                raise RuntimeError("PRIVATE_DIAGNOSTICS_ERROR")
+            return {
+                "error_type": "RuntimeError",
+                "error_stack": ["src.microphone:start:938"],
+                "audio_start": {"prewarmAdopted": True, "framePipeLiveFramesRead": 0},
+            }
+
+    with (
+        patch("src.web_api.ScriberPipeline", PipelineWithDiagnostics),
+        patch.object(ctl, "_select_available_provider", return_value="azure_mai"),
+        patch.object(ctl, "_validate_live_provider_ready", return_value=None),
+        patch.object(ctl, "broadcast", new=AsyncMock()) as broadcast,
+        patch.object(ctl, "_emergency_stop_pipeline", new=AsyncMock()) as emergency_stop,
+        patch.object(ctl, "_emit_workflow_event") as emit_event,
+        patch.object(ctl, "_get_overlay", return_value=None),
+        patch("src.web_api.show_initializing_overlay"),
+        patch("src.web_api.show_recording_overlay"),
+    ):
+        await ctl.start_listening()
+        pipeline = ctl._pipeline
+        session_id = ctl._session_id
+        pipeline.on_error(
+            "Error processing frame: Microphone initialization failed: "
+            "Rust audio capture did not deliver a first live frame in time"
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        emergency_stop.assert_awaited_once_with(session_id=session_id)
+        errors = [call.args[0] for call in broadcast.await_args_list if call.args[0].get("type") == "error"]
+        assert len(errors) == 1
+        assert errors[0]["title"] == "Microphone error"
+        event = next(
+            call.kwargs for call in emit_event.call_args_list if call.kwargs["event"] == "pipeline.audio.failed"
+        )
+        assert event["stage"] == "audio_start"
+        assert event["component"] == "microphone"
+        assert event["provider"] == "azure_mai"
+        assert event["meta"]["provider_error_code"] == "rustFirstLiveFrameTimeout"
+        if diagnostics_fail:
+            assert event["meta"]["error_type"] == "ProviderErrorFrame"
+        else:
+            assert event["meta"]["error_stack"] == ["src.microphone:start:938"]
+            assert event["meta"]["audio_start"]["framePipeLiveFramesRead"] == 0
+        assert "PRIVATE_DIAGNOSTICS_ERROR" not in json.dumps(event["meta"])
+
+        pipeline.stop_gate.set()
+        await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
+
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
+    ctl.shutdown()
+    web_api.db._close_all_connections()
 
 
 @pytest.mark.asyncio

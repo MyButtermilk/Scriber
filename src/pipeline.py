@@ -48,6 +48,7 @@ from src.audio_prepare import (
     ProviderAudioPreparationError,
     prepare_provider_audio_file,
 )
+from src.core.error_diagnostics import exception_diagnostics
 from src.core.provider_audio_formats import (
     SPEECHMATICS_BATCH_DEFAULT_BASE_URL,
     SPEECHMATICS_REALTIME_DEFAULT_BASE_URL,
@@ -1996,6 +1997,7 @@ class ScriberPipeline:
         self._vad_observer: PipecatVadSpeechObserver | None = None
         self.is_active = False
         self._terminal_error: str | None = None
+        self._last_error_diagnostics: dict[str, Any] = {}
         self._audio_cleanup_lock = asyncio.Lock()
         self._mic_prewarm_handoff_prepared = False
         self._mic_prewarm_handoff_resumed = False
@@ -2342,6 +2344,29 @@ class ScriberPipeline:
         if normalized and not self._terminal_error:
             self._terminal_error = normalized
 
+    def last_error_diagnostics(self) -> dict[str, Any]:
+        """Return sanitized failure evidence before controller cleanup clears capture."""
+        details = dict(self._last_error_diagnostics)
+        startup_diagnostics = getattr(self.audio_input, "startup_diagnostics", None)
+        if callable(startup_diagnostics):
+            # Diagnostics must never prevent the error callback from stopping
+            # native capture, including when the failed source is half-built.
+            with contextlib.suppress(Exception):
+                details["audio_start"] = startup_diagnostics()
+                self._last_error_diagnostics["audio_start"] = details["audio_start"]
+        return details
+
+    async def _handle_pipeline_error(self, task, frame) -> None:
+        error_msg = str(frame.error) if hasattr(frame, "error") else str(frame)
+        error = getattr(frame, "exception", None)
+        self._last_error_diagnostics.update(exception_diagnostics(error if isinstance(error, Exception) else error_msg))
+        self._record_terminal_error(error_msg)
+        logger.bind(meta=self.last_error_diagnostics()).error("Pipeline processing failed")
+        if self.on_error:
+            self.on_error(error_msg)
+        if "timeout" in error_msg.lower() or "handshake" in error_msg.lower():
+            await task.cancel(reason="pipeline transport failed")
+
     def _mark_final_transcription_received(self) -> None:
         self._final_transcription_generation += 1
         self._last_final_transcription_at = time.monotonic()
@@ -2681,6 +2706,8 @@ class ScriberPipeline:
                         self._provider_replay_capture_attestation = capture_snapshot()
                     except Exception:
                         self._provider_replay_capture_attestation = None
+                if self._terminal_error:
+                    self.last_error_diagnostics()
                 self.audio_input = None
                 self._mic_prewarm_handoff_prepared = False
                 self._mic_prewarm_handoff_resumed = False
@@ -3845,6 +3872,7 @@ class ScriberPipeline:
         self._provider_request_state = "not_started"
         self._provider_replay_capture_attestation = None
         self._terminal_error = None
+        self._last_error_diagnostics = {}
         self._vad_observer = None
         self._silence_stop_observer = None
         self._capture_stopped_notified = False
@@ -4073,13 +4101,7 @@ class ScriberPipeline:
 
                     @self.task.event_handler("on_pipeline_error")
                     async def handle_pipeline_error(task, frame):
-                        error_msg = str(frame.error) if hasattr(frame, "error") else str(frame)
-                        logger.error("Pipeline error event received")
-                        if self.on_error:
-                            self.on_error(error_msg)
-                        # Cancel the pipeline on connection errors to prevent stuck state
-                        if "timeout" in error_msg.lower() or "handshake" in error_msg.lower():
-                            await task.cancel(reason=error_msg)
+                        await self._handle_pipeline_error(task, frame)
 
                 # Disable signal handling because runner executes in background thread
                 self.runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)

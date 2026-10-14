@@ -174,8 +174,14 @@ class RustAudioPrewarmManager:
         self._lock = threading.RLock()
         self._shell_call = shell_call or call_shell_ipc
         self._start_in_progress = False
+        self._start_settled = threading.Event()
+        self._start_settled.set()
+        self._route_restart_lock = threading.Lock()
+        self._route_restart_in_progress = False
         self._start_generation = 0
+        self._route_restart_cancel_generation = 0
         self._prewarm_id = ""
+        self._pending_stop_prewarm_id = ""
         self._prewarm_payload: dict[str, Any] = {}
         self._stream_signature: dict[str, Any] = {}
         self._route_generation = 0
@@ -232,7 +238,7 @@ class RustAudioPrewarmManager:
     @property
     def is_active(self) -> bool:
         with self._lock:
-            return bool(self._prewarm_id)
+            return bool(self._prewarm_id or self._pending_stop_prewarm_id)
 
     def diagnostic_snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -289,6 +295,8 @@ class RustAudioPrewarmManager:
                 "lastStartResponseMs": self._last_start_response_ms,
                 "lastStartSuccess": self._last_start_success,
                 "startInProgress": self._start_in_progress,
+                "routeRestartInProgress": self._route_restart_in_progress,
+                "stopPending": bool(self._pending_stop_prewarm_id),
                 "lastStopAgoSeconds": (
                     round(time.monotonic() - self._last_stop_at, 3) if self._last_stop_at > 0 else None
                 ),
@@ -375,7 +383,7 @@ class RustAudioPrewarmManager:
             self.stop(reason="disabled")
             return False
         with self._lock:
-            if self._paused_for_active_capture or self._paused_for_device_refresh:
+            if self._paused_for_active_capture or self._paused_for_device_refresh or self._route_restart_in_progress:
                 return False
         return self.start(temporary=temporary, prebuffer_ms=prebuffer_ms)
 
@@ -384,9 +392,17 @@ class RustAudioPrewarmManager:
         *,
         temporary: bool = False,
         prebuffer_ms: int | None = None,
+        expected_generation: int | None = None,
     ) -> bool:
         with self._lock:
-            if self._paused_for_active_capture or self._paused_for_device_refresh:
+            if expected_generation is not None and self._start_generation != expected_generation:
+                return False
+            if (
+                self._paused_for_active_capture
+                or self._paused_for_device_refresh
+                or self._route_restart_in_progress
+                or self._pending_stop_prewarm_id
+            ):
                 return False
             if self._prewarm_id:
                 self._temporary_idle_prewarm = bool(temporary and not Config.MIC_ALWAYS_ON)
@@ -394,6 +410,7 @@ class RustAudioPrewarmManager:
             if self._start_in_progress:
                 return False
             self._start_in_progress = True
+            self._start_settled.clear()
             start_generation = self._start_generation
             active_resume_started_at = self._pending_active_capture_resume_attempt_at
             active_resume_detach_at = self._last_active_capture_detach_at
@@ -446,7 +463,7 @@ class RustAudioPrewarmManager:
                     # A concurrent stop can then see and close this exact ID.
                     self._prewarm_id = prewarm_id
             if not keep_started_session:
-                self._stop_sidecar_prewarm(prewarm_id, reason="disabled_after_start")
+                self._stop_owned_prewarm(prewarm_id, reason="disabled_after_start")
                 with self._lock:
                     self._prewarm_id = ""
                     self._prewarm_payload = {}
@@ -555,7 +572,7 @@ class RustAudioPrewarmManager:
             return True
         except Exception as exc:
             if started_prewarm_id:
-                self._stop_sidecar_prewarm(
+                self._stop_owned_prewarm(
                     started_prewarm_id,
                     reason="start_failed_after_sidecar_start",
                 )
@@ -591,6 +608,7 @@ class RustAudioPrewarmManager:
         finally:
             with self._lock:
                 self._start_in_progress = False
+                self._start_settled.set()
 
     def _build_start_payload(self, *, prebuffer_ms: int | None = None) -> dict[str, Any]:
         sample_rate = int(getattr(Config, "SAMPLE_RATE", 16000) or 16000)
@@ -778,7 +796,13 @@ class RustAudioPrewarmManager:
         with self._lock:
             if not Config.MIC_ALWAYS_ON and not self._temporary_idle_prewarm:
                 return None
-            if self._paused_for_device_refresh or self._active_capture_attached or not self._prewarm_id:
+            if (
+                self._paused_for_device_refresh
+                or self._route_restart_in_progress
+                or self._pending_stop_prewarm_id
+                or self._active_capture_attached
+                or not self._prewarm_id
+            ):
                 return None
             signature = dict(self._stream_signature)
             if int(signature.get("sample_rate") or 0) != int(sample_rate):
@@ -865,7 +889,13 @@ class RustAudioPrewarmManager:
         with self._lock:
             if not Config.MIC_ALWAYS_ON and not self._temporary_idle_prewarm:
                 return None
-            if self._paused_for_device_refresh or self._active_capture_attached or not self._prewarm_id:
+            if (
+                self._paused_for_device_refresh
+                or self._route_restart_in_progress
+                or self._pending_stop_prewarm_id
+                or self._active_capture_attached
+                or not self._prewarm_id
+            ):
                 return None
             signature = self._stream_signature
             if int(signature.get("sample_rate") or 0) != int(sample_rate):
@@ -996,6 +1026,41 @@ class RustAudioPrewarmManager:
             self._record_event_locked("device_refresh_resume", "device_refresh")
         return self.start_if_enabled()
 
+    def restart_for_route_change(self) -> bool:
+        """Settle an old idle start before publishing the changed Settings route.
+
+        DeviceMonitor resumes on its own thread while the controller restores
+        the favorite's new index. Invalidate that old start even before it has
+        returned an ID, then join its cleanup outside the state lock. This work
+        happens during device reconciliation, never on the normal hotkey path.
+        """
+        with self._lock:
+            request_generation = self._route_restart_cancel_generation
+        with self._route_restart_lock:
+            with self._lock:
+                if self._route_restart_cancel_generation != request_generation:
+                    return False
+                # The controller checked idle before entering its worker. A
+                # hotkey or device refresh may have acquired the lease since
+                # then; its eventual resume will use the current Settings route.
+                if self._paused_for_active_capture or self._active_capture_attached or self._paused_for_device_refresh:
+                    return False
+                self._route_restart_in_progress = True
+                generation = self._start_generation + 1
+            try:
+                self.stop(reason="settings_route_changed")
+                if not self._start_settled.wait(timeout=3.0):
+                    return False
+                with self._lock:
+                    if self._start_generation != generation or self._pending_stop_prewarm_id:
+                        return False
+            finally:
+                with self._lock:
+                    self._route_restart_in_progress = False
+            if not Config.MIC_ALWAYS_ON:
+                return False
+            return self.start(expected_generation=generation)
+
     def ensure_healthy(
         self,
         *,
@@ -1004,7 +1069,12 @@ class RustAudioPrewarmManager:
     ) -> bool:
         del max_callback_gap_seconds
         with self._lock:
+            if self._route_restart_in_progress:
+                return False
+            pending_stop = self._pending_stop_prewarm_id
             temporary_idle_prewarm = bool(self._temporary_idle_prewarm)
+        if pending_stop and not self._stop_owned_prewarm(pending_stop, reason="pending_stop_retry"):
+            return False
         if not Config.MIC_ALWAYS_ON and not temporary_idle_prewarm:
             self.stop(reason=f"{reason}:disabled")
             return False
@@ -1123,7 +1193,23 @@ class RustAudioPrewarmManager:
             logger.warning(f"Rust mic prewarm session missing; restarting ({reason})")
         return self.start_if_enabled(temporary=temporary_idle_prewarm)
 
-    def _stop_sidecar_prewarm(self, prewarm_id: str, *, reason: str) -> None:
+    def _stop_owned_prewarm(self, prewarm_id: str, *, reason: str) -> bool:
+        # A late start response still owns a native producer. An unknown stop
+        # must remain visible and block replacement until a later confirmed stop.
+        with self._lock:
+            if self._pending_stop_prewarm_id and self._pending_stop_prewarm_id != prewarm_id:
+                return False
+            if self._prewarm_id and self._prewarm_id != prewarm_id:
+                return False
+            if prewarm_id:
+                self._pending_stop_prewarm_id = prewarm_id
+        confirmed = self._stop_sidecar_prewarm(prewarm_id, reason=reason)
+        with self._lock:
+            if confirmed and self._pending_stop_prewarm_id == prewarm_id:
+                self._pending_stop_prewarm_id = ""
+        return confirmed
+
+    def _stop_sidecar_prewarm(self, prewarm_id: str, *, reason: str) -> bool:
         with self._lock:
             self._last_stop_at = time.monotonic()
             self._last_stop_reason = reason
@@ -1133,7 +1219,7 @@ class RustAudioPrewarmManager:
         if not prewarm_id:
             with self._lock:
                 self._record_event_locked("stop_without_session", reason)
-            return
+            return True
         stop_started = time.monotonic()
         try:
             response = self._shell_call(
@@ -1173,6 +1259,7 @@ class RustAudioPrewarmManager:
                 logger.debug(f"Rust mic prewarm session stopped ({reason})")
             else:
                 logger.debug(f"Rust mic prewarm stop was not accepted ({reason}): {response_error}")
+            return response_success
         except Exception as exc:
             with self._lock:
                 self._last_error = str(exc)
@@ -1193,11 +1280,17 @@ class RustAudioPrewarmManager:
                     responseMs=self._last_stop_response_ms,
                 )
             logger.debug(f"Rust mic prewarm stop failed ({reason}): {exc}")
+            return False
 
     def stop(self, *, reason: str = "stop") -> None:
         with self._lock:
             self._start_generation += 1
-            prewarm_id = self._prewarm_id
+            if reason != "settings_route_changed":
+                self._route_restart_cancel_generation += 1
+            prewarm_id = self._prewarm_id or self._pending_stop_prewarm_id
+            # Reserve cleanup before exposing the empty public lease. A start
+            # on another thread must see the producer whose stop is still owed.
+            self._pending_stop_prewarm_id = prewarm_id
             self._prewarm_id = ""
             self._prewarm_payload = {}
             self._stream_signature = {}
@@ -1212,4 +1305,4 @@ class RustAudioPrewarmManager:
             self._last_stop_response_ms = None
             self._last_stop_success = False
             self._last_stop_error = ""
-        self._stop_sidecar_prewarm(prewarm_id, reason=reason)
+        self._stop_owned_prewarm(prewarm_id, reason=reason)

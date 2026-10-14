@@ -31,6 +31,15 @@ def test_classify_device_permission():
     assert classify_error_message("microphone access denied by OS") is ErrorCategory.DEVICE_PERMISSION
 
 
+def test_native_microphone_start_errors_remain_local_through_pipeline_wrappers():
+    for message in (
+        "rustFirstLiveFrameTimeout",
+        "Error processing frame: Microphone initialization failed: "
+        "Rust audio capture did not deliver a first live frame in time",
+    ):
+        assert classify_error_message(message) is ErrorCategory.DEVICE_UNAVAILABLE
+
+
 def test_retryable_categories():
     assert is_retryable(ErrorCategory.TRANSIENT_NETWORK) is True
     assert is_retryable(ErrorCategory.TRANSIENT_PROVIDER) is True

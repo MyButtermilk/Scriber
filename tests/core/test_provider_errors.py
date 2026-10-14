@@ -64,6 +64,57 @@ def test_azure_mai_service_unavailable_gets_provider_specific_message():
     assert info.retryable is True
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        "Rust audio capture did not deliver a first live frame in time",
+        "Microphone initialization failed: Rust audio capture did not deliver a first live frame in time",
+        "Error processing frame: Microphone initialization failed: "
+        "Rust audio capture did not deliver a first live frame in time",
+        "rustFirstLiveFrameTimeout",
+    ],
+)
+def test_native_microphone_start_timeout_is_not_attributed_to_selected_provider(error):
+    info = provider_user_error("azure_mai", error)
+
+    assert info.provider == "microphone"
+    assert info.provider_label == "Microphone"
+    assert info.title == "Microphone error"
+    assert info.category is ErrorCategory.DEVICE_UNAVAILABLE
+    assert info.code == "rustFirstLiveFrameTimeout"
+    assert info.retryable is True
+    assert "Microphone did not become ready in time" in info.message
+    assert "Microsoft" not in info.message
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Rust audio capture start failed: PRIVATE_DEVICE_IDENTIFIER",
+        "Rust audio capture failed before first frame became live-ready: PRIVATE_DEVICE_IDENTIFIER",
+        "Rust mic prewarm adoption could not be committed after native capture started",
+    ],
+)
+def test_native_microphone_start_failure_exposes_only_safe_code_and_message(message):
+    info = provider_user_error("soniox", RuntimeError(f"Microphone initialization failed: {message}"))
+
+    assert info.provider == "microphone"
+    assert info.title == "Microphone error"
+    assert info.category is ErrorCategory.DEVICE_UNAVAILABLE
+    assert info.code == "rustAudioCaptureStartFailed"
+    assert "PRIVATE" not in repr(info)
+
+
+def test_provider_response_mentioning_microphone_failure_is_still_provider_error():
+    info = provider_user_error(
+        "azure_mai",
+        "Azure MAI rejected input: Rust audio capture did not deliver a first live frame in time",
+    )
+
+    assert info.provider == "azure_mai"
+    assert info.title == "Microsoft MAI Transcribe error"
+
+
 def test_mistral_rate_limit_is_provider_limit():
     info = provider_user_error(
         "mistral_async",

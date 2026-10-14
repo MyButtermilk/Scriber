@@ -932,14 +932,15 @@ class RustPrototypeFrameSource(AudioFrameSource):
         # owns the endpoint. Only the first non-PREBUFFER frame may release the
         # caller to commit prewarm adoption and publish on_ready.
         first_live_started = time.monotonic()
-        if not self._live_capture_ready_event.wait(self._first_frame_timeout_seconds):
-            self.fallback_reason = "rustFirstLiveFrameTimeout"
-            self.stop(close=True)
-            raise RuntimeError("Rust audio capture did not deliver a first live frame in time")
+        live_ready = self._live_capture_ready_event.wait(self._first_frame_timeout_seconds)
         self.first_live_frame_wait_ms = round(
             max(0.0, time.monotonic() - first_live_started) * 1000.0,
             3,
         )
+        if not live_ready:
+            self.fallback_reason = "rustFirstLiveFrameTimeout"
+            self.stop(close=True)
+            raise RuntimeError("Rust audio capture did not deliver a first live frame in time")
         if not self._live_capture_ready:
             error = self._last_error or "frame pipe ended before the first live frame"
             self.stop(close=True)
@@ -1447,14 +1448,17 @@ class RustPrototypeFrameSource(AudioFrameSource):
 
 
 def _rust_first_frame_timeout_seconds() -> float:
-    raw = os.getenv("SCRIBER_RUST_AUDIO_FIRST_FRAME_TIMEOUT_SEC", "0.5")
+    # This is a failure deadline, never an unconditional startup delay. Warm
+    # capture returns on its first live frame; allow Windows scheduling/device
+    # startup some headroom instead of destroying a healthy capture at 500 ms.
+    raw = os.getenv("SCRIBER_RUST_AUDIO_FIRST_FRAME_TIMEOUT_SEC", "3.0")
     try:
         value = float(raw)
         if not math.isfinite(value):
-            return 0.5
+            return 3.0
         return max(0.05, min(10.0, value))
     except TypeError, ValueError:
-        return 0.5
+        return 3.0
 
 
 def _rust_audio_prebuffer_ms() -> int:
@@ -2179,6 +2183,40 @@ class MicrophoneInput(BaseInputTransport):
         except Exception:
             return None
         return result if result is True or result is False else None
+
+    def startup_diagnostics(self) -> dict:
+        """Content-free startup evidence retained after native cleanup."""
+        source = self._frame_source
+        snapshot = source.diagnostic_snapshot() if source is not None else {}
+        details = {
+            "prewarmRequested": bool(self._rust_prewarm_id),
+            "prewarmAdopted": bool(snapshot.get("adoptedPrewarm")),
+            "liveCaptureReady": snapshot.get("liveCaptureReady") is True,
+            "sidecarStopConfirmed": (
+                snapshot.get("sidecarStopConfirmed") if type(snapshot.get("sidecarStopConfirmed")) is bool else None
+            ),
+            "captureRouteSource": (
+                snapshot.get("captureRouteSource")
+                if snapshot.get("captureRouteSource") in {"prewarmLease", "freshResolution"}
+                else "unknown"
+            ),
+        }
+        for key in (
+            "firstLiveFrameWaitMs",
+            "deviceSelectionMs",
+            "captureStartResponseMs",
+            "framePipeFramesRead",
+            "framePipePrebufferFramesRead",
+            "framePipeLiveFramesRead",
+            "callbackCount",
+        ):
+            value = snapshot.get(key)
+            details[key] = value if type(value) in {int, float} and math.isfinite(value) and value >= 0 else None
+        timeout = getattr(source, "_first_frame_timeout_seconds", None)
+        details["firstLiveFrameTimeoutMs"] = (
+            timeout * 1000.0 if type(timeout) in {int, float} and math.isfinite(timeout) else None
+        )
+        return details
 
     def diagnostic_snapshot(self) -> dict:
         stream = self.stream
