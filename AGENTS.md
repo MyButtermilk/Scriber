@@ -1456,6 +1456,12 @@ Packaging and scripts:
 - Soniox realtime live transcription defaults to `stt-rt-v5`. Keep
   `SCRIBER_SONIOX_RT_MODEL` as an override for temporary compatibility, but do
   not restore `stt-rt-v4` as the code default.
+- Soniox WebSockets authenticate with `Authorization: Bearer <API_KEY>` at
+  connection time, including every reconnect in both regions. Never include
+  `api_key` in the start message. `soniox_websocket.py` keeps wire logging
+  private; `soniox_realtime_stt.py` adapts pinned Pipecat 1.5 connection setup
+  while retaining its transcription and reconnect lifecycle. The local replay
+  server requires the same header contract with only its inert sentinel key.
 - Soniox data residency defaults to `SCRIBER_SONIOX_REGION=us`. Settings may
   select only `us` or `eu`; persist the choice independently of the API key.
   Every Soniox boundary in one session must resolve from that same choice:

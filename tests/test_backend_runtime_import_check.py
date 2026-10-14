@@ -164,6 +164,7 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     assert "pipecat.processors.user_idle_processor" not in required_modules
     assert "src.web_api" in required_modules
     assert "pipecat.services.soniox.stt" in required_modules
+    assert "src.soniox_realtime_stt" in required_modules
     assert "pipecat.services.assemblyai.stt" in required_modules
     assert "pipecat.services.deepgram.stt" in required_modules
     assert "pipecat.services.google.stt" in required_modules

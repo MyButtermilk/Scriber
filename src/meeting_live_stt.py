@@ -22,6 +22,7 @@ from src.runtime.pcm_audio import pcm16le_meets_rms_threshold
 from src.runtime.smart_turn_mel import install_smart_turn_mel_acceleration
 from src.runtime.task_supervisor import AsyncTaskSupervisor
 from src.soniox_region import soniox_realtime_websocket_url
+from src.soniox_websocket import connect_soniox_websocket
 
 SONIOX_REALTIME_URL = soniox_realtime_websocket_url("us")
 END_TOKENS = {"<end>", "<fin>"}
@@ -163,13 +164,14 @@ class SonioxMeetingStream:
         )
 
     async def _open_websocket(self) -> Any:
-        websocket = await self.connect_factory(self.realtime_url)
+        websocket = await connect_soniox_websocket(
+            self.realtime_url, self.api_key, connect_factory=self.connect_factory
+        )
         language_hints = [] if not self.language or self.language == "auto" else [self.language.split("-", 1)[0]]
         try:
             await websocket.send(
                 json.dumps(
                     {
-                        "api_key": self.api_key,
                         "model": self.model,
                         "audio_format": "pcm_s16le",
                         "num_channels": 1,

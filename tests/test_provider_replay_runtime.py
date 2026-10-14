@@ -1165,11 +1165,12 @@ async def test_soniox_loopback_uses_real_websocket_messages_and_receive_boundary
     server = await LocalSonioxReplayServer().start()
     markers: list[str] = []
     try:
-        async with connect(server.url, compression=None) as websocket:
+        async with connect(
+            server.url, compression=None, additional_headers={"Authorization": "Bearer local-replay"}
+        ) as websocket:
             await websocket.send(
                 json.dumps(
                     {
-                        "api_key": "local-replay",
                         "model": "stt-rt-v5",
                         "audio_format": "pcm_s16le",
                     }
@@ -1197,6 +1198,32 @@ async def test_soniox_loopback_uses_real_websocket_messages_and_receive_boundary
             == "Scriber deterministic Soniox provider replay."
         )
         assert markers == ["received"]
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authorization,legacy", [(None, True), ("Bearer wrong", False), ("Bearer local-replay", True)])
+async def test_soniox_replay_rejects_missing_wrong_or_legacy_authentication(authorization, legacy):
+    from websockets.asyncio.client import connect
+    from websockets.exceptions import ConnectionClosed
+
+    server = await LocalSonioxReplayServer().start()
+    config = {"model": "stt-rt-v5", "audio_format": "pcm_s16le"}
+    if legacy:
+        config["api_key"] = "local-replay"
+    try:
+        headers = {"Authorization": authorization} if authorization else {}
+        async with connect(server.url, additional_headers=headers) as websocket:
+            with pytest.raises(ConnectionClosed):
+                await websocket.send(json.dumps(config))
+                await websocket.recv()
+        expected = (
+            "legacy authentication is forbidden"
+            if authorization == "Bearer local-replay"
+            else "credential sentinel mismatch"
+        )
+        assert expected in server.error_code
     finally:
         await server.close()
 

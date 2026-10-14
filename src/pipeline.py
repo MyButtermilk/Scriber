@@ -1436,7 +1436,9 @@ def _load_soniox_realtime_classes():
     if SonioxSTTService:
         return SonioxSTTService, SonioxContextObject
     module = import_provider_runtime_module("soniox", "pipecat.services.soniox.stt")
-    SonioxSTTService = getattr(module, "SonioxSTTService", None)
+    from src.soniox_realtime_stt import SonioxSTTService as AuthenticatedSonioxSTTService
+
+    SonioxSTTService = AuthenticatedSonioxSTTService
     SonioxContextObject = getattr(module, "SonioxContextObject", None)
     return SonioxSTTService, SonioxContextObject
 
