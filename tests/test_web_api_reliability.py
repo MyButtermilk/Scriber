@@ -125,22 +125,35 @@ async def test_retry_ladder_retries_transient_file_failure(monkeypatch, tmp_path
     sample_file = files_dir / "sample.wav"
     _write_valid_wav(sample_file)
     _RetryPipeline.attempts = 0
+    attempt_tasks: asyncio.Queue[asyncio.Task] = asyncio.Queue()
+    register_task = ctl._register_task
+
+    def capture_attempt(transcript_id: str, task: asyncio.Task) -> None:
+        register_task(transcript_id, task)
+        attempt_tasks.put_nowait(task)
 
     with (
         patch("src.web_api.ScriberPipeline", _RetryPipeline),
         patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_register_task", side_effect=capture_attempt),
     ):
-        rec = await ctl.start_file_transcription(
-            sample_file,
-            "sample.wav",
-            plan=ctl.plan_file_upload(source_is_video=False),
-        )
-        deadline = loop.time() + 2.0
-        while loop.time() < deadline and (rec.status != "completed" or rec.id in ctl._running_tasks):
-            await asyncio.sleep(0.02)
+        try:
+            rec = await ctl.start_file_transcription(
+                sample_file,
+                "sample.wav",
+                plan=ctl.plan_file_upload(source_is_video=False),
+            )
+            # Join the initial failure and its scheduled retry, including their
+            # persistence and cleanup. The timeout only guards a stalled test.
+            for _ in range(2):
+                task = await asyncio.wait_for(attempt_tasks.get(), timeout=30.0)
+                await asyncio.wait_for(asyncio.shield(task), timeout=30.0)
+        finally:
+            await ctl.drain_background_tasks_for_shutdown()
 
     assert rec.status == "completed"
-    assert _RetryPipeline.attempts >= 2
+    assert rec.id not in ctl._running_tasks
+    assert _RetryPipeline.attempts == 2
     job = store.get_by_transcript_id(rec.id)
     assert job is not None
     assert job.status == JobStatus.COMPLETED
