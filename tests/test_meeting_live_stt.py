@@ -78,7 +78,8 @@ async def test_soniox_meeting_stream_uses_selected_realtime_region():
     websocket = FakeWebSocket()
     connected_urls = []
 
-    async def connect(url):
+    async def connect(url, **kwargs):
+        assert kwargs["additional_headers"] == {"Authorization": "Bearer secret"}
         connected_urls.append(url)
         return websocket
 
@@ -121,7 +122,8 @@ async def test_soniox_microphone_stream_preserves_additional_room_speakers():
     websocket = FakeWebSocket()
     segments = []
 
-    async def connect(_url):
+    async def connect(_url, **kwargs):
+        assert kwargs["additional_headers"] == {"Authorization": "Bearer secret"}
         return websocket
 
     stream = SonioxMeetingStream(
@@ -185,7 +187,8 @@ async def test_soniox_meeting_stream_uses_stable_upserts_and_persists_final_turn
     segments = []
     gaps = []
 
-    async def connect(_url):
+    async def connect(_url, **kwargs):
+        assert kwargs["additional_headers"] == {"Authorization": "Bearer secret"}
         return websocket
 
     stream = SonioxMeetingStream(
@@ -221,7 +224,7 @@ async def test_soniox_meeting_stream_uses_stable_upserts_and_persists_final_turn
     config = json.loads(websocket.sent[0])
     assert config["model"] == "stt-rt-v5"
     assert config["enable_speaker_diarization"] is True
-    assert config["api_key"] == "secret"
+    assert "api_key" not in config
     assert any(value == b"\0\0" * 160 for value in websocket.sent)
     interim = next(segment for segment in segments if not segment.is_final)
     final = next(segment for segment in segments if segment.is_final)
@@ -237,7 +240,8 @@ async def test_soniox_meeting_stream_preserves_each_contiguous_speaker_run():
     websocket = FakeWebSocket()
     segments = []
 
-    async def connect(_url):
+    async def connect(_url, **kwargs):
+        assert kwargs["additional_headers"] == {"Authorization": "Bearer secret"}
         return websocket
 
     stream = SonioxMeetingStream(
@@ -289,7 +293,8 @@ async def test_soniox_meeting_stream_keeps_stable_id_with_leading_speakerless_to
     websocket = FakeWebSocket()
     segments = []
 
-    async def connect(_url):
+    async def connect(_url, **kwargs):
+        assert kwargs["additional_headers"] == {"Authorization": "Bearer secret"}
         return websocket
 
     stream = SonioxMeetingStream(
@@ -347,7 +352,8 @@ async def test_soniox_meeting_stream_reconnects_after_send_failure_and_marks_one
     gaps = []
     statuses = []
 
-    async def connect(_url):
+    async def connect(_url, **kwargs):
+        assert kwargs["additional_headers"] == {"Authorization": "Bearer secret"}
         return sockets.pop(0)
 
     stream = SonioxMeetingStream(
@@ -398,7 +404,8 @@ async def test_soniox_meeting_stream_retries_connect_without_duplicate_gap_marke
     attempts = 0
     gaps = []
 
-    async def connect(_url):
+    async def connect(_url, **kwargs):
+        assert kwargs["additional_headers"] == {"Authorization": "Bearer secret"}
         nonlocal attempts
         attempts += 1
         if attempts == 1:
@@ -582,7 +589,8 @@ async def test_stop_is_bounded_when_full_preview_queue_and_websocket_send_stalls
     websocket = GatedFirstAudioWebSocket()
     gaps = []
 
-    async def connect(_url):
+    async def connect(_url, **kwargs):
+        assert kwargs["additional_headers"] == {"Authorization": "Bearer secret"}
         return websocket
 
     stream = SonioxMeetingStream(
@@ -624,7 +632,8 @@ async def test_stop_cleans_up_when_backpressure_callback_fails():
     websocket = GatedFirstAudioWebSocket()
     callback_attempts = []
 
-    async def connect(_url):
+    async def connect(_url, **kwargs):
+        assert kwargs["additional_headers"] == {"Authorization": "Bearer secret"}
         return websocket
 
     async def fail_gap_callback(source, reason):
@@ -667,7 +676,8 @@ async def test_stop_cleans_up_when_backpressure_callback_fails():
 async def test_stop_gracefully_drains_preview_and_cleans_up_websocket_tasks():
     websocket = FakeWebSocket()
 
-    async def connect(_url):
+    async def connect(_url, **kwargs):
+        assert kwargs["additional_headers"] == {"Authorization": "Bearer secret"}
         return websocket
 
     stream = SonioxMeetingStream(
@@ -705,7 +715,8 @@ async def test_live_timestamps_preserve_dropped_frame_gap():
     websocket = GatedFirstAudioWebSocket()
     segments = []
 
-    async def connect(_url):
+    async def connect(_url, **kwargs):
+        assert kwargs["additional_headers"] == {"Authorization": "Bearer secret"}
         return websocket
 
     stream = SonioxMeetingStream(
@@ -748,7 +759,8 @@ async def test_soniox_meeting_stream_reports_redacted_interim_latency_snapshot()
     websocket = FakeWebSocket()
     segments = []
 
-    async def connect(_url):
+    async def connect(_url, **kwargs):
+        assert kwargs["additional_headers"] == {"Authorization": "Bearer secret"}
         return websocket
 
     stream = SonioxMeetingStream(
@@ -783,7 +795,8 @@ async def test_smart_turn_merges_incomplete_provider_endpoints_for_microphone():
     segments = []
     analyzer = FakeSmartTurn(["INCOMPLETE", "COMPLETE"])
 
-    async def connect(_url):
+    async def connect(_url, **kwargs):
+        assert kwargs["additional_headers"] == {"Authorization": "Bearer secret"}
         return websocket
 
     stream = SonioxMeetingStream(

@@ -1453,6 +1453,12 @@ Packaging and scripts:
   do not restore `stt-async-v4` as the code default. Direct Soniox async upload
   prefers WebM/Opus, which the provider accepts; WAV is only a local encoding
   fallback when bundled ffmpeg cannot produce WebM, not an API-rejection retry.
+- Soniox realtime authenticates every WebSocket upgrade (including reconnects)
+  with `Authorization: Bearer`; start messages must not contain `api_key`.
+  `src/soniox_realtime.py` adapts pinned Pipecat 1.5 connection setup only;
+  preserve its inherited parser and lifecycle and the `SonioxSTTService` name
+  used by manual-stop/cleanup. Keep transport wire logging disabled so DEBUG
+  cannot expose credentials. Installed replay enforces the same handshake.
 - Soniox realtime live transcription defaults to `stt-rt-v5`. Keep
   `SCRIBER_SONIOX_RT_MODEL` as an override for temporary compatibility, but do
   not restore `stt-rt-v4` as the code default.

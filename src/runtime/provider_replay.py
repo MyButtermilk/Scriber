@@ -1286,8 +1286,10 @@ class LocalSonioxReplayServer:
             config = json.loads(raw_config)
             if not isinstance(config, dict):
                 raise RuntimeError("provider replay Soniox configuration is invalid")
-            if config.get("api_key") != "local-replay":
+            if websocket.request.headers.get("Authorization") != "Bearer local-replay":
                 raise RuntimeError("provider replay Soniox credential sentinel mismatch")
+            if "api_key" in config:
+                raise RuntimeError("provider replay Soniox legacy authentication is forbidden")
             if config.get("model") != "stt-rt-v5":
                 raise RuntimeError("provider replay Soniox model mismatch")
             if config.get("audio_format") != "pcm_s16le":

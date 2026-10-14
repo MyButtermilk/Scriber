@@ -1165,11 +1165,12 @@ async def test_soniox_loopback_uses_real_websocket_messages_and_receive_boundary
     server = await LocalSonioxReplayServer().start()
     markers: list[str] = []
     try:
-        async with connect(server.url, compression=None) as websocket:
+        async with connect(
+            server.url, compression=None, additional_headers={"Authorization": "Bearer local-replay"}
+        ) as websocket:
             await websocket.send(
                 json.dumps(
                     {
-                        "api_key": "local-replay",
                         "model": "stt-rt-v5",
                         "audio_format": "pcm_s16le",
                     }
