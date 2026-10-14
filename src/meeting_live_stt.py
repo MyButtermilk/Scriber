@@ -22,6 +22,7 @@ from src.runtime.pcm_audio import pcm16le_meets_rms_threshold
 from src.runtime.smart_turn_mel import install_smart_turn_mel_acceleration
 from src.runtime.task_supervisor import AsyncTaskSupervisor
 from src.soniox_region import soniox_realtime_websocket_url
+from src.soniox_websocket import soniox_connect_options
 
 SONIOX_REALTIME_URL = soniox_realtime_websocket_url("us")
 END_TOKENS = {"<end>", "<fin>"}
@@ -163,13 +164,13 @@ class SonioxMeetingStream:
         )
 
     async def _open_websocket(self) -> Any:
-        websocket = await self.connect_factory(self.realtime_url)
+        websocket = None
         language_hints = [] if not self.language or self.language == "auto" else [self.language.split("-", 1)[0]]
         try:
+            websocket = await self.connect_factory(self.realtime_url, **soniox_connect_options(self.api_key))
             await websocket.send(
                 json.dumps(
                     {
-                        "api_key": self.api_key,
                         "model": self.model,
                         "audio_format": "pcm_s16le",
                         "num_channels": 1,
@@ -183,9 +184,13 @@ class SonioxMeetingStream:
                     }
                 )
             )
-        except Exception:
-            await websocket.close()
-            raise
+        except BaseException as exc:
+            if websocket is not None:
+                with suppress(Exception):
+                    await websocket.close()
+            if not isinstance(exc, Exception):
+                raise
+            raise RuntimeError(f"Soniox connection setup failed ({type(exc).__name__})") from None
         return websocket
 
     def enqueue(self, pcm: bytes) -> None:
