@@ -2985,31 +2985,46 @@ async def test_uncertain_exact_read_retry_remains_armed_without_queued_jobs(monk
         raise OSError("read unavailable")
 
     monkeypatch.setattr(store, "get", unavailable)
-    ctl._job_retry_base_seconds = 0.1
-    rearm_count = 0
-    second_rearm = asyncio.Event()
-    real_rearm = ctl._rearm_uncertain_job_reconciliation
+    loop = asyncio.get_running_loop()
+    scheduled_timers = []
 
-    def observe_rearm(transcript_id: str) -> None:
-        nonlocal rearm_count
-        real_rearm(transcript_id)
-        rearm_count += 1
-        if rearm_count >= 2:
-            second_rearm.set()
+    def capture_timer(delay, callback):
+        # Keep the real scheduler and trigger, but advance its timer explicitly
+        # so database work cannot race the assertions about an armed retry.
+        handle = asyncio.TimerHandle(loop.time() + delay, callback, (), loop)
+        scheduled_timers.append((handle, callback))
+        return handle
 
-    monkeypatch.setattr(ctl, "_rearm_uncertain_job_reconciliation", observe_rearm)
+    monkeypatch.setattr(
+        ctl._retry_scheduler,
+        "_loop",
+        SimpleNamespace(
+            call_later=capture_timer,
+            create_task=loop.create_task,
+            call_exception_handler=loop.call_exception_handler,
+        ),
+    )
 
-    await ctl.resume_pending_jobs()
+    try:
+        await ctl.resume_pending_jobs()
 
-    assert reads == 1
-    assert ctl._retry_scheduler.due_monotonic is not None
-    await asyncio.wait_for(second_rearm.wait(), timeout=5.0)
+        assert reads == 1
+        assert ctl._retry_scheduler.due_monotonic is not None
+        assert len(scheduled_timers) == 1
+        first_timer, trigger = scheduled_timers[0]
+        assert not first_timer.cancelled()
+        trigger()
+        retry_task = ctl._retry_scheduler._task
+        assert retry_task is not None
+        await asyncio.wait_for(asyncio.shield(retry_task), timeout=30.0)
 
-    assert reads >= 2
-    assert rearm_count >= 2
-    assert ctl._retry_scheduler.due_monotonic is not None
-    assert ctl._uncertain_job_commits[rec.id] == rec.id
-    ctl._retry_scheduler.cancel(cancel_running=True)
+        assert reads == 2
+        assert ctl._retry_scheduler.due_monotonic is not None
+        assert len(scheduled_timers) == 2
+        assert not scheduled_timers[1][0].cancelled()
+        assert ctl._uncertain_job_commits[rec.id] == rec.id
+    finally:
+        await ctl.drain_background_tasks_for_shutdown()
 
 
 @pytest.mark.asyncio
