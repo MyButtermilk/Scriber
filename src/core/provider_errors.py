@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.config import Config
-from src.core.error_taxonomy import ErrorCategory, classify_error_message, is_retryable, user_message_for_category
+from src.core.error_taxonomy import (
+    ErrorCategory,
+    classify_error_message,
+    is_retryable,
+    microphone_start_error_code,
+    user_message_for_category,
+)
 from src.runtime.provider_dependencies import ProviderRuntimeDependencyError
 
 
@@ -133,6 +139,8 @@ _KNOWN_CODES = (
     "DATA-0000",
     "NET-0000",
     "NET-0001",
+    "rustFirstLiveFrameTimeout",
+    "rustAudioCaptureStartFailed",
 )
 _SAFE_EXCEPTION_CODES = (
     "APIError",
@@ -209,6 +217,10 @@ def provider_user_error(provider: str | None, error: Exception | str) -> Provide
     dependency_error = error if isinstance(error, ProviderRuntimeDependencyError) else None
     transport_error = error if isinstance(error, ProviderTransportError) else None
     raw = _error_text(error)
+    if transport_error is None and dependency_error is None:
+        microphone_error = _native_microphone_start_error(raw)
+        if microphone_error is not None:
+            return microphone_error
     payload = _parse_payload(raw)
     normalized_provider = _normalize_provider(
         provider or getattr(dependency_error, "provider", None) or getattr(transport_error, "provider", None),
@@ -354,6 +366,30 @@ def provider_user_error(provider: str | None, error: Exception | str) -> Provide
         code=code,
         retryable=transport_error.retryable if transport_error is not None else None,
     )
+
+
+def _native_microphone_start_error(raw: str) -> ProviderUserError | None:
+    code = microphone_start_error_code(raw)
+    if code == "rustFirstLiveFrameTimeout":
+        return _make_error(
+            "microphone",
+            "Microphone",
+            ErrorCategory.DEVICE_UNAVAILABLE,
+            "Microphone did not become ready in time. Please try again. "
+            "If this repeats, reconnect it or choose another input device.",
+            code=code,
+            retryable=True,
+        )
+    if code == "rustAudioCaptureStartFailed":
+        return _make_error(
+            "microphone",
+            "Microphone",
+            ErrorCategory.DEVICE_UNAVAILABLE,
+            "Microphone could not start. Please reconnect it or choose another input device and try again.",
+            code=code,
+            retryable=True,
+        )
+    return None
 
 
 def provider_transport_error(

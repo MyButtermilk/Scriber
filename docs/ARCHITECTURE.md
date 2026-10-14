@@ -1171,6 +1171,12 @@ path parameters, request bodies, query strings, or exception messages. HTTP
 completion is distinct from background processing stages. `debug_logs.py`
 provides a bounded redacted snapshot cache; `runtime-diagnostics.ts` owns frontend
 workflow classification, indexed search, and distinct latency samples.
+Live Mic error events retain bounded code-only exception stacks and causes,
+native start wait/timeout measurements, frame counters, and prewarm/stop state.
+The projection never retains exception content, frame locals, device identities,
+or absolute paths. Collecting it cannot block error delivery or cleanup. Native
+microphone startup errors have their own public identity and do not penalize the
+selected STT provider's circuit.
 `diagnostic_preferences.py` synchronizes a persisted logging preference with the
 native shell and Python, behind settings serialization and a cancellation
 barrier. The native owner closes its write gate and continues draining child
@@ -1719,12 +1725,22 @@ Rust audio:
 - `src/microphone.py` always uses the Rust frame-pipe source for live
   microphone capture. `SCRIBER_AUDIO_ENGINE` is accepted only for backwards
   diagnostic compatibility and no longer selects Python capture.
+  Readiness requires a successfully delivered live frame, not PREBUFFER alone.
+  The default first-live failure deadline is three seconds and returns immediately
+  on readiness; it adds no fixed delay to a warm start. Failures retain the measured
+  wait before native stop so delayed devices and empty/broken pipes are distinguishable.
 - `src/mic_prewarm.py` uses the Rust prewarm manager as the only app-level
   idle-prewarm implementation. It keeps `audioPrewarmStart` alive during idle,
   hands the `prewarmId` plus its immutable resolved route to the next Rust
   capture, and records redacted adoption diagnostics. A valid route lease skips
   a second PortAudio/native inventory pass at hotkey time; native endpoint events
   and Settings route changes invalidate the cache and rebuild idle prewarm.
+  Favorite restoration also invalidates an unpublished start already in flight.
+  Route reconciliation waits outside the manager lock for the old generation's
+  cleanup before starting the current route. An unconfirmed stop retains native
+  ownership and prevents replacement until reconciliation succeeds; a concurrent
+  Stop or capture transition supersedes the restart. Adoption keeps its strict
+  route/configuration comparison.
 - A compatible leased WASAPI session is promoted without stopping or opening a
   second `IAudioClient`. The running prewarm worker atomically redirects new
   blocks into a bounded handoff tail while the capture pipe connects, writes the

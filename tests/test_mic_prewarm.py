@@ -2,6 +2,8 @@ import threading
 import time
 import types
 
+import pytest
+
 import src.mic_prewarm as mic_prewarm
 from src.config import Config
 from src.mic_prewarm import RustAudioPrewarmManager
@@ -781,6 +783,445 @@ def test_rust_audio_prewarm_coalesces_concurrent_start_attempts(monkeypatch):
     assert result == [True]
     assert commands == ["audioPrewarmStart"]
     assert manager.diagnostic_snapshot()["startInProgress"] is False
+    manager.stop()
+
+
+@pytest.mark.parametrize("shutdown_while_waiting", [False, True])
+def test_route_restart_waits_for_invalidated_start_before_replacing(monkeypatch, shutdown_while_waiting):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "old-device")
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "favorite")
+    entered = threading.Event()
+    release = threading.Event()
+    invalidated = threading.Event()
+    commands = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, dict(payload or {})))
+        if command == "audioPrewarmStart":
+            if payload["devicePreference"] == "old-device":
+                entered.set()
+                assert release.wait(timeout=2)
+            return {"success": True, "payload": {"prewarmId": payload["devicePreference"]}}
+        assert command == "audioPrewarmStop"
+        return {"success": True, "payload": {"stopped": True}}
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_build_start_payload",
+        lambda: {
+            "sampleRate": 16000,
+            "channels": 1,
+            "blockSize": 256,
+            "devicePreference": Config.MIC_DEVICE,
+            "_configuredDevice": Config.MIC_DEVICE,
+            "_favoriteMic": Config.FAVORITE_MIC,
+            "nativeEndpointIdHash": Config.MIC_DEVICE,
+        },
+    )
+    original_stop = manager.stop
+
+    def observed_stop(*, reason="stop"):
+        original_stop(reason=reason)
+        invalidated.set()
+
+    monkeypatch.setattr(manager, "stop", observed_stop)
+    initial = []
+    restarted = []
+    start_thread = threading.Thread(target=lambda: initial.append(manager.start_if_enabled()))
+    start_thread.start()
+    assert entered.wait(timeout=1)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "new-device")
+    restart_thread = threading.Thread(target=lambda: restarted.append(manager.restart_for_route_change()))
+    restart_thread.start()
+    try:
+        assert invalidated.wait(timeout=1)
+        assert restart_thread.is_alive()
+        if shutdown_while_waiting:
+            manager.stop(reason="shutdown")
+    finally:
+        release.set()
+        start_thread.join(timeout=2)
+        restart_thread.join(timeout=2)
+    assert initial == [False]
+    assert restarted == [not shutdown_while_waiting]
+    if shutdown_while_waiting:
+        assert [command for command, _ in commands] == ["audioPrewarmStart", "audioPrewarmStop"]
+        assert manager.is_active is False
+        return
+    assert [command for command, _ in commands] == [
+        "audioPrewarmStart",
+        "audioPrewarmStop",
+        "audioPrewarmStart",
+    ]
+    assert (
+        manager.leased_capture_device_preference(
+            sample_rate=16000,
+            target_channels=1,
+            block_size=256,
+        )
+        == "new-device"
+    )
+    assert (
+        manager.attach_active_capture(
+            sample_rate=16000,
+            target_channels=1,
+            block_size=256,
+            device="old-device",
+        )
+        is None
+    )
+    assert (
+        manager.attach_active_capture(
+            sample_rate=16000,
+            target_channels=1,
+            block_size=256,
+            device="new-device",
+        )["prewarmId"]
+        == "new-device"
+    )
+    manager.stop()
+
+
+def test_invalidated_start_keeps_late_producer_owned_when_stop_is_unknown(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True)
+    commands = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        if command == "audioPrewarmStart":
+            manager.stop(reason="settings_route_changed")
+            return {"success": True, "payload": {"prewarmId": "late-producer"}}
+        assert command == "audioPrewarmStop"
+        return {"success": False, "errorCode": "transportError"}
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_build_start_payload",
+        lambda: {
+            "sampleRate": 16000,
+            "channels": 1,
+            "blockSize": 256,
+            "devicePreference": "default",
+        },
+    )
+    assert manager.start_if_enabled() is False
+    assert manager.is_active is True
+    assert manager.diagnostic_snapshot()["stopPending"] is True
+    assert manager.start_if_enabled() is False
+    assert commands == ["audioPrewarmStart", "audioPrewarmStop"]
+
+
+def test_stop_reserves_native_ownership_before_releasing_state_lock(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True)
+    entered_stop = threading.Event()
+    release_stop = threading.Event()
+    commands = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        if command == "audioPrewarmStart":
+            return {"success": True, "payload": {"prewarmId": "owned-producer"}}
+        assert command == "audioPrewarmStop"
+        return {"success": True, "payload": {"stopped": True}}
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_build_start_payload",
+        lambda: {"sampleRate": 16000, "channels": 1, "blockSize": 256, "devicePreference": "default"},
+    )
+    assert manager.start_if_enabled()
+    original_stop_owned = manager._stop_owned_prewarm
+
+    def delayed_stop(prewarm_id, *, reason):
+        entered_stop.set()
+        assert release_stop.wait(timeout=2)
+        return original_stop_owned(prewarm_id, reason=reason)
+
+    monkeypatch.setattr(manager, "_stop_owned_prewarm", delayed_stop)
+    stop_thread = threading.Thread(target=manager.stop)
+    stop_thread.start()
+    try:
+        assert entered_stop.wait(timeout=1)
+        assert manager.is_active
+        assert manager.diagnostic_snapshot()["stopPending"] is True
+        assert manager.start_if_enabled() is False
+        assert commands == ["audioPrewarmStart"]
+    finally:
+        release_stop.set()
+        stop_thread.join(timeout=2)
+    assert manager.is_active is False
+    assert manager.diagnostic_snapshot()["stopPending"] is False
+    assert commands == ["audioPrewarmStart", "audioPrewarmStop"]
+
+
+def test_route_restart_retains_unconfirmed_native_stop_without_replacement(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True)
+    commands = []
+    stop_confirmed = False
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        if command == "audioPrewarmStart":
+            return {"success": True, "payload": {"prewarmId": "owned-prewarm"}}
+        assert command == "audioPrewarmStop"
+        return {"success": stop_confirmed, "payload": {"stopped": stop_confirmed}}
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_build_start_payload",
+        lambda: {
+            "sampleRate": 16000,
+            "channels": 1,
+            "blockSize": 256,
+            "devicePreference": "default",
+        },
+    )
+    assert manager.start_if_enabled()
+    assert manager.restart_for_route_change() is False
+    assert manager.is_active
+    assert manager.start_if_enabled() is False
+    assert commands.count("audioPrewarmStart") == 1
+    stop_confirmed = True
+    assert manager.restart_for_route_change() is True
+    assert commands.count("audioPrewarmStart") == 2
+    manager.stop()
+
+
+def test_queued_route_restart_does_not_resurrect_after_shutdown(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True)
+    queued = threading.Event()
+    gate = threading.Lock()
+    commands = []
+
+    class ObservedLock:
+        def __enter__(self):
+            queued.set()
+            gate.acquire()
+
+        def __exit__(self, *_args):
+            gate.release()
+
+    manager = RustAudioPrewarmManager(shell_call=lambda command, *_args, **_kwargs: commands.append(command))
+    monkeypatch.setattr(
+        manager,
+        "_build_start_payload",
+        lambda: {
+            "sampleRate": 16000,
+            "channels": 1,
+            "blockSize": 256,
+            "devicePreference": "default",
+        },
+    )
+    manager._route_restart_lock = ObservedLock()
+    result = []
+    gate.acquire()
+    worker = threading.Thread(target=lambda: result.append(manager.restart_for_route_change()))
+    worker.start()
+    try:
+        assert queued.wait(timeout=1)
+        manager.stop(reason="shutdown")
+    finally:
+        gate.release()
+        worker.join(timeout=2)
+    assert result == [False]
+    assert commands == []
+    assert manager.is_active is False
+
+
+def test_queued_route_restart_preserves_capture_admitted_before_worker_runs(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "old-route")
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "favorite")
+    queued = threading.Event()
+    gate = threading.Lock()
+    commands = []
+
+    class ObservedLock:
+        def __enter__(self):
+            queued.set()
+            gate.acquire()
+
+        def __exit__(self, *_args):
+            gate.release()
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        return {"success": True, "payload": {"prewarmId": "admitted-prewarm", "stopped": True}}
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_build_start_payload",
+        lambda: {
+            "sampleRate": 16000,
+            "channels": 1,
+            "blockSize": 256,
+            "devicePreference": Config.MIC_DEVICE,
+            "_configuredDevice": Config.MIC_DEVICE,
+            "_favoriteMic": Config.FAVORITE_MIC,
+        },
+    )
+    assert manager.start_if_enabled()
+    manager._route_restart_lock = ObservedLock()
+    result = []
+    gate.acquire()
+    worker = threading.Thread(target=lambda: result.append(manager.restart_for_route_change()))
+    worker.start()
+    try:
+        assert queued.wait(timeout=1)
+        adopted = manager.attach_active_capture(
+            sample_rate=16000,
+            target_channels=1,
+            block_size=256,
+            device="old-route",
+        )
+        assert adopted is not None
+        monkeypatch.setattr(Config, "MIC_DEVICE", "new-route")
+    finally:
+        gate.release()
+        worker.join(timeout=2)
+    assert result == [False]
+    assert manager.commit_active_capture(adopted["prewarmId"]) is True
+    assert commands == ["audioPrewarmStart"]
+
+
+def test_stale_stop_helper_cannot_erase_newer_unconfirmed_producer(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True)
+    entered_stale = threading.Event()
+    release_stale = threading.Event()
+    starts = 0
+    commands = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        nonlocal starts
+        commands.append((command, dict(payload or {})))
+        if command == "audioPrewarmStart":
+            starts += 1
+            return {"success": True, "payload": {"prewarmId": f"producer-{starts}"}}
+        assert command == "audioPrewarmStop"
+        confirmed = payload["prewarmId"] != "producer-2"
+        return {"success": confirmed, "payload": {"stopped": confirmed}}
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_build_start_payload",
+        lambda: {
+            "sampleRate": 16000,
+            "channels": 1,
+            "blockSize": 256,
+            "devicePreference": "default",
+        },
+    )
+    assert manager.start_if_enabled()
+    original_stop_owned = manager._stop_owned_prewarm
+
+    def delayed_stop(prewarm_id, *, reason):
+        if threading.current_thread().name == "stale-stop":
+            entered_stale.set()
+            assert release_stale.wait(timeout=2)
+        return original_stop_owned(prewarm_id, reason=reason)
+
+    monkeypatch.setattr(manager, "_stop_owned_prewarm", delayed_stop)
+    stale = threading.Thread(target=manager.stop, name="stale-stop")
+    stale.start()
+    try:
+        assert entered_stale.wait(timeout=1)
+        manager.stop()
+        assert manager.start_if_enabled()
+        manager.stop()
+        assert manager.diagnostic_snapshot()["stopPending"] is True
+    finally:
+        release_stale.set()
+        stale.join(timeout=2)
+    assert manager.is_active
+    assert manager.start_if_enabled() is False
+    assert starts == 2
+    assert [payload.get("prewarmId") for command, payload in commands if command == "audioPrewarmStop"] == [
+        "producer-1",
+        "producer-2",
+    ]
+
+
+def test_queued_route_change_replaces_prior_restart_with_latest_route(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "first-route")
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "favorite")
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_queued = threading.Event()
+    gate = threading.Lock()
+    entries = 0
+    commands = []
+
+    class ObservedLock:
+        def __enter__(self):
+            nonlocal entries
+            entries += 1
+            if entries == 2:
+                second_queued.set()
+            gate.acquire()
+
+        def __exit__(self, *_args):
+            gate.release()
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append((command, dict(payload or {})))
+        if command == "audioPrewarmStart":
+            if payload["devicePreference"] == "first-route":
+                first_started.set()
+                assert release_first.wait(timeout=2)
+            return {"success": True, "payload": {"prewarmId": payload["devicePreference"]}}
+        assert command == "audioPrewarmStop"
+        return {"success": True, "payload": {"stopped": True}}
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    manager._route_restart_lock = ObservedLock()
+    monkeypatch.setattr(
+        manager,
+        "_build_start_payload",
+        lambda: {
+            "sampleRate": 16000,
+            "channels": 1,
+            "blockSize": 256,
+            "devicePreference": Config.MIC_DEVICE,
+            "_configuredDevice": Config.MIC_DEVICE,
+            "_favoriteMic": Config.FAVORITE_MIC,
+            "nativeEndpointIdHash": Config.MIC_DEVICE,
+        },
+    )
+    results = []
+    first = threading.Thread(target=lambda: results.append(manager.restart_for_route_change()))
+    second = threading.Thread(target=lambda: results.append(manager.restart_for_route_change()))
+    first.start()
+    assert first_started.wait(timeout=1)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "latest-route")
+    second.start()
+    try:
+        assert second_queued.wait(timeout=1)
+    finally:
+        release_first.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+    assert results == [True, True]
+    assert (
+        manager.leased_capture_device_preference(
+            sample_rate=16000,
+            target_channels=1,
+            block_size=256,
+        )
+        == "latest-route"
+    )
+    assert [command for command, _ in commands] == [
+        "audioPrewarmStart",
+        "audioPrewarmStop",
+        "audioPrewarmStart",
+    ]
     manager.stop()
 
 

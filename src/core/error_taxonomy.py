@@ -31,7 +31,33 @@ _CATEGORY_TO_USER_MESSAGE: dict[ErrorCategory, str] = {
 }
 
 
+def microphone_start_error_code(message: str) -> str | None:
+    """Recognize only native startup messages and their owned pipeline envelopes."""
+    native_message = (message or "").strip()
+    for prefix in ("Error processing frame: ", "Microphone initialization failed: "):
+        if native_message.startswith(prefix):
+            native_message = native_message[len(prefix) :]
+    if native_message in {
+        "Rust audio capture did not deliver a first live frame in time",
+        "rustFirstLiveFrameTimeout",
+    }:
+        return "rustFirstLiveFrameTimeout"
+    if native_message.startswith(
+        (
+            "Rust audio capture start failed: ",
+            "Rust audio capture failed before first frame became live-ready: ",
+        )
+    ) or native_message in {
+        "Rust mic prewarm adoption could not be committed after native capture started",
+        "rustAudioCaptureStartFailed",
+    }:
+        return "rustAudioCaptureStartFailed"
+    return None
+
+
 def classify_error_message(message: str) -> ErrorCategory:
+    if microphone_start_error_code(message) is not None:
+        return ErrorCategory.DEVICE_UNAVAILABLE
     text = (message or "").lower().strip()
     if not text:
         return ErrorCategory.INTERNAL_BUG
