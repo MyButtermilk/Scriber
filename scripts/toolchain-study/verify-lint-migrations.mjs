@@ -129,7 +129,7 @@ const diagnosticRun = (label, kind, args) => {
       // Every enabled native rule belongs to these configured plugins. Parser
       // or configuration diagnostics have no matching registered-rule code and
       // must not be mistaken for ordinary rule-parity differences.
-      if (data.diagnostics.some((message) => !/^(?:eslint|typescript|react)\([^()]+\)$/.test(message.code ?? ""))) record.validInvocation = false;
+      if (data.diagnostics.some((message) => !/^(?:(?:eslint|typescript|react)\([^()]+\)|react-hooks\((?:rules-of-hooks|exhaustive-deps)\))$/.test(message.code ?? ""))) record.validInvocation = false;
     }
     record.rules = record.diagnostics.map((diagnostic) => diagnostic.rule).sort();
     if (record.rules.some((rule) => rule === "parse-error" || /(?:parse|syntax|config)[_-]?error/i.test(rule))) record.validInvocation = false;

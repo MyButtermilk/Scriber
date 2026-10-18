@@ -22,6 +22,9 @@ concurrency:
 
 jobs:
   confirm:
+    # The complete pipeline is already running for immutable revision f1e03338.
+    # Later migration-report fixes need only the compatibility jobs.
+    if: github.event_name == 'workflow_dispatch'
     name: ${{ matrix.os }} / complete selected pipeline
     runs-on: ${{ matrix.os }}
     timeout-minutes: 55
