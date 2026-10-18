@@ -3,7 +3,7 @@
   "include": ["client/src/**/*.test.ts", "client/src/**/*.test.tsx", "vitest.setup.ts"],
   "exclude": ["node_modules", "build", "dist"],
   "compilerOptions": {
-    "tsBuildInfoFile": "./node_modules/typescript/tsbuildinfo.tests",
+    "tsBuildInfoFile": "./node_modules/.cache/typescript6/tests.tsbuildinfo",
     "types": ["node", "vite/client", "vitest/globals", "@testing-library/jest-dom"]
   }
 }

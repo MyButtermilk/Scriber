@@ -3,17 +3,21 @@
   "exclude": ["node_modules", "build", "dist", "**/*.test.ts", "**/*.test.tsx"],
   "compilerOptions": {
     "incremental": true,
-    "tsBuildInfoFile": "./node_modules/typescript/tsbuildinfo",
+    "tsBuildInfoFile": "./node_modules/.cache/typescript6/app.tsbuildinfo",
     "noEmit": true,
+    "target": "ES2015",
+    "rootDir": ".",
     "module": "ESNext",
     "strict": true,
+    "noUncheckedSideEffectImports": false,
     "lib": ["esnext", "dom", "dom.iterable"],
+    "libReplacement": true,
     "jsx": "preserve",
+    "useDefineForClassFields": false,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
     "moduleResolution": "bundler",
-    "baseUrl": ".",
     "types": ["node", "vite/client"],
     "paths": {
       "@/*": ["./client/src/*"]

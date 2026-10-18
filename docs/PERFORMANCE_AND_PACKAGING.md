@@ -115,6 +115,398 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 ## Implemented Performance Work
 
+### Frontend verification toolchain (2026-10-18)
+
+The current frontend verification path uses Bun 1.4.3 for both type projects
+and isolated logic tests, Node Vitest/jsdom for component tests, and ESLint's
+content cache. Node 26.5.0 remains the Vite build runtime, and npm owns the
+canonical dependency lock. Bun is installed by `npm ci`; no global Bun
+installation is required. The TypeScript 6 compatibility package preserves
+the JavaScript compiler API used by other development tools. These changes
+concern developer and CI verification, not transcription throughput or
+desktop startup.
+
+The original native study selected the Bun-thread component configuration at
+[`c47e89d6`](https://github.com/MyButtermilk/Scriber/commit/c47e89d60da2e10874736bb9d5158461e4dd41c7);
+`e58ee351` changes only its documentation. The component follow-up at
+[`c85d165e`](https://github.com/MyButtermilk/Scriber/commit/c85d165ef77ed88bb1da1992b977b15438e2d0ee)
+switches the component runtime, pool and setup guard. The earlier measurements
+below retain their exact source revisions and do not describe the later VM
+configuration.
+
+The comparison starts from
+[`d061ad75`](https://github.com/MyButtermilk/Scriber/commit/d061ad75a0b39ca1b299eb8174ac828b122ef136).
+The first native matrix and its executable probes are isolated on the
+[`4e6c9eca` study revision](https://github.com/MyButtermilk/Scriber/tree/4e6c9ecaf1e601c6db617427684fb614376fe806/scripts/toolchain-study).
+The corrected lint comparison uses
+[`d91b93de`](https://github.com/MyButtermilk/Scriber/tree/d91b93deb1c1fb2d5977f50eb854129d0de59abc/scripts/toolchain-study).
+[Native study run 39100986882](https://github.com/MyButtermilk/Scriber/actions/runs/39100986882)
+retains separate Linux/Windows compiler, installer, and test/lint artifacts.
+In the original native matrix, admitted timing comparisons use at least five
+repetitions on four-CPU hosted runners with about 16 GiB RAM. Commands within a job are
+serialized and their order rotates; five repetitions do not completely balance
+positions for every candidate count. Medians below are wall seconds, including
+process startup, and compare tools within each runner rather than hardware
+across operating systems.
+
+**Compiler selection.** Each value covers both application and test projects.
+The gate compares all 159 application and 244 test-project source files, checks
+eight deliberate application diagnostics and eleven test-project diagnostics,
+and verifies a changed imported module invalidates an unchanged consumer. The
+production `bun --check --tsconfig-override ...` spelling is separately checked
+inside a package that also defines an npm `check` script. This avoids accidentally
+dispatching that script recursively.
+
+| Compiler | Linux cold | Linux warm | Linux changed | Windows cold | Windows warm | Windows changed |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| TypeScript 5.6.3, original | 20.851 | 3.700 | 20.315 | 13.322 | 2.517 | 13.030 |
+| TypeScript 5.6.3, normalized config | 21.005 | 3.714 | 20.355 | 13.177 | 2.502 | 13.029 |
+| TypeScript 7.0.2 | 2.886 | 0.543 | 3.148 | 2.019 | 0.513 | 2.265 |
+| tsrs 0.16.0 prerelease | 0.728 | 0.254 | 0.771 | Unavailable | Unavailable | Unavailable |
+| tsc-rs 0.7.0 | 1.060 | 0.315 | 1.179 | 0.853 | 0.356 | 0.957 |
+| tsc-rs 0.7.0, fast | 1.088 | 0.312 | 1.197 | 0.872 | 0.352 | 0.986 |
+| tsc-ts 0.0.2 | 1.878 | 0.620 | 2.064 | 1.492 | 0.620 | 1.652 |
+| Bun 1.4.3 | 1.044 | 1.040 | 1.048 | 0.592 | 0.597 | 0.602 |
+
+Bun wins the cold and changed-source Windows checks and supplies the selected
+logic-test runtime without adding a second native compiler dependency. tsc-rs
+has the faster unchanged incremental path; tsrs wins on Linux but has no tested
+Windows distribution. Neither fact is hidden by the selection. The exact tsrs
+pin is `0.16.0-ts7.1.0-dev.20260929`; reference compiler versions and individual
+diagnostics are recorded in the artifacts. Passing these project-specific
+probes is not a proof of universal compiler equivalence.
+
+The modern compiler configuration explicitly targets ES2015 for checking and
+removes deprecated `baseUrl`, while preserving the relative alias, strictness,
+no-emit scope, and previous side-effect-import/class-field defaults. The original
+ES5-default boundary is recorded separately; normalization alone does not
+explain the speedup. Vite continues to own emitted JavaScript. See the
+[TypeScript 7 announcement](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/),
+[TypeScript 6 migration notes](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html),
+and [Bun checker documentation](https://bun.com/docs/runtime/check).
+
+**Installer decision.** All three installer candidates pass the native
+reachable dependency/peer-context and tarball-integrity comparison, unchanged
+lock checks, lifecycle checks, and complete frontend gates. pnpm requires the
+explicit scoped override `cmdk@1.1.1>@radix-ui/react-primitive: 2.1.3`; its naive
+import selected 2.1.4. The corrected and naive locks are both retained as
+evidence. Platform-inapplicable optional dependencies are excluded only with
+manifest evidence; all-platform WASI/bundled-lock differences remain reported.
+
+| Installer | Linux empty cache | Linux warm cache, fresh tree | Windows empty cache | Windows warm cache, fresh tree |
+| --- | ---: | ---: | ---: | ---: |
+| npm 11.17.0 | 7.052 | 5.218 | 15.810 | 12.996 |
+| Bun 1.4.3 | 0.951 | 0.157 | 12.784 | 10.774 |
+| pnpm 12.14.0 | 2.832 | 0.384 | 6.502 | 2.680 |
+
+These clocks exclude provisioning the package manager and importing its lock.
+Empty cache means empty local package/metadata caches, not flushed OS or CDN
+caches. Repeated Bun/pnpm frozen commands are mostly no-ops, whereas `npm ci`
+recreates the tree; those observations are retained in the raw results but are
+not an equal-work developer-install comparison.
+
+The production installer remains npm to preserve this change's existing
+lock/install-metadata/cache contract. Both Bun and pnpm beat npm on fresh trees;
+different operating-system winners are not evidence that npm is faster. The
+exact release `node_modules` hit already skips installation, while the ordinary
+frontend and Rust quality jobs still perform `npm ci` against a restored package
+cache. A complete installer migration could therefore improve those jobs.
+A Bun 1.4.3 package-lock-only bridge also creates `bun.lock` despite `--no-save`
+and omits the `.package-lock.json` metadata required by both release cache-hit
+guards. A complete alternative bootstrap/import/cache path has not established
+an end-to-end win. The study therefore does not change canonical lock ownership
+or weaken those release guards.
+
+**Test runtimes.** Every eligible measured candidate retains the exact 142 logic
+tests in 35 `.test.ts` files and 253 component tests in 49 `.test.tsx` files.
+Complete reporting-only inventories compare file paths and full test names.
+The common runtime/isolation/failure corpus passes all 14 controls on both
+systems; asynchronous logic-failure probes also pass for two, four and eight
+workers. Worker-eight timings are omitted on these four-CPU hosts. The logic
+screen covers Node/tsx, Bun isolated without a parallel option, and Bun with
+two/four workers. For components, Node and Bun fork/thread pools and
+one/two/four/default worker settings receive a complete screen. The original
+baseline, best Node/Bun alternatives and candidates within
+15% of the fastest eligible screen proceed to five timed rounds.
+
+| Complete test workload | Linux median | Windows median |
+| --- | ---: | ---: |
+| Logic, original Node/tsx | 3.074 | 3.790 |
+| Logic, Bun isolated, two workers | 0.965 | 1.191 |
+| Logic, Bun isolated, four workers | 0.996 | 1.051 |
+| Components, original Node forks/default | 30.732 | 46.153 |
+| Components, Node threads/four | 28.331 | 42.424 |
+| Components, Bun threads/default | 26.622 | 34.929 |
+| Components, Bun threads/four | 26.713 | 33.298 |
+
+Four Bun workers win the Windows logic comparison; their Linux result overlaps
+the two-worker range. Bun with four Vitest threads wins the repeated Windows
+component comparison and is effectively tied with Bun's default thread count
+on Linux. All ten original native repetitions of Bun threads/four pass; these
+results describe `c47e89d6`, before the VM follow-up.
+The Bun four-fork variant passes only three of five Linux and four of five
+Windows repetitions; Bun's default fork pool passes only two of five Linux
+repetitions. These variants are ineligible. All ten failed native fork samples
+(including screens) fail the same compact summary-retry accessibility case:
+the button remains busy instead of returning to its ready label. The
+`c47e89d6` Bun-thread configuration retains jsdom, setup, file scope, mock
+restoration and Vitest's default per-file worker isolation. The later VM pool
+uses a different isolation mechanism, described below. These four-CPU x64
+measurements do not establish the best worker count on other hardware.
+
+**Lint selection.** The original Oxlint directory call in the first matrix
+skipped the entire experiment beneath its ignored `tmp/` parent. That is a
+harness error, not a valid candidate rejection or timing. The corrected
+[Linux lint comparison](https://github.com/MyButtermilk/Scriber/actions/runs/39104107873/job/117606204614)
+and [Windows lint comparison](https://github.com/MyButtermilk/Scriber/actions/runs/39104107873/job/117606204736)
+pass with explicit sorted source paths. Actual
+ESLint JSON and Oxlint file inventories cover the same 251 original lint files
+and shared experiment configuration; discovery and ignore probes verify new
+TS/MJS/CJS files and all existing exclusions. Every measured hybrid invocation
+must also report the complete expected file count.
+
+All four corrected lint candidates pass. The hybrid retains ESLint for rules
+with different native behavior; its 29 rule controls, 12 cache controls and four
+file/ignore controls all pass on each system. Cache controls include a content
+change with identical byte length and timestamp, plus configuration changes.
+
+The separate [complete migration compatibility run](https://github.com/MyButtermilk/Scriber/actions/runs/39106137039)
+at [`98e42a75`](https://github.com/MyButtermilk/Scriber/tree/98e42a75ecb7b0d2144bd63e17c3371ce59602dc/scripts/toolchain-study)
+also evaluates the pure-native and retained-React alternatives against all
+29 cases on both operating systems. Original ESLint and the full hybrid pass
+29/29 each. Pure Oxlint passes 25/29: it adds an optional-chain assertion
+diagnostic, misses a useless assignment, and loses the UI/theme refresh-rule
+exceptions. Retaining the original React rules in ESLint restores the two
+exceptions but leaves the two core-rule differences (27/29). These are observed
+differences in the tested migration configurations, not a claim that every
+possible Oxlint configuration is incompatible. All 116 cases per operating
+system are evaluated, and all scope and source-restoration controls pass.
+
+| Lint command | Linux cold | Linux warm | Linux edited | Windows cold | Windows warm | Windows edited |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Original ESLint, uncached | 5.303 | 5.498 | 5.424 | 5.704 | 5.598 | 5.624 |
+| Original ESLint, content cache | 5.429 | 0.944 | 0.976 | 5.779 | 1.235 | 1.254 |
+| Oxlint plus residual ESLint | 4.606 | 4.706 | 4.707 | 5.032 | 4.833 | 4.837 |
+| Oxlint plus cached residual ESLint | 4.656 | 1.011 | 1.026 | 5.148 | 1.322 | 1.351 |
+
+The production choice is the original ESLint rules with a content cache: this
+has the fastest warm and changed-file path on both systems and requires no
+second linter or maintained rule partition. The hybrid wins the cold lint
+comparison by about 0.6-0.8 seconds. The selection prioritizes repeat/edited
+verification and preserving one rule configuration; it is not a claim that
+ESLint wins every workload.
+
+**Formatter and build decisions.** Prettier 3.9.6 and Oxfmt 0.73.0 are compared
+on all 261 eligible tracked files. Linux has three different outputs
+(`api-types.ts`, `podcast-types.ts`, `route-titles.ts`); Windows has 261 different
+byte outputs. Both platforms demonstrate that Oxfmt rejects `endOfLine: auto`
+and fails the CRLF preservation control. The Windows differences are not all
+assumed to be solely line endings. Two other files (`request-errors.ts`,
+`support-bundle.ts`) already drift from the original Prettier output and are
+not attributed to this migration or reformatted here. Bun 1.4.3 has no working
+`fmt` command. Prettier therefore remains the formatter.
+
+The Node Vite build passes five repetitions on each operating system, producing
+77 files totaling 2,846,216 bytes on Linux and 2,846,533 bytes on Windows. Every
+repeat is byte-identical to its own platform's baseline. Medians are 0.876
+seconds on Linux and 1.415 seconds on Windows. The Bun build exits successfully
+but changes the Vite preload helper's stringified function form, causing a
+two-byte total delta and 17 changed hashed paths; it also loses the one-run
+speed screen.
+This proves a reproducibility difference, not a functional application defect.
+Node remains the build runtime. The recorded Linux memory metric is the largest
+single-process RSS for each command, not simultaneous process-tree peak memory;
+no total-memory improvement is claimed.
+
+**Historical complete pipeline and production controls: d061ad75 → c47e89d6.**
+The integrated comparison uses the frozen production candidate
+[`c47e89d6`](https://github.com/MyButtermilk/Scriber/commit/c47e89d60da2e10874736bb9d5158461e4dd41c7)
+against `d061ad75`, with independent installations under Node 26.5.0/npm 11.17.0.
+It runs the actual `npm run check`, `npm run lint`, `npm test` and `npm run build`
+sequentially. The five-round plan alternates version order and covers empty
+compiler/lint caches, primed unchanged inputs, and a valid public export added
+to `client/src/lib/utils.ts`. Installations, full-name test preflights, cache
+priming, source restoration and build hashing are outside the measured clock.
+The total is measured directly; standalone stage medians must not be added to
+claim a measured pipeline total. Successful paired builds must have identical
+paths, sizes and SHA-256 hashes within their operating system.
+
+The [complete Windows comparison](https://github.com/MyButtermilk/Scriber/actions/runs/39105653167/job/117610804104)
+passes all 30 planned pipeline samples and 120 command stages. All 15 paired
+build comparisons match; every build contains the same 77 files and 2,846,533
+bytes. These are directly measured total wall-clock medians, in seconds:
+
+| Windows complete pipeline | Baseline | Selected | Time saved |
+| --- | ---: | ---: | ---: |
+| Empty compiler/lint caches | 60.376 | 34.807 | 42.3% |
+| Primed caches, unchanged source | 42.833 | 30.598 | 28.6% |
+| Primed caches, changed public export | 54.057 | 30.133 | 44.3% |
+
+The setup artifact separately records one actual fresh `npm ci` observation
+per version: 10.509 seconds for the baseline and 10.239 seconds for the selected
+version on Windows; 8.486 and 8.950 seconds on the first Linux runner. These
+single, fixed-order network observations are not medians or evidence of an
+installer speedup. The pipeline improvements above exclude setup time.
+
+The [native production-control run](https://github.com/MyButtermilk/Scriber/actions/runs/39105653167)
+passes the actual npm-entrypoint negative controls on both operating systems:
+an application-only type error stops before the test type project, a test-only
+type error follows a successful application check, and asynchronous logic and
+component assertion failures produce nonzero exits. The controls verify exact
+diagnostics, full test inventories, Bun/jsdom dispatch, absence of unrelated
+unhandled/collection errors, and restoration of every temporary fixture and
+original source/configuration hash. The component failure control executes
+255 tests across 50 files, with only the deliberate assertion failing; the
+logic control executes 143 tests across 36 files with only its deliberate
+assertion failing. No test is removed or weakened to obtain a faster result.
+
+The [first Linux integrated series](https://github.com/MyButtermilk/Scriber/actions/runs/39105653167/job/117610803916)
+is retained as a failed measurement: cold and warm round-zero pairs pass,
+then the unchanged baseline exits nonzero in the changed-input scenario after
+all 253 component assertions pass. Vitest reports an unhandled
+`ReferenceError: window is not defined` from a delayed virtualizer callback in
+`DebugConsole.test.tsx`. The fail-fast series stops before the candidate's
+changed-input sample and has no valid five-round pipeline median. This failure
+is not relabeled as a screen or removed from the evidence.
+
+A separate [fixed-budget Linux confirmation](https://github.com/MyButtermilk/Scriber/actions/runs/39108567028/job/117619597358)
+uses the [`e3cdaa36` harness](https://github.com/MyButtermilk/Scriber/tree/e3cdaa36efa975e72fe2c3363cfa0e909607ff82/scripts/toolchain-study).
+It plans exactly five attempts per version/scenario, without replacement
+attempts. An ordinary command failure stops its own pipeline and is retained
+while later planned samples are collected; process, scope, restoration and
+build-parity failures remain fatal. Collection completeness, structural
+validity and successful samples are reported separately. Every failure keeps
+the overall job unsuccessful. A group receives a median only with five valid
+complete pipelines; a paired speedup requires both groups to qualify. Failed
+time-to-abort observations never enter the performance statistics. The first
+failed Linux series remains separate evidence.
+
+#### Component tests in reused jsdom VM workers (2026-10-18 follow-up)
+
+The follow-up at
+[`c85d165e`](https://github.com/MyButtermilk/Scriber/commit/c85d165ef77ed88bb1da1992b977b15438e2d0ee)
+reduces repeated jsdom loading by reusing Node workers. `test:components` runs
+Node Vitest with `pool: "vmThreads"` and
+`maxWorkers: Math.max(2, Math.min(4, availableParallelism()))`. Bun remains
+the type checker and logic-test runner; npm, ESLint, the application and test
+files under `client/src`, and the Node Vite build stay as in the preceding
+`e58ee351` configuration.
+
+The [pinned Vitest 4.1.10 scheduler](https://github.com/vitest-dev/vitest/blob/v4.1.10/packages/vitest/src/node/pool.ts)
+dispatches VM-pool files as separate tasks with two or more workers. Each task
+receives a [fresh VM context and module runner](https://github.com/vitest-dev/vitest/blob/v4.1.10/packages/vitest/src/runtime/workers/vm.ts),
+jsdom window, storage and Vitest-managed module graph, even though Vitest
+forces `isolate: false` for VM pools. A single worker batches files into one
+context. The two-worker floor and the global-context
+reuse guard in `vitest.setup.ts` therefore work together; even a one-CPU host
+needs two VM workers. This is the behavior verified for the pinned version,
+not isolation of Node processes or built-in modules.
+
+**Native complete-pipeline confirmation.** The new comparison freezes
+[`e58ee351`](https://github.com/MyButtermilk/Scriber/commit/e58ee3510583f1e8edcec464f1117f1b34b74946)
+as the Bun-thread baseline and `c85d165e` as the VM candidate. Each runner has
+four available CPUs and uses Node 26.5.0/npm 11.17.0. It runs exactly five
+alternating pairs of the actual `check → lint → test → build` npm pipeline.
+The total clock is measured directly. Cold means empty compiler/ESLint caches;
+Vitest/Vite transform caches and operating-system caches are not flushed.
+Each build starts without the preceding `dist/public` output. Installations,
+reporting-only test inventories, controls, cache preparation, restoration and
+manifest hashing are outside the measured clock.
+
+| Native complete pipeline, compiler/lint caches empty | Bun threads (`e58ee351`) | Node VM (`c85d165e`) | Less time |
+| --- | ---: | ---: | ---: |
+| Linux x64, four CPUs | 26.275 s | 18.453 s | 29.8% |
+| Windows x64, four CPUs | 48.843 s | 38.311 s | 21.6% |
+
+The [Linux job](https://github.com/MyButtermilk/Scriber/actions/runs/39123035895/job/117662366625)
+and its [raw artifact](https://github.com/MyButtermilk/Scriber/actions/runs/39123035895/artifacts/12135063169),
+plus the [Windows job](https://github.com/MyButtermilk/Scriber/actions/runs/39123791512/job/117664605445)
+and its [raw artifact](https://github.com/MyButtermilk/Scriber/actions/runs/39123791512/artifacts/12135965519),
+each contain all ten successful complete pipelines, all 40 successful command
+stages and five matching paired build manifests. Every run retains 142 logic
+tests in 35 files and 253 component tests in 49 files; full names and file
+inventories match. Every build contains 77 files: 2,846,216 bytes on Linux and
+2,846,533 bytes on Windows. The complete `npm test` stage falls from 20.910 to
+13.173 seconds on Linux and from 39.224 to 28.372 seconds on Windows; this
+includes both logic and component tests, not just components.
+These are additional improvements over `e58ee351`, not a fresh comparison
+against `d061ad75`. Do not add them to the earlier percentages or infer new
+warm/changed-input medians from this cold-only follow-up.
+
+The Linux series uses the
+[`add48c8a` harness](https://github.com/MyButtermilk/Scriber/tree/add48c8acf79d6843a4e9de418f5269eb801f082/scripts/toolchain-study).
+Its `setup/environment.json` and `pipeline/results.json` project `gitHead`
+fields bind the actual `e58ee351`/`c85d165e` inputs. The latter's inherited
+`metadata.sourceCommit` still names the original matrix's `d061ad75`; that
+stale label does not describe these checkouts. The
+[`0850b4b4` harness correction](https://github.com/MyButtermilk/Scriber/commit/0850b4b4b432dee3020f4cd945ef66b86812b41d)
+reports both actual source commits explicitly, without changing timed commands,
+measurement boundaries, failure policy or selection rules.
+
+**Failure propagation and isolation.** The archived controls on both native
+operating systems verify:
+
+- Actual production npm type gates reject an application-only TS2322 before
+  starting the test project, and reject a test-only TS2322 after the application
+  check passes. Asynchronous logic and component assertion controls execute
+  143 tests/36 files and 255 tests/50 files respectively, with exactly the
+  deliberate assertion failing and no unrelated errors.
+- Six external fixture files execute 24 tests with two and three VM
+  workers. Worker traces prove reuse while browser globals, storage, cookies,
+  source and external package state, mocks, module resets and React cleanup
+  remain correct. Both unsafe serial VM controls reject the remaining five
+  files with exactly the context-reuse guard after the first file passes.
+- Separate actual npm commands with `--pool=threads --maxWorkers=1` and
+  `--pool=threads --no-file-parallelism` each pass the same two existing module
+  and mock test files: 14 tests, one worker and `isolate: true`. These are the
+  supported serial debugging commands documented in `TESTING_AND_RELEASE.md`.
+- A separate actual `npm run test:components` control passes all four tests and
+  their assertions but triggers three errors during active tests: an unhandled
+  promise rejection, timer throw and microtask throw. The npm command exits 1.
+  Vitest's JSON test summary still says `success: true`; the public error
+  reporter and actual process exit are checked separately. A green assertion
+  summary alone is insufficient evidence of a successful run.
+
+Every control verifies restoration of its recorded source/configuration inputs
+and test-file inventory. No original test is removed or weakened. Active-test
+error controls do not establish reliable capture of arbitrarily late callbacks
+after test completion; the earlier failed baseline series remains documented
+above.
+
+The [initial Windows follow-up](https://github.com/MyButtermilk/Scriber/actions/runs/39123035895/job/117662366775)
+passes the production type/assertion controls, then stops before timing: its
+external fixture project on `C:` cannot resolve any of the six test modules
+from the checkout on `D:`. This contributes no performance samples and remains
+separate harness-failure evidence. The `0850b4b4` correction places that owned
+temporary project beside `Frontend` on its real drive and records original
+collection errors before looking for a worker trace. It retains all six strict
+isolation/serial phases and the five-round timing budget. The corrected Windows
+job passes every control and all ten complete pipelines. The successful Linux
+series remains separate and is not repeated or pooled with a new series.
+
+**VM limits.** As documented for the
+[pinned VM pool](https://github.com/vitest-dev/vitest/blob/v4.1.10/docs/config/pool.md),
+Node built-ins can return errors from the worker's realm, so `instanceof Error`
+inside the VM can be false. Use ordinary isolated threads when debugging tests
+that depend on those constructors. The current suite passes both runtimes;
+that does not make their Node realm semantics identical. VM workers can retain
+module memory. The
+[default VM memory limit](https://github.com/vitest-dev/vitest/blob/v4.1.10/docs/config/vmmemorylimit.md)
+recycles workers; it is not a ceiling on aggregate resident memory. This
+confirmation does not measure process-tree peak RSS, so no quantified memory
+tradeoff is claimed.
+
+**Launcher cancellation follow-up.** A later review reproduced a cancellation
+regression in the Node logic-test wrapper: sending `SIGTERM` only to the wrapper
+stopped its supervision while its Bun child continued running. The wrapper now
+forwards `SIGINT`/`SIGTERM`, waits for child closure and treats cancellation as
+a failed run even if the child exits with code 0. The separate
+`npm run test:tooling` CI gate covers the launcher with small owned fixtures;
+it does not add tests to `client/src` or change the selected runtime/pool.
+The timing tables above remain measurements of their stated frozen commits,
+and exclude the added launcher-regression gate. No new timing claim is inferred
+from this correctness fix.
+
 ### Slider drafts and stable history boundaries (2026-10-06)
 
 The Visualizer-bars control now owns its drag state and saved-value reference.
