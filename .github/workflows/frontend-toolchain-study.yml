@@ -1,0 +1,97 @@
+name: Frontend Toolchain Study
+
+on:
+  push:
+    branches:
+      - perf/frontend-toolchain-study-20261017
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-toolchain-study-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    name: ${{ matrix.os }} / ${{ matrix.lane }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        lane: [compilers, managers, test-lint]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout immutable study revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Use Scriber Node version
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+      - name: Install pinned experimental runtimes
+        run: npm ci --prefix scripts/toolchain-study/runtime-tools --no-audit --no-fund
+      - name: Install unchanged Scriber dependencies
+        working-directory: Frontend
+        run: npm ci --no-audit --no-fund
+      - name: Install compiler candidates and reference versions
+        if: matrix.lane == 'compilers'
+        run: npm ci --prefix scripts/toolchain-study/compiler-tools --no-audit --no-fund
+      - name: Install native lint and format candidates
+        if: matrix.lane == 'test-lint'
+        run: npm ci --prefix scripts/toolchain-study/lint-tools --no-audit --no-fund
+      - name: Prepare disposable candidate project
+        if: matrix.lane != 'managers'
+        run: node scripts/toolchain-study/prepare-project.mjs "${{ matrix.lane }}"
+      - name: Compare dependency installation with equal locked artifacts
+        if: matrix.lane == 'managers'
+        run: >-
+          node scripts/toolchain-study/managers.mjs
+          --repo . --tools scripts/toolchain-study/runtime-tools
+          --output tmp/toolchain-study/results/managers --rounds 5
+      - name: Verify compiler diagnostics and file coverage
+        if: matrix.lane == 'compilers'
+        run: >-
+          node scripts/toolchain-study/compilers.mjs
+          --frontend tmp/toolchain-study/compilers-project/Frontend
+          --tools scripts/toolchain-study/compiler-tools
+          --bun scripts/toolchain-study/runtime-tools/node_modules/bun/bin/bun.exe
+          --output tmp/toolchain-study/results/compilers --mode correctness
+      - name: Compare equivalent compilers in five balanced rounds
+        if: matrix.lane == 'compilers'
+        run: >-
+          node scripts/toolchain-study/compilers.mjs
+          --frontend tmp/toolchain-study/compilers-project/Frontend
+          --tools scripts/toolchain-study/compiler-tools
+          --bun scripts/toolchain-study/runtime-tools/node_modules/bun/bin/bun.exe
+          --output tmp/toolchain-study/results/compilers --mode benchmark --rounds 5
+      - name: Verify the Bun production entrypoint inside the package
+        if: matrix.lane == 'compilers'
+        run: >-
+          node scripts/toolchain-study/verify-bun-entrypoint.mjs
+          tmp/toolchain-study/compilers-project/Frontend
+          tmp/toolchain-study/results/compilers
+          scripts/toolchain-study/runtime-tools/node_modules/bun/bin/bun.exe
+      - name: Compare full tests, lint rules and build runtimes
+        if: matrix.lane == 'test-lint'
+        run: node scripts/toolchain-study/run-test-lint.mjs
+      - name: Upload all measurements and failure evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-toolchain-${{ matrix.os }}-${{ matrix.lane }}-${{ github.run_attempt }}
+          path: |
+            tmp/toolchain-study/results/managers/results.json
+            tmp/toolchain-study/results/managers/logs/
+            tmp/toolchain-study/results/compilers/
+            tmp/toolchain-study/results/test-lint/
+            tmp/toolchain-study/test-lint-project/tmp/speed-test-lint/*-results.json
+          if-no-files-found: error
+          compression-level: 6

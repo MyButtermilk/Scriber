@@ -1,0 +1,15 @@
+{
+  "printWidth": 120,
+  "semi": true,
+  "singleQuote": false,
+  "trailingComma": "all",
+  "sortPackageJson": false,
+  "ignorePatterns": [
+    "dist",
+    "node_modules",
+    "output",
+    "src-tauri",
+    "client/public",
+    "package-lock.json"
+  ]
+}
