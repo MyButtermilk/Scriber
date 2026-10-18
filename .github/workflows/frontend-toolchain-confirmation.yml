@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/frontend-toolchain-confirmation.yml
       - scripts/toolchain-study/combined.mjs
+      - scripts/toolchain-study/combined-policy*.mjs
       - scripts/toolchain-study/verify-production-gates.mjs
       - scripts/toolchain-study/verify-lint-migrations.mjs
       - scripts/toolchain-study/run-test-lint.mjs
@@ -22,16 +23,16 @@ concurrency:
 
 jobs:
   confirm:
-    # The complete pipeline is already running for immutable revision f1e03338.
-    # Later migration-report fixes need only the compatibility jobs.
-    if: github.event_name == 'workflow_dispatch'
+    # Keep the original f1e03338 run and its failed Linux baseline sample.
+    # This revision collects one fixed five-round Linux batch without replacing
+    # failed samples. A manual replay includes both operating systems.
     name: ${{ matrix.os }} / complete selected pipeline
     runs-on: ${{ matrix.os }}
     timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["ubuntu-latest", "windows-latest"]' || '["ubuntu-latest"]') }}
     defaults:
       run:
         shell: bash
@@ -181,6 +182,8 @@ jobs:
           fs.writeFileSync(path.join(workspace, "confirmation-results/production-gates-launch.json"), `${JSON.stringify(record, null, 2)}\n`);
           if (result.error || result.signal || result.status !== 0) throw new Error("A production failure control failed; inspect the uploaded evidence");
           NODE
+      - name: Verify fixed-budget failure accounting
+        run: node --test harness/scripts/toolchain-study/combined-policy.test.mjs
       - name: Compare the complete selected pipeline in five rounds per scenario
         run: |
           node --input-type=module <<'NODE'
@@ -218,6 +221,8 @@ jobs:
           compression-level: 6
 
   lint-migrations:
+    # Both native compatibility jobs passed at immutable revision 98e42a75.
+    if: github.event_name == 'workflow_dispatch'
     name: ${{ matrix.os }} / native lint migration compatibility
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20

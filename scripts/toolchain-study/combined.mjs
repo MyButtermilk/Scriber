@@ -9,6 +9,7 @@ import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { host, options } from "./common.mjs";
+import { ROUNDS, STAGES, commandOutcome, plannedSamples, collectionComplete, compareBuildPair, summarizeGroup, compareGroups } from "./combined-policy.mjs";
 
 const input = options({ baseline: "", candidate: "", npm: "", output: "", rounds: "5", scenarios: "cold,warm,changed" });
 for (const key of ["baseline", "candidate", "npm", "output"]) {
@@ -20,7 +21,7 @@ const output = path.resolve(input.output);
 const rounds = Number(input.rounds);
 const scenarios = input.scenarios.split(",");
 if (process.version !== "v26.5.0") throw new Error(`Expected Node v26.5.0, got ${process.version}`);
-if (!Number.isInteger(rounds) || rounds < 5 || rounds > 15) throw new Error("Use 5 to 15 rounds");
+if (rounds !== ROUNDS) throw new Error("Use exactly five fixed rounds; failed samples are never replaced or retried");
 if (!scenarios.length || new Set(scenarios).size !== scenarios.length || scenarios.some(value => !["cold", "warm", "changed"].includes(value))) throw new Error("Invalid scenarios");
 if (projects.baseline === projects.candidate) throw new Error("Use two independent Frontend copies");
 for (const directory of Object.values(projects)) {
@@ -68,13 +69,15 @@ const report = {
   metadata: {
     ...host(), rssScope: "not measured by the combined comparator", startedAt: new Date().toISOString(), npm: npmVersion, nodeExecutable: process.execPath,
     npmExecutable: npm, harnessSha256: digest(fs.readFileSync(fileURLToPath(import.meta.url))),
+    policySha256: digest(fs.readFileSync(fileURLToPath(new URL("./combined-policy.mjs", import.meta.url)))),
     rounds, scenarios,
-    policy: "Actual npm run check, lint, test and build execute sequentially under the same Node/npm. Total and stage wall clocks are monotonic. Setup/install, reporting-only full test preflights, cache preparation, log validation, manifest hashing and source restoration are excluded. Cold clears compiler/ESLint caches only; OS pages, test transforms and network caches are not flushed. Warm/changed start with empty compiler/ESLint caches, then prime check+lint on original source outside timing. Changed adds the same valid public export to real client/src/lib/utils.ts. Every build starts without dist/public. Any failure invalidates the comparison.",
+    policy: "Actual npm run check, lint, test and build execute sequentially under the same Node/npm. Total and stage wall clocks are monotonic. Setup/install, reporting-only full test preflights, cache preparation, log validation, manifest hashing and source restoration are excluded. Cold clears compiler/ESLint caches only; OS pages, test transforms and network caches are not flushed. Warm/changed start with empty compiler/ESLint caches, then prime check+lint on original source outside timing. Changed adds the same valid public export to real client/src/lib/utils.ts. Every build starts without dist/public. Exactly five rounds are planned, without retries or replacements. Ordinary positive command exits stop that sample and retain its failure before continuing to the next planned position. Failed sample seconds measure time until failure, not a complete pipeline, and never enter performance statistics. Process, setup, input, scope, restoration and build-parity failures abort collection. Each candidate/scenario group requires five successful complete pipelines; paired comparisons require both eligible groups and structural validity. Any failure leaves the overall process exit nonzero.",
     runOrder: "Each scenario alternates baseline,candidate and candidate,baseline by round (pure cyclic rotation; five rounds give first position three versus two times).",
-    testEvidence: "Untimed reporting-only executions establish complete test names/files. Every timed actual npm run test must retain the full Node/Bun logic and Vitest component counts; immutable source/config fingerprints prevent scope changes between preflight and timing.",
+    testEvidence: "Untimed reporting-only executions establish complete test names/files. Every successful timed complete pipeline must retain the full Node/Bun logic and Vitest component counts; failed command samples remain scopeVerified=false without inferred test counts. Immutable source/config fingerprints prevent scope changes between preflight and timing.",
     environment: { CI: env.CI, NO_COLOR: env.NO_COLOR, FORCE_COLOR: env.FORCE_COLOR, pathSha256: digest(env.PATH), nodeOptionsSha256: digest(env.NODE_OPTIONS ?? ""), TZ: env.TZ ?? null, LANG: env.LANG ?? null },
   },
-  projects: {}, expectedFiles, preflight: [], preparation: [], samples: [], summary: {}, comparisons: {}, passed: false,
+  projects: {}, expectedFiles, preflight: [], preparation: [], plan: plannedSamples(scenarios), samples: [], buildComparisons: [],
+  summary: {}, comparisons: {}, collectionComplete: false, structuralValidity: false, allPassed: false, passed: false,
 };
 const save = () => fs.writeFileSync(path.join(output, "results.json"), `${JSON.stringify(report, null, 2)}\n`);
 const utilsPath = name => path.join(projects[name], "client/src/lib/utils.ts");
@@ -127,7 +130,7 @@ async function execute(name, script, fd, extra = [], environment = env) {
   } catch (failure) { error = failure.message; terminateTree(); }
   finally { clearTimeout(timer); }
   const seconds = (performance.now() - started) / 1000;
-  return { script, command: process.execPath, args, seconds, status, signal, error, timedOut, passed: status === 0 && !signal && !error && !timedOut };
+  return { script, command: process.execPath, args, seconds, status, signal, error, timedOut, passed: status === 0 && signal === null && error === null && !timedOut };
 }
 async function standalone(name, script, label, extra = [], environment = env) {
   const log = `logs/${label}.log`;
@@ -245,44 +248,52 @@ async function prepare(name, scenario, round) {
 }
 async function pipeline(name, scenario, round, position) {
   const label = `${scenario}-${round}-${name}`;
-  const destinations = ["check", "lint", "test", "build"].map(script => {
-    const log = `logs/${label}-${script}.log`;
-    return { script, log, fd: fs.openSync(path.join(output, log), "w") };
-  });
-  const sample = { name, scenario, round, position, stages: [], passed: false };
-  const started = performance.now();
+  const destinations = [];
+  const sample = { name, scenario, round, position, stages: [], passed: false, scopeVerified: false, failureKind: null };
+  report.samples.push(sample); save();
+  let started = null;
   try {
+    for (const script of STAGES) {
+      const log = `logs/${label}-${script}.log`;
+      destinations.push({ script, log, fd: fs.openSync(path.join(output, log), "w") });
+    }
+    started = performance.now();
     for (const destination of destinations) {
       const record = await execute(name, destination.script, destination.fd);
       sample.stages.push({ ...record, log: destination.log });
       if (!record.passed) break;
     }
+  } catch (failure) {
+    sample.failureKind = "infrastructure";
+    sample.validationError = failure.message;
   } finally {
-    sample.seconds = (performance.now() - started) / 1000;
-    for (const destination of destinations) fs.closeSync(destination.fd);
+    sample.seconds = started === null ? null : (performance.now() - started) / 1000;
+    for (const destination of destinations) try { fs.closeSync(destination.fd); }
+    catch (failure) { sample.failureKind = "infrastructure"; sample.validationError = failure.message; }
   }
   const failed = sample.stages.find(stage => !stage.passed);
   Object.assign(sample, { status: failed ? failed.status : sample.stages.length === 4 ? 0 : null, signal: failed?.signal ?? null, error: failed?.error ?? null, timedOut: failed?.timedOut ?? false });
-  try {
-    if (failed || sample.stages.length !== 4) throw new Error(`Failed actual ${name} pipeline at ${failed?.script ?? "missing stage"}`);
-    sample.testEvidence = validateTimedTests(name, fs.readFileSync(path.join(output, sample.stages.find(stage => stage.script === "test").log), "utf8"));
-    const built = fingerprint(path.join(projects[name], "dist/public"));
-    if (!built.manifest.some(file => file.file === "index.html")) throw new Error("Node build omitted index.html");
-    const manifest = `evidence/${label}-build-manifest.json`;
-    fs.writeFileSync(path.join(output, manifest), `${JSON.stringify(built.manifest, null, 2)}\n`);
-    sample.build = { files: built.files, bytes: built.bytes, sha256: built.sha256, manifest };
-    sample.passed = true;
-  } catch (failure) { sample.validationError = failure.message; }
-  report.samples.push(sample); save();
-  console.log(`${label}: ${sample.passed ? "PASS" : "FAIL"} ${sample.seconds.toFixed(3)}s`);
-  if (!sample.passed) throw new Error(sample.validationError);
+  if (!sample.failureKind) {
+    if (failed) {
+      sample.failureKind = commandOutcome(failed) === "command-exit" ? "command-exit" : "process";
+      sample.validationError = `Failed actual ${name} pipeline at ${failed.script}`;
+    } else try {
+      if (sample.stages.length !== STAGES.length) throw new Error("Pipeline omitted a required stage");
+      sample.testEvidence = validateTimedTests(name, fs.readFileSync(path.join(output, sample.stages.find(stage => stage.script === "test").log), "utf8"));
+      sample.scopeVerified = true;
+      const built = fingerprint(path.join(projects[name], "dist/public"));
+      if (!built.manifest.some(file => file.file === "index.html")) throw new Error("Node build omitted index.html");
+      const manifest = `evidence/${label}-build-manifest.json`;
+      fs.writeFileSync(path.join(output, manifest), `${JSON.stringify(built.manifest, null, 2)}\n`);
+      sample.build = { files: built.files, bytes: built.bytes, sha256: built.sha256, manifest };
+      sample.passed = true;
+    } catch (failure) { sample.failureKind = "validation"; sample.validationError = failure.message; }
+  }
+  sample.notRun = STAGES.filter(script => !sample.stages.some(stage => stage.script === script));
+  save();
+  console.log(`${label}: ${sample.passed ? "PASS" : "FAIL"} ${sample.seconds === null ? "unmeasured" : `${sample.seconds.toFixed(3)}s`} (${sample.failureKind ?? "complete"})`);
+  if (!sample.passed && sample.failureKind !== "command-exit") throw new Error(sample.validationError);
   return sample;
-}
-function summarize(samples, stage = null) {
-  const values = samples.map(sample => stage ? sample.stages.find(value => value.script === stage) : sample);
-  const valid = report.passed && values.length === rounds && values.every(value => value?.passed);
-  const sorted = values.filter(value => value?.passed).map(value => value.seconds).sort((a, b) => a - b);
-  return { attempts: values.length, passed: values.filter(value => value?.passed).length, eligible: valid, medianSeconds: valid ? (sorted[Math.floor((rounds - 1) / 2)] + sorted[Math.ceil((rounds - 1) / 2)]) / 2 : null, minSeconds: valid ? sorted[0] : null, maxSeconds: valid ? sorted.at(-1) : null };
 }
 try {
   for (const name of ["baseline", "candidate"]) await preflight(name);
@@ -297,13 +308,14 @@ try {
       } finally { fs.writeFileSync(utilsPath(name), originalUtils[name]); }
       if (fingerprint(projects[name], true).sha256 !== sourceFingerprints[name].sha256) throw new Error(`Pipeline altered ${name} source/config`);
     }
-    if (pair[0].build.sha256 !== pair[1].build.sha256) {
-      for (const sample of pair) { sample.passed = false; sample.validationError = "Baseline and candidate Node build manifests are not byte-identical"; }
-      throw new Error(`Different Node build artifacts for ${scenario}/${round}`);
+    try { report.buildComparisons.push({ scenario, round, ...compareBuildPair(pair) }); }
+    catch (failure) {
+      report.buildComparisons.push({ scenario, round, comparable: true, matches: false, reason: failure.message });
+      for (const sample of pair) { sample.passed = false; sample.failureKind = "build-parity"; sample.validationError = failure.message; }
+      throw failure;
     }
     save();
   }
-  report.passed = report.samples.length === rounds * scenarios.length * 2 && report.samples.every(sample => sample.passed);
 } catch (failure) {
   report.fatalError = failure.stack ?? failure.message;
   process.exitCode = 1;
@@ -316,16 +328,20 @@ try {
       if (!report.restoration[name]) throw new Error(`Failed to restore ${name} source/config`);
     } catch (failure) { report.restoration[name] = false; report.restorationError = failure.message; report.passed = false; process.exitCode = 1; }
   }
+  report.collectionComplete = collectionComplete(report.samples, report.plan);
+  if (!report.fatalError && !report.collectionComplete) report.fatalError = "Collection did not retain each planned sample exactly once in the fixed order";
+  report.structuralValidity = !report.fatalError && !report.restorationError && Object.values(report.restoration).every(Boolean);
+  report.allPassed = report.collectionComplete && report.samples.every(sample => sample.passed);
+  report.passed = report.structuralValidity && report.collectionComplete && report.allPassed;
   for (const scenario of scenarios) {
     for (const name of ["baseline", "candidate"]) {
       const samples = report.samples.filter(sample => sample.name === name && sample.scenario === scenario);
-      report.summary[`${name}/${scenario}`] = { total: summarize(samples), stages: Object.fromEntries(["check", "lint", "test", "build"].map(stage => [stage, summarize(samples, stage)])) };
+      report.summary[`${name}/${scenario}`] = summarizeGroup(samples, report.structuralValidity);
     }
-    const baseline = report.summary[`baseline/${scenario}`].total.medianSeconds;
-    const candidate = report.summary[`candidate/${scenario}`].total.medianSeconds;
-    report.comparisons[scenario] = { baselineSeconds: baseline, candidateSeconds: candidate, candidateOverBaseline: baseline && candidate ? candidate / baseline : null, savedPercent: baseline && candidate ? 100 * (1 - candidate / baseline) : null };
+    report.comparisons[scenario] = compareGroups(report.summary[`baseline/${scenario}`], report.summary[`candidate/${scenario}`]);
   }
   report.metadata.finishedAt = new Date().toISOString();
   save();
-  console.log(JSON.stringify({ passed: report.passed, comparisons: report.comparisons, fatalError: report.fatalError ?? null }));
+  console.log(JSON.stringify({ passed: report.passed, collectionComplete: report.collectionComplete, structuralValidity: report.structuralValidity, allPassed: report.allPassed, comparisons: report.comparisons, fatalError: report.fatalError ?? null }));
+  if (!report.passed) process.exitCode = 1;
 }

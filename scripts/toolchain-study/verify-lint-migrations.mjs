@@ -148,7 +148,7 @@ const eslintRun = (label, file, config = "eslint.config.js") => {
 };
 const nativeRun = (label, file, config) => {
   const record = diagnosticRun(label, "oxlint", [oxlint, "--config", config, "--max-warnings", "0", "--format", "json", file]);
-  if (record.numberOfFiles !== null && record.numberOfFiles !== 1) record.validInvocation = false;
+  if (record.numberOfFiles !== 1) record.validInvocation = false;
   if (record.diagnostics.some((diagnostic) => diagnostic.file !== normalize(file))) record.validInvocation = false;
   return record;
 };
