@@ -12,6 +12,8 @@ export default defineConfig({
   test: {
     name: "components",
     environment: "jsdom",
+    pool: "threads",
+    maxWorkers: 4,
     execArgv: ["--no-experimental-webstorage"],
     setupFiles: [path.resolve(import.meta.dirname, "vitest.setup.ts")],
     include: ["client/src/**/*.test.tsx"],

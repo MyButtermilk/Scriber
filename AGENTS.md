@@ -71,9 +71,10 @@ the user explicitly asks for a temporary investigation note.
   tests. Keep the `typescript` alias to `@typescript/typescript6@6.0.2` for
   ESLint and other API consumers. The normalized configs use an explicit
   ES2015 target with `noEmit` and relative path aliases; Vite produces the
-  JavaScript. Component tests use Vitest/jsdom, and ESLint uses its content
-  cache. Installer comparisons have different Windows and Linux winners;
-  retain npm and the release path that skips installation on an exact
+  JavaScript. Component tests use Vitest/jsdom under Bun with four isolated
+  threads, and ESLint uses its content cache. Installer comparisons have
+  different Windows and Linux winners; retain npm and the release path that
+  skips installation on an exact
   `node_modules` cache hit. Converted-lock experiments stay separate from
   the production dependency workflow.
 - Runtime is Windows-first. Linux/macOS support is mostly fallback/dev support.

@@ -118,9 +118,10 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 ### Frontend verification toolchain (2026-10-18)
 
 The frontend keeps its Node 26.5.0 Vite build and canonical npm package-lock.
-The selected verification path uses the pinned Bun 1.4.3 checker and isolated
-logic-test runner, with ESLint's content-based cache. Bun is a development
-dependency installed by the existing `npm ci`; no global Bun installation is
+The selected verification path uses the pinned Bun 1.4.3 checker, isolated
+logic-test runner, and Vitest/jsdom with four threads, plus ESLint's content-based
+cache. Bun is a development dependency installed by the existing `npm ci`; no
+global Bun installation is
 required. The TypeScript 6 compatibility package preserves the JavaScript
 compiler API used by other development tools. These changes concern developer
 and CI verification, not transcription throughput or desktop startup.

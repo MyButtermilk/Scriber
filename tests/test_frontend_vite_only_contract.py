@@ -77,12 +77,13 @@ def test_frontend_package_is_vite_only() -> None:
     assert scripts["check:app"] == "bun --check --tsconfig-override tsconfig.json"
     assert scripts["check:tests"] == "bun --check --tsconfig-override tsconfig.tests.json"
     assert scripts["lint"] == (
-        "eslint . --max-warnings 0 --cache --cache-strategy content "
-        "--cache-location node_modules/.cache/eslint"
+        "eslint . --max-warnings 0 --cache --cache-strategy content --cache-location node_modules/.cache/eslint"
     )
     assert scripts["test"] == "npm run test:lib && npm run test:components"
     assert scripts["test:lib"] == "node scripts/test-lib.mjs"
-    assert scripts["test:components"] == "vitest run --config vitest.components.config.ts"
+    assert scripts["test:components"] == (
+        "bun ./node_modules/vitest/vitest.mjs run --config vitest.components.config.ts"
+    )
     assert scripts["tauri:dev"] == "tauri dev"
     assert scripts["tauri:build"] == "tauri build"
     assert scripts["tauri:bundle"] == "tauri bundle"

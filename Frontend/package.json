@@ -20,7 +20,7 @@
     "format:check": "prettier --check .",
     "test": "npm run test:lib && npm run test:components",
     "test:lib": "node scripts/test-lib.mjs",
-    "test:components": "vitest run --config vitest.components.config.ts",
+    "test:components": "bun ./node_modules/vitest/vitest.mjs run --config vitest.components.config.ts",
     "benchmark:meeting-review": "tsx benchmarks/meeting-review.ts",
     "benchmark:meeting-display": "tsx benchmarks/meeting-display.ts",
     "benchmark:formatters": "tsx benchmarks/formatters.ts",

@@ -244,8 +244,9 @@ npm run build
 
 `npm ci` installs the pinned Bun 1.4.3 package locally; these npm scripts do
 not require a global Bun installation. Node.js 26.5.0 remains the runtime for
-Vite and Vitest. `package-lock.json` remains the canonical dependency lock:
-the installer comparisons have different Windows and Linux winners, and an
+Vite and npm command orchestration. `package-lock.json` remains the canonical
+dependency lock: the installer comparisons have different Windows and Linux
+winners, and an
 exact release `node_modules` cache hit already skips installation. Keep
 converted Bun/pnpm locks in the separate experiments.
 
@@ -254,7 +255,7 @@ converted Bun/pnpm locks in the separate experiments.
 | `npm run check:app` | `bun --check --tsconfig-override tsconfig.json` checks application sources, excluding test files. |
 | `npm run check:tests` | `bun --check --tsconfig-override tsconfig.tests.json` checks both `.test.ts` and `.test.tsx` files plus `vitest.setup.ts`, with the test declarations enabled. |
 | `npm run test:lib` | The Node wrapper discovers and sorts every `client/src/**/*.test.ts` file, then runs the local Bun executable with `test --isolate --parallel=4`. The current suite contains 35 files and 142 tests. |
-| `npm run test:components` | Vitest/jsdom runs the `.test.tsx` suites through `vitest.components.config.ts`: currently 49 files and 253 tests. |
+| `npm run test:components` | Bun runs Vitest/jsdom with four isolated threads through `vitest.components.config.ts`: currently 49 files and 253 tests. |
 | `npm run lint` | ESLint checks the full scope with zero warnings allowed and `--cache --cache-strategy content --cache-location node_modules/.cache/eslint`. Use `npm run lint -- --no-cache` for a full uncached pass. |
 
 `npm run check` runs both type projects; `npm test` runs both behavior suites.
