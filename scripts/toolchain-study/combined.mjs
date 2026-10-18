@@ -65,9 +65,13 @@ const env = {
   PATH: [path.dirname(process.execPath), path.resolve(path.dirname(npm), "../../.bin"), process.env.PATH ?? ""].join(path.delimiter),
   CI: "true", NO_COLOR: "1", FORCE_COLOR: "0", npm_config_update_notifier: "false",
 };
+// The shared matrix helper carries its original, fixed baseline commit. This
+// comparator instead records the actual two prepared checkouts below.
+const comparisonHost = host();
+delete comparisonHost.sourceCommit;
 const report = {
   metadata: {
-    ...host(), rssScope: "not measured by the combined comparator", startedAt: new Date().toISOString(), npm: npmVersion, nodeExecutable: process.execPath,
+    ...comparisonHost, rssScope: "not measured by the combined comparator", startedAt: new Date().toISOString(), npm: npmVersion, nodeExecutable: process.execPath,
     npmExecutable: npm, harnessSha256: digest(fs.readFileSync(fileURLToPath(import.meta.url))),
     policySha256: digest(fs.readFileSync(fileURLToPath(new URL("./combined-policy.mjs", import.meta.url)))),
     rounds, scenarios,
@@ -104,6 +108,7 @@ for (const [name, directory] of Object.entries(projects)) {
     })),
   };
 }
+report.metadata.sourceCommits = Object.fromEntries(Object.entries(report.projects).map(([name, project]) => [name, project.gitHead]));
 if (report.projects.baseline.client.sha256 !== report.projects.candidate.client.sha256) throw new Error("Application/test source bytes differ before the comparison");
 if (scripts.baseline.build !== scripts.candidate.build || scripts.baseline["build:webview"] !== scripts.candidate["build:webview"]) throw new Error("The byte-identical Node build comparison requires the unchanged build scripts");
 save();

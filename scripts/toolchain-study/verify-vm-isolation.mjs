@@ -5,7 +5,6 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { parseArgs, stripVTControlCharacters } from "node:util";
@@ -81,8 +80,13 @@ try {
   report.vitest = JSON.parse(fs.readFileSync(path.join(frontend, "node_modules/vitest/package.json"))).version;
   need(report.vitest === "4.1.10", "Pinned Vitest 4.1.10 required");
   need(JSON.parse(fs.readFileSync(path.join(frontend, "package.json"))).scripts["test:components"] === "vitest run --config vitest.components.config.ts", "Expected actual Node Vitest npm script");
-  work = fs.mkdtempSync(path.join(os.tmpdir(), "scriber-vm-isolation-"));
+  // Windows hosted runners put the checkout on D: and os.tmpdir() on C:.
+  // Vitest/Vite's entry resolution failed across those drives before collecting
+  // any fixture. Keep the owned project beside Frontend, on its real drive.
+  work = fs.realpathSync(fs.mkdtempSync(path.join(path.dirname(frontend), "scriber-vm-isolation-")));
   report.workDirectory = work;
+  report.workPlacement = { kind: "frontend-sibling", frontendRoot: path.parse(frontend).root, workRoot: path.parse(work).root };
+  need(normalize(path.parse(frontend).root) === normalize(path.parse(work).root), "Temporary project must share Frontend's filesystem root");
   fs.mkdirSync(path.join(work, "fixtures"));
   fs.mkdirSync(path.join(work, "node_modules"));
   fs.writeFileSync(path.join(work, "package.json"), '{"name":"scriber-vm-isolation-probe","private":true,"type":"module"}\n');
@@ -194,25 +198,35 @@ export default class IsolationErrorsReporter {
     const files = json.testResults.map(file => normalize(file.name)).sort();
     const modules = errors.modules.map(normalize).sort();
     const assertions = json.testResults.flatMap(file => file.assertionResults);
-    const traces = fs.readFileSync(tracePath, "utf8").trim().split(/\r?\n/).map(line => JSON.parse(line));
-    const workers = [...new Set(traces.map(trace => trace.threadId))];
-    entry.observed = { status: result.status, files: files.length, totalTests: json.numTotalTests, passedTests: json.numPassedTests, failedTests: json.numFailedTests, pendingTests: json.numPendingTests, todoTests: json.numTodoTests, traceFiles: traces.length, threadIds: workers, collectionErrors: errors.collectionErrors.length, unhandledErrors: errors.unhandledErrors.length };
+    entry.observed = { status: result.status, files: files.length, totalTests: json.numTotalTests, passedTests: json.numPassedTests, failedTests: json.numFailedTests, pendingTests: json.numPendingTests, todoTests: json.numTodoTests, tracePresent: fs.existsSync(tracePath), traceFiles: null, threadIds: null, collectionErrors: errors.collectionErrors.length, unhandledErrors: errors.unhandledErrors.length };
+    entry.runnerErrors = { collection: errors.collectionErrors, unhandled: errors.unhandledErrors, failedFiles: json.testResults.filter(file => file.status !== "passed").map(file => ({ file: file.name, message: file.message, assertions: file.assertionResults.filter(test => test.status !== "passed") })) };
+    // A collection/setup failure can prevent the first trace write. Record and
+    // validate the original runner errors before touching that optional file.
+    save();
     need(equal(files, fixtureFiles) && equal(modules, fixtureFiles), `${probe.name}: wrong file/module inventory`);
     need(errors.node === "26.5.0" && equal(errors.pools, ["vmThreads"]), `${probe.name}: wrong runtime/pool`);
     need(errors.unhandledErrors.length === 0 && json.numPendingTests === 0 && json.numTodoTests === 0 && json.numPendingTestSuites === 0, `${probe.name}: unexpected unhandled/pending/skipped results`);
+    const collectionMessages = errors.collectionErrors.flatMap(entry => entry.errors.map(error => error.message)).join("; ");
+    if (probe.negative) {
+      need(errors.collectionErrors.length === 5 && errors.collectionErrors.every(entry => entry.suite === null && entry.errors.length === 1 && entry.errors[0].message === guard), `${probe.name}: expected only five exact guard errors; received: ${collectionMessages}`);
+    } else {
+      need(errors.collectionErrors.length === 0 && json.testResults.every(file => file.status === "passed" && !file.message), `${probe.name}: unexpected collection/file failure: ${collectionMessages}`);
+    }
+    need(entry.observed.tracePresent, `${probe.name}: no worker trace was produced; see recorded runnerErrors`);
+    const traces = fs.readFileSync(tracePath, "utf8").trim().split(/\r?\n/).map(line => JSON.parse(line));
+    const workers = [...new Set(traces.map(trace => trace.threadId))];
+    entry.observed.traceFiles = traces.length; entry.observed.threadIds = workers; save();
     need(workers.length === probe.workers && workers.every(id => id > 0), `${probe.name}: worker count/reuse not observed`);
     need(traces.every(trace => trace.node === "26.5.0"), `${probe.name}: wrong worker runtime`);
     if (probe.negative) {
       need(result.status === 1 && json.success === false && json.numTotalTests === 4 && json.numPassedTests === 4 && json.numFailedTests === 0, `${probe.name}: expected exactly one clean file then guard-only collection failures`);
       need(assertions.length === 4 && assertions.every(assertion => assertion.status === "passed" && assertion.failureMessages.length === 0), `${probe.name}: unexpected assertion failure`);
       need(traces.length === 1 && errors.collectionErrors.length === 5, `${probe.name}: guard did not reject all remaining files`);
-      need(errors.collectionErrors.every(entry => entry.suite === null && entry.errors.length === 1 && entry.errors[0].message === guard), `${probe.name}: unrelated collection error`);
       const passedFiles = json.testResults.filter(file => file.status === "passed"), failedFiles = json.testResults.filter(file => file.status === "failed");
       need(passedFiles.length === 1 && failedFiles.length === 5 && failedFiles.every(file => file.message.includes(guard)), `${probe.name}: failed files do not identify exact guard`);
     } else {
       need(result.status === 0 && json.success === true && json.numTotalTests === 24 && json.numPassedTests === 24 && json.numFailedTests === 0, `${probe.name}: expected all 24 assertions to pass`);
       need(assertions.length === 24 && assertions.every(assertion => assertion.status === "passed" && assertion.failureMessages.length === 0), `${probe.name}: incomplete assertions`);
-      need(errors.collectionErrors.length === 0 && json.testResults.every(file => file.status === "passed" && !file.message), `${probe.name}: unexpected collection error`);
       need(traces.length === 6 && equal(traces.map(trace => normalize(trace.file)).sort(), fixtureFiles), `${probe.name}: wrong trace inventory`);
       need(workers.some(id => traces.filter(trace => trace.threadId === id).length >= 2), `${probe.name}: worker reuse not observed`);
     }

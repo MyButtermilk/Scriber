@@ -26,15 +26,17 @@ concurrency:
 jobs:
   confirm:
     # The original d061/c47 comparisons remain at their immutable revisions.
-    # This bounded follow-up isolates e58/c85's component-runtime change in five
-    # complete cold pipeline pairs on each OS; failed samples are never replaced.
+    # Linux completed all five cold pairs in run 39123035895 at add48c8a.
+    # That run's Windows isolation fixture could not resolve modules across
+    # C:/D: before timing began. With its temp-root fix, collect Windows' five
+    # original planned pairs; retain the first failure and never replace samples.
     name: ${{ matrix.os }} / complete VM follow-up pipeline
     runs-on: ${{ matrix.os }}
     timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [windows-latest]
     defaults:
       run:
         shell: bash
