@@ -118,9 +118,9 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 ### Frontend verification toolchain (2026-10-18)
 
 The frontend keeps its Node 26.5.0 Vite build and canonical npm package-lock.
-The selected verification path uses the pinned Bun 1.4.3 checker, isolated
-logic-test runner, and Vitest/jsdom with four threads, plus ESLint's content-based
-cache. Bun is a development dependency installed by the existing `npm ci`; no
+The selected verification path uses the pinned Bun 1.4.3 checker and isolated
+logic-test runner, Node Vitest/jsdom in reused VM-pool workers (see the
+component follow-up below), and ESLint's content-based cache. Bun is a development dependency installed by the existing `npm ci`; no
 global Bun installation is required. The TypeScript 6 compatibility package
 preserves the JavaScript compiler API used by other development tools. These
 changes concern developer and CI verification, not transcription throughput
@@ -370,6 +370,54 @@ the overall job unsuccessful. A group receives a median only with five valid
 complete pipelines; a paired speedup requires both groups to qualify. Failed
 time-to-abort observations never enter the performance statistics. The first
 failed Linux series remains separate evidence.
+
+#### Component tests in reused jsdom VM workers (2026-10-18 follow-up)
+
+After the Bun selection, the component suite remained the largest stage. A
+per-file profile attributes most of it to environment setup: each isolated
+worker imports jsdom again (about 0.4–0.5 s, plus about 0.08 s construction
+per file on the two-vCPU host), so the 49 files spend 68–77 s of cumulative
+Vitest `environment` time with four Bun threads. `test:components` now runs
+Node Vitest with `pool: "vmThreads"` and
+`maxWorkers: Math.max(2, Math.min(4, availableParallelism()))`. Workers persist
+and import jsdom once; each file still receives a new VM context and jsdom
+window. Bun remains the type checker and logic-test runner.
+
+Vitest 4.1.10 forces `isolate: false` for VM pools. With two or more workers,
+its scheduler dispatches each file as a separate task and creates a context per
+task; with one worker it batches all files into one context. Probes confirm
+both: eight files on two or three workers, plus a `vi.mock` file followed by an
+unmocked importer, see fresh module state, `window` and `globalThis` properties,
+local/session storage, document title and body while threads are reused (four
+files per thread). The single-worker control leaks every one of them. The
+configuration therefore never selects fewer than two workers, and
+`vitest.setup.ts` fails any file whose global context another file already
+used. The guard fires for `--maxWorkers=1` and `--no-file-parallelism` and is
+silent for default, isolated-thread and single-file runs; a contract test pins
+the pool, worker floor and guard.
+
+| Linux x64, two vCPUs, cold caches | Before | After | Less time |
+| --- | ---: | ---: | ---: |
+| Component suite, two workers each (median of 3 / 5 runs) | 49.0 s | 25.4 s | 48% |
+| Complete `check`, `lint`, `test`, `build` (median of 3, alternating) | 62.1 s | 36.7 s | 41% |
+
+"Before" is the Bun-thread configuration at the PR head `e58ee351`; the
+pipeline row uses each revision's committed configuration (four Bun threads
+before, two VM workers after on this host). Cumulative `environment` time falls
+from 32–34 s to 1.9–2.2 s at two workers. The inventory is unchanged: 253 tests
+in 49 files with identical full names and status. Five consecutive runs and two
+shuffled orders (seeds 11 and 4242) pass. A deliberate assertion failure exits
+nonzero through `npm run test:components` and `npm test`, as do in-test
+unhandled rejections, timer throws and microtask throws. A rejection scheduled
+after its test has finished races with environment teardown in both the
+Bun-thread and VM configurations (each missed it in some samples), so that edge
+is unchanged. VM contexts share Node built-in modules, so errors raised by
+built-ins carry the worker realm's constructors; no current test depends on
+that. Peak resident memory with four workers rises from about 1.2 GiB (Bun
+threads) to about 2.0 GiB; Vitest's default VM memory limit recycles workers.
+Production build output is byte-identical (77 files, 2,846,216 bytes on
+Linux). These are two-vCPU Linux measurements; the four-vCPU Windows effect is
+observed in the regular CI frontend job, not in a five-round harness.
 
 ### Slider drafts and stable history boundaries (2026-10-06)
 

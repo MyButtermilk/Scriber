@@ -255,11 +255,16 @@ Bun/pnpm locks in the separate experiments.
 | `npm run check:app` | `bun --check --tsconfig-override tsconfig.json` checks application sources, excluding test files. |
 | `npm run check:tests` | `bun --check --tsconfig-override tsconfig.tests.json` checks both `.test.ts` and `.test.tsx` files plus `vitest.setup.ts`, with the test declarations enabled. |
 | `npm run test:lib` | The Node wrapper discovers and sorts every `client/src/**/*.test.ts` file, then runs the local Bun executable with `test --isolate --parallel=4`. The current suite contains 35 files and 142 tests. |
-| `npm run test:components` | Bun runs Vitest/jsdom with four isolated threads through `vitest.components.config.ts`: currently 49 files and 253 tests. |
+| `npm run test:components` | Node runs Vitest/jsdom in the `vmThreads` pool through `vitest.components.config.ts`: currently 49 files and 253 tests. Up to four workers (at least two) persist and load jsdom once; every file still receives its own VM context, jsdom window, storage and module graph. |
 | `npm run lint` | ESLint checks the full scope with zero warnings allowed and `--cache --cache-strategy content --cache-location node_modules/.cache/eslint`. Use `npm exec -- eslint . --max-warnings 0` for a full uncached pass. |
 
 `npm run check` runs both type projects; `npm test` runs both behavior suites.
 The logic wrapper fails if discovery finds no files or the Bun process fails.
+Vitest 4 schedules VM-pool files individually only with two or more workers;
+a single worker batches files into one shared context. `vitest.setup.ts`
+therefore fails a component run whose files share a global context, so do not
+use `--maxWorkers=1` or `--no-file-parallelism` for this suite. Running one
+selected test file remains supported.
 ESLint and other compiler API consumers import `typescript` through the pinned
 `npm:@typescript/typescript6@6.0.2` alias; Bun performs the package type checks.
 

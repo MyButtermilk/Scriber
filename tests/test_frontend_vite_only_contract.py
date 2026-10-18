@@ -81,9 +81,7 @@ def test_frontend_package_is_vite_only() -> None:
     )
     assert scripts["test"] == "npm run test:lib && npm run test:components"
     assert scripts["test:lib"] == "node scripts/test-lib.mjs"
-    assert scripts["test:components"] == (
-        "bun ./node_modules/vitest/vitest.mjs run --config vitest.components.config.ts"
-    )
+    assert scripts["test:components"] == "vitest run --config vitest.components.config.ts"
     assert scripts["tauri:dev"] == "tauri dev"
     assert scripts["tauri:build"] == "tauri build"
     assert scripts["tauri:bundle"] == "tauri bundle"
@@ -136,6 +134,20 @@ def test_frontend_typescript_and_vite_scope_only_the_webview() -> None:
     assert '"@assets": path.resolve(import.meta.dirname, "attached_assets")' in vite
     assert 'root: path.resolve(import.meta.dirname, "client")' in vite
     assert 'outDir: path.resolve(import.meta.dirname, "dist/public")' in vite
+
+
+def test_component_vm_pool_keeps_per_file_isolation_guards() -> None:
+    config = (FRONTEND_ROOT / "vitest.components.config.ts").read_text(encoding="utf-8")
+    setup = (FRONTEND_ROOT / "vitest.setup.ts").read_text(encoding="utf-8")
+
+    # Vitest 4 forces isolate=false for VM pools and batches files into one
+    # context when only one worker runs; two workers keep per-file contexts.
+    assert 'environment: "jsdom"' in config
+    assert 'pool: "vmThreads"' in config
+    assert "maxWorkers: Math.max(2, Math.min(4, availableParallelism()))" in config
+    assert "isolate:" not in config
+    assert 'Symbol.for("scriber.components.fileContext")' in setup
+    assert "Component test files are sharing one global context." in setup
 
 
 def test_tauri_webview_and_release_cache_contracts_remain_intact() -> None:
