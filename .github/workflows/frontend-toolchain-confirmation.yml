@@ -8,6 +8,7 @@ on:
       - .github/workflows/frontend-toolchain-confirmation.yml
       - scripts/toolchain-study/combined.mjs
       - scripts/toolchain-study/verify-production-gates.mjs
+      - scripts/toolchain-study/verify-lint-migrations.mjs
       - scripts/toolchain-study/run-test-lint.mjs
       - scripts/toolchain-study/test-lint-templates/**
   workflow_dispatch:
@@ -16,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: frontend-toolchain-confirmation-${{ github.ref }}
+  group: frontend-toolchain-confirmation-${{ github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -213,7 +214,62 @@ jobs:
           if-no-files-found: error
           compression-level: 6
 
+  lint-migrations:
+    name: ${{ matrix.os }} / native lint migration compatibility
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout the immutable migration probes
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Use the pinned Scriber Node version
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+      - name: Install unchanged Scriber dependencies
+        working-directory: Frontend
+        run: npm ci --no-audit --no-fund
+      - name: Install pinned native lint candidates
+        run: npm ci --prefix scripts/toolchain-study/lint-tools --no-audit --no-fund
+      - name: Prepare a disposable lint project
+        run: node scripts/toolchain-study/prepare-project.mjs test-lint
+      - name: Verify every lint migration against the full rule and file corpus
+        run: |
+          node --input-type=module <<'NODE'
+          import path from "node:path";
+          import { spawnSync } from "node:child_process";
+          const args = [
+            path.resolve("scripts/toolchain-study/verify-lint-migrations.mjs"),
+            "--frontend", path.resolve("tmp/toolchain-study/test-lint-project/Frontend"),
+            "--lint-tools", path.resolve("scripts/toolchain-study/lint-tools"),
+            "--output", path.resolve("tmp/toolchain-study/results/lint-migrations"),
+          ];
+          const result = spawnSync(process.execPath, args, { stdio: "inherit" });
+          if (result.error || result.signal || result.status !== 0) throw new Error("Lint migration evidence is incomplete or a reference/control failed");
+          NODE
+      - name: Upload migration correctness and exclusion evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-toolchain-lint-migrations-${{ matrix.os }}-${{ github.run_attempt }}
+          path: tmp/toolchain-study/results/lint-migrations/
+          if-no-files-found: error
+          compression-level: 6
+
   lint:
+    # The corrected lint source was already measured by the initial push.
+    # Later production-control fixes need only the two complete-pipeline jobs.
+    # A manual replay still executes both comparisons.
+    if: github.event_name == 'workflow_dispatch'
     name: ${{ matrix.os }} / corrected complete lint comparison
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
