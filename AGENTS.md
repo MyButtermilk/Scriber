@@ -72,11 +72,11 @@ the user explicitly asks for a temporary investigation note.
   ESLint and other API consumers. The normalized configs use an explicit
   ES2015 target with `noEmit` and relative path aliases; Vite produces the
   JavaScript. Component tests use Vitest/jsdom under Bun with four isolated
-  threads, and ESLint uses its content cache. Installer comparisons have
-  different Windows and Linux winners; retain npm and the release path that
-  skips installation on an exact
+  threads, and ESLint uses its content cache. Bun and pnpm install faster in
+  the isolated comparisons; this verification change retains the npm lock,
+  install metadata, and release path that skips installation on an exact
   `node_modules` cache hit. Converted-lock experiments stay separate from
-  the production dependency workflow.
+  the production dependency workflow; npm is not the measured installer winner.
 - Runtime is Windows-first. Linux/macOS support is mostly fallback/dev support.
 - Legacy Python tray/UI code was removed. The Tauri shell owns desktop UI,
   tray/menu actions, global hotkeys, and the recording overlay.

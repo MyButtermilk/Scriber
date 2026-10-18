@@ -245,10 +245,10 @@ npm run build
 `npm ci` installs the pinned Bun 1.4.3 package locally; these npm scripts do
 not require a global Bun installation. Node.js 26.5.0 remains the runtime for
 Vite and npm command orchestration. `package-lock.json` remains the canonical
-dependency lock: the installer comparisons have different Windows and Linux
-winners, and an
-exact release `node_modules` cache hit already skips installation. Keep
-converted Bun/pnpm locks in the separate experiments.
+dependency lock, and an exact release `node_modules` cache hit already skips
+installation. Bun and pnpm are faster installers in the separate comparisons;
+this change retains the existing install/metadata/cache contract. Keep converted
+Bun/pnpm locks in the separate experiments.
 
 | Focused command | Scope and implementation |
 | --- | --- |

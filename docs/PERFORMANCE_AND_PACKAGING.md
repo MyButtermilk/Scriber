@@ -121,15 +121,17 @@ The frontend keeps its Node 26.5.0 Vite build and canonical npm package-lock.
 The selected verification path uses the pinned Bun 1.4.3 checker, isolated
 logic-test runner, and Vitest/jsdom with four threads, plus ESLint's content-based
 cache. Bun is a development dependency installed by the existing `npm ci`; no
-global Bun installation is
-required. The TypeScript 6 compatibility package preserves the JavaScript
-compiler API used by other development tools. These changes concern developer
-and CI verification, not transcription throughput or desktop startup.
+global Bun installation is required. The TypeScript 6 compatibility package
+preserves the JavaScript compiler API used by other development tools. These
+changes concern developer and CI verification, not transcription throughput
+or desktop startup.
 
 The comparison starts from
 [`d061ad75`](https://github.com/MyButtermilk/Scriber/commit/d061ad75a0b39ca1b299eb8174ac828b122ef136).
-All alternatives and the executable probes are isolated on the
+The first native matrix and its executable probes are isolated on the
 [`4e6c9eca` study revision](https://github.com/MyButtermilk/Scriber/tree/4e6c9ecaf1e601c6db617427684fb614376fe806/scripts/toolchain-study).
+The corrected lint comparison uses
+[`d91b93de`](https://github.com/MyButtermilk/Scriber/tree/d91b93deb1c1fb2d5977f50eb854129d0de59abc/scripts/toolchain-study).
 [Native study run 39100986882](https://github.com/MyButtermilk/Scriber/actions/runs/39100986882)
 retains separate Linux/Windows compiler, installer, and test/lint artifacts.
 Each admitted comparison uses at least five timed repetitions on a native
@@ -195,13 +197,179 @@ caches. Repeated Bun/pnpm frozen commands are mostly no-ops, whereas `npm ci`
 recreates the tree; those observations are retained in the raw results but are
 not an equal-work developer-install comparison.
 
-The production installer remains npm. Windows and Linux have different winners,
-and the existing exact release `node_modules` hit already skips installation.
+The production installer remains npm to preserve this change's existing
+lock/install-metadata/cache contract. Both Bun and pnpm beat npm on fresh trees;
+different operating-system winners are not evidence that npm is faster. The
+exact release `node_modules` hit already skips installation, while the ordinary
+frontend and Rust quality jobs still perform `npm ci` against a restored package
+cache. A complete installer migration could therefore improve those jobs.
 A Bun 1.4.3 package-lock-only bridge also creates `bun.lock` despite `--no-save`
 and omits the `.package-lock.json` metadata required by both release cache-hit
 guards. A complete alternative bootstrap/import/cache path has not established
 an end-to-end win. The study therefore does not change canonical lock ownership
 or weaken those release guards.
+
+**Test runtimes.** Every eligible measured candidate retains the exact 142 logic
+tests in 35 `.test.ts` files and 253 component tests in 49 `.test.tsx` files.
+Complete reporting-only inventories compare file paths and full test names.
+The common runtime/isolation/failure corpus passes all 14 controls on both
+systems; asynchronous logic-failure probes also pass for two, four and eight
+workers. Worker-eight timings are omitted on these four-CPU hosts. The logic
+screen covers Node/tsx, Bun isolated without a parallel option, and Bun with
+two/four workers. For components, Node and Bun fork/thread pools and
+one/two/four/default worker settings receive a complete screen. The original
+baseline, best Node/Bun alternatives and candidates within
+15% of the fastest eligible screen proceed to five timed rounds.
+
+| Complete test workload | Linux median | Windows median |
+| --- | ---: | ---: |
+| Logic, original Node/tsx | 3.074 | 3.790 |
+| Logic, Bun isolated, two workers | 0.965 | 1.191 |
+| Logic, Bun isolated, four workers | 0.996 | 1.051 |
+| Components, original Node forks/default | 30.732 | 46.153 |
+| Components, Node threads/four | 28.331 | 42.424 |
+| Components, Bun threads/default | 26.622 | 34.929 |
+| Components, Bun threads/four | 26.713 | 33.298 |
+
+Four Bun workers win the Windows logic comparison; their Linux result overlaps
+the two-worker range. Bun with four Vitest threads wins the repeated Windows
+component comparison and is effectively tied with Bun's default thread count
+on Linux. All ten native repetitions of the selected component pool pass.
+The Bun four-fork variant passes only three of five Linux and four of five
+Windows repetitions; Bun's default fork pool passes only two of five Linux
+repetitions. These variants are ineligible. All ten failed native fork samples
+(including screens) fail the same compact summary-retry accessibility case:
+the button remains busy instead of returning to its ready label. The production
+configuration retains jsdom, setup,
+file scope, mock restoration and Vitest's isolation default. These four-CPU x64
+measurements do not establish the best worker count on other hardware.
+
+**Lint selection.** The original Oxlint directory call in the first matrix
+skipped the entire experiment beneath its ignored `tmp/` parent. That is a
+harness error, not a valid candidate rejection or timing. The corrected
+[Linux lint comparison](https://github.com/MyButtermilk/Scriber/actions/runs/39104107873/job/117606204614)
+and [Windows lint comparison](https://github.com/MyButtermilk/Scriber/actions/runs/39104107873/job/117606204736)
+pass with explicit sorted source paths. Actual
+ESLint JSON and Oxlint file inventories cover the same 251 original lint files
+and shared experiment configuration; discovery and ignore probes verify new
+TS/MJS/CJS files and all existing exclusions. Every measured hybrid invocation
+must also report the complete expected file count.
+
+All four corrected lint candidates pass. The hybrid retains ESLint for rules
+with different native behavior; its 29 rule controls, 12 cache controls and four
+file/ignore controls all pass on each system. Cache controls include a content
+change with identical byte length and timestamp, plus configuration changes.
+
+The separate [complete migration compatibility run](https://github.com/MyButtermilk/Scriber/actions/runs/39106137039)
+at [`98e42a75`](https://github.com/MyButtermilk/Scriber/tree/98e42a75ecb7b0d2144bd63e17c3371ce59602dc/scripts/toolchain-study)
+also evaluates the pure-native and retained-React alternatives against all
+29 cases on both operating systems. Original ESLint and the full hybrid pass
+29/29 each. Pure Oxlint passes 25/29: it adds an optional-chain assertion
+diagnostic, misses a useless assignment, and loses the UI/theme refresh-rule
+exceptions. Retaining the original React rules in ESLint restores the two
+exceptions but leaves the two core-rule differences (27/29). These are observed
+differences in the tested migration configurations, not a claim that every
+possible Oxlint configuration is incompatible. All 116 cases per operating
+system are evaluated, and all scope and source-restoration controls pass.
+
+| Lint command | Linux cold | Linux warm | Linux edited | Windows cold | Windows warm | Windows edited |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Original ESLint, uncached | 5.303 | 5.498 | 5.424 | 5.704 | 5.598 | 5.624 |
+| Original ESLint, content cache | 5.429 | 0.944 | 0.976 | 5.779 | 1.235 | 1.254 |
+| Oxlint plus residual ESLint | 4.606 | 4.706 | 4.707 | 5.032 | 4.833 | 4.837 |
+| Oxlint plus cached residual ESLint | 4.656 | 1.011 | 1.026 | 5.148 | 1.322 | 1.351 |
+
+The production choice is the original ESLint rules with a content cache: this
+has the fastest warm and changed-file path on both systems and requires no
+second linter or maintained rule partition. The hybrid wins the cold lint
+comparison by about 0.6-0.8 seconds. The selection prioritizes repeat/edited
+verification and preserving one rule configuration; it is not a claim that
+ESLint wins every workload.
+
+**Formatter and build decisions.** Prettier 3.9.6 and Oxfmt 0.73.0 are compared
+on all 261 eligible tracked files. Linux has three different outputs
+(`api-types.ts`, `podcast-types.ts`, `route-titles.ts`); Windows has 261 different
+byte outputs. Both platforms demonstrate that Oxfmt rejects `endOfLine: auto`
+and fails the CRLF preservation control. The Windows differences are not all
+assumed to be solely line endings. Two other files (`request-errors.ts`,
+`support-bundle.ts`) already drift from the original Prettier output and are
+not attributed to this migration or reformatted here. Bun 1.4.3 has no working
+`fmt` command. Prettier therefore remains the formatter.
+
+The Node Vite build passes five repetitions on each operating system, producing
+77 files totaling 2,846,216 bytes on Linux and 2,846,533 bytes on Windows. Every
+repeat is byte-identical to its own platform's baseline. Medians are 0.876
+seconds on Linux and 1.415 seconds on Windows. The Bun build exits successfully
+but changes the Vite preload helper's stringified function form, causing a
+two-byte total delta and 17 changed hashed paths; it also loses the one-run
+speed screen.
+This proves a reproducibility difference, not a functional application defect.
+Node remains the build runtime. The recorded Linux memory metric is the largest
+single-process RSS for each command, not simultaneous process-tree peak memory;
+no total-memory improvement is claimed.
+
+**Complete production commands and negative controls.** The integrated
+comparison uses the frozen production candidate
+[`c47e89d6`](https://github.com/MyButtermilk/Scriber/commit/c47e89d60da2e10874736bb9d5158461e4dd41c7)
+against `d061ad75`, with independent installations under Node 26.5.0/npm 11.17.0.
+It runs the actual `npm run check`, `npm run lint`, `npm test` and `npm run build`
+sequentially. The five-round plan alternates version order and covers empty
+compiler/lint caches, primed unchanged inputs, and a valid public export added
+to `client/src/lib/utils.ts`. Installations, full-name test preflights, cache
+priming, source restoration and build hashing are outside the measured clock.
+The total is measured directly; standalone stage medians must not be added to
+claim a measured pipeline total. Successful paired builds must have identical
+paths, sizes and SHA-256 hashes within their operating system.
+
+The [complete Windows comparison](https://github.com/MyButtermilk/Scriber/actions/runs/39105653167/job/117610804104)
+passes all 30 planned pipeline samples and 120 command stages. All 15 paired
+build comparisons match; every build contains the same 77 files and 2,846,533
+bytes. These are directly measured total wall-clock medians, in seconds:
+
+| Windows complete pipeline | Baseline | Selected | Time saved |
+| --- | ---: | ---: | ---: |
+| Empty compiler/lint caches | 60.376 | 34.807 | 42.3% |
+| Primed caches, unchanged source | 42.833 | 30.598 | 28.6% |
+| Primed caches, changed public export | 54.057 | 30.133 | 44.3% |
+
+The setup artifact separately records one actual fresh `npm ci` observation
+per version: 10.509 seconds for the baseline and 10.239 seconds for the selected
+version on Windows; 8.486 and 8.950 seconds on the first Linux runner. These
+single, fixed-order network observations are not medians or evidence of an
+installer speedup. The pipeline improvements above exclude setup time.
+
+The [native production-control run](https://github.com/MyButtermilk/Scriber/actions/runs/39105653167)
+passes the actual npm-entrypoint negative controls on both operating systems:
+an application-only type error stops before the test type project, a test-only
+type error follows a successful application check, and asynchronous logic and
+component assertion failures produce nonzero exits. The controls verify exact
+diagnostics, full test inventories, Bun/jsdom dispatch, absence of unrelated
+unhandled/collection errors, and restoration of every temporary fixture and
+original source/configuration hash. The component failure control executes
+255 tests across 50 files, with only the deliberate assertion failing; the
+logic control executes 143 tests across 36 files with only its deliberate
+assertion failing. No test is removed or weakened to obtain a faster result.
+
+The [first Linux integrated series](https://github.com/MyButtermilk/Scriber/actions/runs/39105653167/job/117610803916)
+is retained as a failed measurement: cold and warm round-zero pairs pass,
+then the unchanged baseline exits nonzero in the changed-input scenario after
+all 253 component assertions pass. Vitest reports an unhandled
+`ReferenceError: window is not defined` from a delayed virtualizer callback in
+`DebugConsole.test.tsx`. The fail-fast series stops before the candidate's
+changed-input sample and has no valid five-round pipeline median. This failure
+is not relabeled as a screen or removed from the evidence.
+
+A separate [fixed-budget Linux confirmation](https://github.com/MyButtermilk/Scriber/actions/runs/39108567028/job/117619597358)
+uses the [`e3cdaa36` harness](https://github.com/MyButtermilk/Scriber/tree/e3cdaa36efa975e72fe2c3363cfa0e909607ff82/scripts/toolchain-study).
+It plans exactly five attempts per version/scenario, without replacement
+attempts. An ordinary command failure stops its own pipeline and is retained
+while later planned samples are collected; process, scope, restoration and
+build-parity failures remain fatal. Collection completeness, structural
+validity and successful samples are reported separately. Every failure keeps
+the overall job unsuccessful. A group receives a median only with five valid
+complete pipelines; a paired speedup requires both groups to qualify. Failed
+time-to-abort observations never enter the performance statistics. The first
+failed Linux series remains separate evidence.
 
 ### Slider drafts and stable history boundaries (2026-10-06)
 
