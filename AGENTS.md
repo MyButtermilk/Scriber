@@ -68,7 +68,10 @@ the user explicitly asks for a temporary investigation note.
   `Frontend/package.json`; the removed Express/Replit scaffold is not part of
   the desktop runtime or build. `npm ci` consumes the canonical npm lock and
   installs Bun 1.4.3 locally for the app/test type checks and isolated logic
-  tests. Keep the `typescript` alias to `@typescript/typescript6@6.0.2` for
+  tests. The logic launcher forwards `SIGINT`/`SIGTERM` to its active Bun child,
+  waits for closure and reports cancellation as a failure even after a clean
+  child exit. `npm run test:tooling` verifies this separate launcher contract.
+  Keep the `typescript` alias to `@typescript/typescript6@6.0.2` for
   ESLint and other API consumers. The normalized configs use an explicit
   ES2015 target with `noEmit` and relative path aliases; Vite produces the
   JavaScript. Component tests use Node Vitest/jsdom in the `vmThreads` pool

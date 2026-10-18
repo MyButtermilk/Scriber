@@ -496,6 +496,17 @@ recycles workers; it is not a ceiling on aggregate resident memory. This
 confirmation does not measure process-tree peak RSS, so no quantified memory
 tradeoff is claimed.
 
+**Launcher cancellation follow-up.** A later review reproduced a cancellation
+regression in the Node logic-test wrapper: sending `SIGTERM` only to the wrapper
+stopped its supervision while its Bun child continued running. The wrapper now
+forwards `SIGINT`/`SIGTERM`, waits for child closure and treats cancellation as
+a failed run even if the child exits with code 0. The separate
+`npm run test:tooling` CI gate covers the launcher with small owned fixtures;
+it does not add tests to `client/src` or change the selected runtime/pool.
+The timing tables above remain measurements of their stated frozen commits,
+and exclude the added launcher-regression gate. No new timing claim is inferred
+from this correctness fix.
+
 ### Slider drafts and stable history boundaries (2026-10-06)
 
 The Visualizer-bars control now owns its drag state and saved-value reference.

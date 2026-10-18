@@ -256,10 +256,19 @@ Bun/pnpm locks in the separate experiments.
 | `npm run check:tests` | `bun --check --tsconfig-override tsconfig.tests.json` checks both `.test.ts` and `.test.tsx` files plus `vitest.setup.ts`, with the test declarations enabled. |
 | `npm run test:lib` | The Node wrapper discovers and sorts every `client/src/**/*.test.ts` file, then runs the local Bun executable with `test --isolate --parallel=4`. The current suite contains 35 files and 142 tests. |
 | `npm run test:components` | Node runs Vitest/jsdom in the `vmThreads` pool through `vitest.components.config.ts`: currently 49 files and 253 tests. Up to four workers (at least two) persist and load jsdom once; every file still receives its own VM context, jsdom window, storage and Vitest-managed module graph. |
+| `npm run test:tooling` | Node runs the logic-launcher regression tests with small owned fixtures. This separate CI gate covers runner failures and cancellation without changing the application test inventories. |
 | `npm run lint` | ESLint checks the full scope with zero warnings allowed and `--cache --cache-strategy content --cache-location node_modules/.cache/eslint`. Use `npm exec -- eslint . --max-warnings 0` for a full uncached pass. |
 
 `npm run check` runs both type projects; `npm test` runs both behavior suites.
 The logic wrapper fails if discovery finds no files or the Bun process fails.
+It forwards `SIGINT` and `SIGTERM` received by the wrapper to its active Bun
+child and waits for that child to close. Cancellation remains a failure even
+when the child handles the signal and exits successfully. The launcher tests
+use real parent-directed signals on POSIX; Windows uses explicitly identified
+signal-event injection to exercise forwarding and actual child termination.
+Those Windows controls do not establish console Ctrl+C delivery or handling
+of an uncatchable forced termination of the wrapper.
+
 Vitest 4.1.10 schedules VM-pool files individually only with two or more workers;
 a single worker batches files into one shared context. `vitest.setup.ts`
 therefore rejects reuse of a test file's global context. For serial debugging,

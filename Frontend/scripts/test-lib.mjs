@@ -13,21 +13,36 @@ if (testFiles.length === 0) {
 } else {
   // The local Bun package uses this native executable path on every platform.
   const bun = path.join(frontend, "node_modules", "bun", "bin", "bun.exe");
-  const child = spawn(bun, ["test", "--isolate", "--parallel=4", ...process.argv.slice(2), ...testFiles], {
+  let child = null;
+  let launchFailed = false;
+  let cancelled = false;
+  const forwardSignal = (signal) => {
+    cancelled = true;
+    // Keep supervising Bun until it closes, even when only this wrapper was
+    // signalled. A child that handles cancellation and exits 0 still failed
+    // to complete the requested test run.
+    if (child && child.exitCode === null && child.signalCode === null) {
+      child.kill(signal);
+    }
+  };
+  process.on("SIGINT", forwardSignal);
+  process.on("SIGTERM", forwardSignal);
+
+  child = spawn(bun, ["test", "--isolate", "--parallel=4", ...process.argv.slice(2), ...testFiles], {
     cwd: frontend,
     stdio: "inherit",
   });
-
-  let launchFailed = false;
   child.once("error", (error) => {
     launchFailed = true;
     console.error(`Unable to start the local Bun test runner: ${error.message}`);
     process.exitCode = 1;
   });
   child.once("close", (code, signal) => {
+    process.off("SIGINT", forwardSignal);
+    process.off("SIGTERM", forwardSignal);
     if (signal) {
       console.error(`The Bun test runner terminated with ${signal}.`);
     }
-    process.exitCode = launchFailed || signal ? 1 : (code ?? 1);
+    process.exitCode = launchFailed || cancelled || signal ? 1 : (code ?? 1);
   });
 }
