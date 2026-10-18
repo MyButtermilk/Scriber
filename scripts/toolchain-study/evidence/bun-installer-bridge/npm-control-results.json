@@ -1,0 +1,41 @@
+{
+  "node": "v26.5.0",
+  "npm": "11.17.0",
+  "command": [
+    "/workspace/scratch/1ff238d8a5f3/toolchain/node_modules/.bin/node",
+    "/workspace/scratch/1ff238d8a5f3/toolchain/node_modules/npm/bin/npm-cli.js",
+    "ci",
+    "--no-audit",
+    "--no-fund",
+    "--cache",
+    "/tmp/scriber-bun-frozen-IeKMZY/npm-cache"
+  ],
+  "cwd": "/tmp/scriber-bun-frozen-IeKMZY/npm-drift-range",
+  "mutation": {
+    "dependency": "eslint",
+    "original": "10.8.0",
+    "actual": "^10.8.0",
+    "locked": "10.8.0"
+  },
+  "exitCode": 0,
+  "error": null,
+  "signal": null,
+  "before": {
+    "package.json": "e04d203f0ab2c09f1f53dc48d9e96030fa6aa50994329c5ef42d448356c251e9",
+    "package-lock.json": "14e70a551421b46970bc9de30a6d54e47d1607bc5655b086acd4f711e4052741",
+    "bun.lock": null,
+    "node_modules/.package-lock.json": null
+  },
+  "after": {
+    "package.json": "e04d203f0ab2c09f1f53dc48d9e96030fa6aa50994329c5ef42d448356c251e9",
+    "package-lock.json": "14e70a551421b46970bc9de30a6d54e47d1607bc5655b086acd4f711e4052741",
+    "bun.lock": null,
+    "node_modules/.package-lock.json": "80fed7d1ffe93cfa4a25986a61d2a17a030febedc1038551c88f1d2305c5bc78"
+  },
+  "installedEslint": "10.8.0",
+  "metadata": [
+    ".bin",
+    ".package-lock.json"
+  ],
+  "log": "/tmp/scriber-bun-frozen-IeKMZY/npm-drift-range.log"
+}

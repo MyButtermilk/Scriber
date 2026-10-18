@@ -1,0 +1,259 @@
+name: Frontend Toolchain Confirmation
+
+on:
+  push:
+    branches:
+      - perf/frontend-toolchain-study-20261017
+    paths:
+      - .github/workflows/frontend-toolchain-confirmation.yml
+      - scripts/toolchain-study/combined.mjs
+      - scripts/toolchain-study/verify-production-gates.mjs
+      - scripts/toolchain-study/run-test-lint.mjs
+      - scripts/toolchain-study/test-lint-templates/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-toolchain-confirmation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  confirm:
+    name: ${{ matrix.os }} / complete selected pipeline
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    env:
+      SCRIBER_CONFIRM_BASELINE_SHA: d061ad75a0b39ca1b299eb8174ac828b122ef136
+      SCRIBER_CONFIRM_CANDIDATE_SHA: c47e89d60da2e10874736bb9d5158461e4dd41c7
+      SCRIBER_CONFIRM_HARNESS_SHA: ${{ github.sha }}
+    steps:
+      - name: Checkout the immutable comparison harness
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: harness
+      - name: Checkout the frozen baseline
+        uses: actions/checkout@v7
+        with:
+          ref: d061ad75a0b39ca1b299eb8174ac828b122ef136
+          path: baseline
+      - name: Checkout the selected candidate
+        uses: actions/checkout@v7
+        with:
+          ref: c47e89d60da2e10874736bb9d5158461e4dd41c7
+          path: candidate
+      - name: Use the pinned Scriber Node version
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: harness/.node-version
+      - name: Verify Node and bundled npm and record source revisions
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          import os from "node:os";
+          import { spawnSync } from "node:child_process";
+          const workspace = path.resolve(process.env.GITHUB_WORKSPACE);
+          const output = path.join(workspace, "confirmation-results/setup");
+          fs.mkdirSync(output, { recursive: true });
+          const record = {
+            node: process.version, nodeExecutable: process.execPath,
+            platform: process.platform, arch: process.arch, release: os.release(),
+            availableParallelism: os.availableParallelism(), cpuModel: os.cpus()[0]?.model,
+            revisions: {}, verified: false,
+          };
+          try {
+            if (process.version !== "v26.5.0") throw new Error(`Expected Node v26.5.0, got ${process.version}`);
+            const nodeDirectory = path.dirname(process.execPath);
+            const npm = [
+              path.join(nodeDirectory, "node_modules/npm/bin/npm-cli.js"),
+              path.resolve(nodeDirectory, "../lib/node_modules/npm/bin/npm-cli.js"),
+            ].find(filename => fs.existsSync(filename));
+            if (!npm) throw new Error("Cannot locate setup-node's bundled npm CLI");
+            const version = spawnSync(process.execPath, [npm, "--version"], { encoding: "utf8" });
+            if (version.error || version.signal || version.status !== 0 || version.stdout.trim() !== "11.17.0") throw new Error("Expected bundled npm 11.17.0");
+            record.npm = version.stdout.trim();
+            record.npmExecutable = npm;
+            for (const name of ["harness", "baseline", "candidate"]) {
+              const revision = spawnSync("git", ["rev-parse", "HEAD"], { cwd: path.join(workspace, name), encoding: "utf8" });
+              if (revision.error || revision.signal || revision.status !== 0 || !/^[a-f0-9]{40}$/.test(revision.stdout.trim())) throw new Error(`Cannot verify ${name} revision`);
+              record.revisions[name] = revision.stdout.trim();
+            }
+            if (record.revisions.baseline !== process.env.SCRIBER_CONFIRM_BASELINE_SHA || record.revisions.candidate !== process.env.SCRIBER_CONFIRM_CANDIDATE_SHA || record.revisions.harness !== process.env.SCRIBER_CONFIRM_HARNESS_SHA) throw new Error("Checked-out revisions do not match the pinned inputs");
+            fs.appendFileSync(process.env.GITHUB_ENV, `SCRIBER_CONFIRM_NPM=${npm}\n`);
+            record.verified = true;
+          } catch (error) {
+            record.error = error.message;
+            throw error;
+          } finally {
+            fs.writeFileSync(path.join(output, "environment.json"), `${JSON.stringify(record, null, 2)}\n`);
+          }
+          NODE
+      - name: Install both complete dependency sets and record one-off setup costs
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          import { createHash } from "node:crypto";
+          import { spawn, spawnSync } from "node:child_process";
+          import { performance } from "node:perf_hooks";
+          const workspace = path.resolve(process.env.GITHUB_WORKSPACE);
+          const output = path.join(workspace, "confirmation-results/setup");
+          const npm = process.env.SCRIBER_CONFIRM_NPM;
+          const cacheRoot = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, "scriber-confirm-install-"));
+          const records = {
+            policy: "One actual npm ci observation per variant, baseline first, with separate initially empty local npm caches. OS/CDN caches and network variation are uncontrolled. These setup observations are neither medians nor part of the timed pipeline comparison.",
+            node: process.version, npm: "11.17.0", npmExecutable: npm,
+            samples: [], passed: false,
+          };
+          const hash = filename => createHash("sha256").update(fs.readFileSync(filename)).digest("hex");
+          const save = () => fs.writeFileSync(path.join(output, "install-results.json"), `${JSON.stringify(records, null, 2)}\n`);
+          try {
+            for (const name of ["baseline", "candidate"]) {
+              const cwd = path.join(workspace, name, "Frontend");
+              const lock = path.join(cwd, "package-lock.json");
+              const lockBefore = hash(lock);
+              const args = [npm, "ci", "--no-audit", "--no-fund", "--cache", path.join(cacheRoot, name)];
+              const log = `${name}-npm-ci.log`;
+              const fd = fs.openSync(path.join(output, log), "w");
+              let child, timer, status = null, signal = null, error = null, timedOut = false;
+              const started = performance.now();
+              try {
+                child = spawn(process.execPath, args, {
+                  cwd, stdio: ["ignore", fd, fd], windowsHide: true,
+                  detached: process.platform !== "win32",
+                  env: { ...process.env, CI: "true", NO_COLOR: "1", FORCE_COLOR: "0", npm_config_update_notifier: "false" },
+                });
+                timer = setTimeout(() => {
+                  timedOut = true;
+                  if (!child.pid) return;
+                  if (process.platform === "win32") spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", timeout: 10000 });
+                  else { try { process.kill(-child.pid, "SIGKILL"); } catch {} }
+                }, 600000);
+                await new Promise(resolve => {
+                  child.on("error", failure => { error = failure.message; });
+                  child.on("close", (code, termination) => { status = code; signal = termination; resolve(); });
+                });
+              } catch (failure) { error = failure.message; }
+              finally { clearTimeout(timer); fs.closeSync(fd); }
+              const seconds = (performance.now() - started) / 1000;
+              const lockAfter = fs.existsSync(lock) ? hash(lock) : null;
+              const lockUnchanged = lockAfter === lockBefore;
+              records.samples.push({ name, command: process.execPath, args, seconds, status, signal, error, timedOut, log, lockBefore, lockAfter, lockUnchanged, passed: status === 0 && !signal && !error && !timedOut && lockUnchanged });
+              save();
+              if (timedOut || signal || error) throw new Error(`Aborting after interrupted ${name} install`);
+            }
+            records.passed = records.samples.length === 2 && records.samples.every(sample => sample.passed);
+            if (!records.passed) throw new Error("A dependency installation or frozen-lock check failed");
+          } catch (error) {
+            records.error = error.message;
+            throw error;
+          } finally { save(); }
+          NODE
+      - name: Verify production type gates and asynchronous failure propagation
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          import { spawnSync } from "node:child_process";
+          const workspace = path.resolve(process.env.GITHUB_WORKSPACE);
+          const args = [
+            path.join(workspace, "harness/scripts/toolchain-study/verify-production-gates.mjs"),
+            "--frontend", path.join(workspace, "candidate/Frontend"),
+            "--npm", process.env.SCRIBER_CONFIRM_NPM,
+            "--output", path.join(workspace, "confirmation-results/production-gates"),
+          ];
+          const result = spawnSync(process.execPath, args, { cwd: workspace, stdio: "inherit" });
+          const record = { command: process.execPath, args, status: result.status, signal: result.signal, error: result.error?.message ?? null };
+          fs.writeFileSync(path.join(workspace, "confirmation-results/production-gates-launch.json"), `${JSON.stringify(record, null, 2)}\n`);
+          if (result.error || result.signal || result.status !== 0) throw new Error("A production failure control failed; inspect the uploaded evidence");
+          NODE
+      - name: Compare the complete selected pipeline in five rounds per scenario
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          import path from "node:path";
+          import { spawnSync } from "node:child_process";
+          const workspace = path.resolve(process.env.GITHUB_WORKSPACE);
+          const args = [
+            path.join(workspace, "harness/scripts/toolchain-study/combined.mjs"),
+            "--baseline", path.join(workspace, "baseline/Frontend"),
+            "--candidate", path.join(workspace, "candidate/Frontend"),
+            "--npm", process.env.SCRIBER_CONFIRM_NPM,
+            "--output", path.join(workspace, "confirmation-results/pipeline"),
+            "--rounds", "5", "--scenarios", "cold,warm,changed",
+          ];
+          const result = spawnSync(process.execPath, args, { cwd: workspace, stdio: "inherit" });
+          const record = { command: process.execPath, args, status: result.status, signal: result.signal, error: result.error?.message ?? null };
+          fs.writeFileSync(path.join(workspace, "confirmation-results/pipeline-launch.json"), `${JSON.stringify(record, null, 2)}\n`);
+          if (result.error || result.signal || result.status !== 0) throw new Error("The complete pipeline comparison failed; inspect the uploaded evidence");
+          NODE
+      - name: Upload setup observations, all pipeline measurements and failure evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-toolchain-confirmation-${{ matrix.os }}-${{ github.run_attempt }}
+          path: |
+            confirmation-results/setup/
+            confirmation-results/production-gates-launch.json
+            confirmation-results/production-gates/
+            confirmation-results/pipeline-launch.json
+            confirmation-results/pipeline/results.json
+            confirmation-results/pipeline/logs/
+            confirmation-results/pipeline/evidence/
+          if-no-files-found: error
+          compression-level: 6
+
+  lint:
+    name: ${{ matrix.os }} / corrected complete lint comparison
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout the corrected immutable study revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Use the pinned Scriber Node version
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+      - name: Install pinned experimental runtimes
+        run: npm ci --prefix scripts/toolchain-study/runtime-tools --no-audit --no-fund
+      - name: Install unchanged Scriber dependencies
+        working-directory: Frontend
+        run: npm ci --no-audit --no-fund
+      - name: Install native lint candidates
+        run: npm ci --prefix scripts/toolchain-study/lint-tools --no-audit --no-fund
+      - name: Prepare the disposable baseline project
+        run: node scripts/toolchain-study/prepare-project.mjs test-lint
+      - name: Verify lint rules, actual file discovery and content/config cache invalidation, then compare in five rounds
+        run: node scripts/toolchain-study/run-test-lint.mjs --groups=lint
+      - name: Upload all corrected lint measurements and discovery/failure evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-toolchain-corrected-lint-${{ matrix.os }}-${{ github.run_attempt }}
+          path: |
+            tmp/toolchain-study/results/test-lint/
+            tmp/toolchain-study/test-lint-project/tmp/speed-test-lint/*-results.json
+            tmp/toolchain-study/test-lint-project/tmp/speed-test-lint/lint-scope-probes/*.log
+            tmp/toolchain-study/test-lint-project/tmp/speed-test-lint/cache-probes/*.log
+          if-no-files-found: error
+          compression-level: 6

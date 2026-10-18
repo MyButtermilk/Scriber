@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
+import { lintFiles } from "./lint-file-inventory.mjs";
 
 // Run groups serially on one otherwise idle machine. All samples include the
 // same launcher overhead. Correctness/report validation is outside each timer.
@@ -57,14 +58,16 @@ const readParity = (name) => {
     return [];
   }
 };
-const runnerParity = readParity("runner");
-const lintParity = readParity("lint");
-const cacheParity = readParity("cache");
-const parallelFailureParity = readParity("parallel-failure");
+const runnerParity = groups.some((group) => group === "logic" || group === "components") ? readParity("runner") : [];
+const lintParity = groups.includes("lint") ? readParity("lint") : [];
+const cacheParity = groups.includes("lint") ? readParity("cache") : [];
+const lintScopeParity = groups.includes("lint") ? readParity("lint-scope") : [];
+const parallelFailureParity = groups.includes("logic") ? readParity("parallel-failure") : [];
 report.parity = {
   runner: { cases: runnerParity.length, passed: runnerParity.filter((entry) => entry.pass).length },
   lint: { cases: lintParity.length, passed: lintParity.filter((entry) => entry.pass).length },
   cache: { cases: cacheParity.length, passed: cacheParity.filter((entry) => entry.pass).length },
+  lintScope: { cases: lintScopeParity.length, passed: lintScopeParity.filter((entry) => entry.pass).length },
   parallelFailure: { cases: parallelFailureParity.length, passed: parallelFailureParity.filter((entry) => entry.pass).length },
 };
 const runnerPassed = (...ids) => ids.every((id) => runnerParity.filter((entry) => entry.id === id).length === 1 && runnerParity.find((entry) => entry.id === id).pass);
@@ -84,6 +87,7 @@ function parityRejection(candidate) {
     if (!runnerPassed(`${family}-2-worker-runtime`, `${family}-2-assertion-failure`)) return "Actual worker runtime/jsdom/failure-propagation parity did not pass";
   }
   if (candidate.startsWith("lint-oxlint") && !(lintParity.length === 29 && new Set(lintParity.map((entry) => entry.id)).size === 29 && lintParity.every((entry) => entry.pass))) return "The complete lint rule-parity corpus did not pass";
+  if (candidate.startsWith("lint-oxlint") && !(lintScopeParity.length === 4 && ["complete-file-inventory", "directory-ignore-negative-control", "source-discovery-and-ignore-controls", "restored-clean-hybrid"].every((id) => lintScopeParity.filter((entry) => entry.id === id).length === 1 && lintScopeParity.find((entry) => entry.id === id).pass))) return "Actual lint file discovery/ignore parity did not pass";
   if (candidate.startsWith("lint-") && candidate.endsWith("-cached") && !cachePassed(candidate)) return "Content/configuration cache invalidation parity did not pass";
   return null;
 }
@@ -203,6 +207,12 @@ async function run(group, candidate, stage, round, { extra = [], timeoutMs = gro
   if (!Number.isFinite(entry.maxRssKiB)) entry.maxRssKiB = null;
   try {
     if (entry.valid && (group === "logic" || group === "components")) entry.evidence = validateTests(group, candidate, rawPath, logPath);
+    if (entry.valid && group === "lint" && candidate.startsWith("lint-oxlint")) {
+      const summary = readFileSync(logPath, "utf8").match(/Finished in [^\n]* on (\d+) files\b/);
+      const expected = lintFiles(frontend).length;
+      if (!summary || Number(summary[1]) !== expected) throw new Error("Oxlint did not report the complete expected file count");
+      entry.evidence = { files: expected, inventorySha256: digest(lintFiles(frontend)) };
+    }
     if (entry.valid && group === "build") {
       const built = fingerprint(buildDirectory);
       entry.evidence = { files: built.files, bytes: built.bytes, sha256: built.sha256 };

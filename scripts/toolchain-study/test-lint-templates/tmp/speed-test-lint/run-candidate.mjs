@@ -1,6 +1,7 @@
 import { globSync } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { oxlintArgs } from "./lint-file-inventory.mjs";
 
 // Experimental harness. Every candidate retains the complete existing file set.
 const frontend = path.resolve(import.meta.dirname, "../../Frontend");
@@ -35,11 +36,11 @@ if (candidate === "lib-node") {
 } else if (candidate === "lint-eslint" || candidate === "lint-eslint-cached") {
   command = [process.execPath, [bin("eslint/bin/eslint.js"), ".", "--max-warnings", "0", ...(candidate.endsWith("-cached") ? ["--cache", "--cache-strategy", "content", "--cache-location", "node_modules/.cache/eslint-speed"] : []), ...extraArgs]];
 } else if (candidate === "lint-oxlint-native") {
-  command = [process.execPath, [path.join(toolRoot, "node_modules/oxlint/bin/oxlint"), ".", "--config", ".oxlintrc.json", "--max-warnings", "0", ...extraArgs]];
+  command = [process.execPath, [path.join(toolRoot, "node_modules/oxlint/bin/oxlint"), ...oxlintArgs(frontend, ".oxlintrc.json", extraArgs)]];
 } else if (candidate === "lint-oxlint-retained-hooks") {
-  command = [process.execPath, [path.join(toolRoot, "node_modules/oxlint/bin/oxlint"), ".", "--config", ".oxlintrc.retained-hooks.json", "--max-warnings", "0", ...extraArgs]];
+  command = [process.execPath, [path.join(toolRoot, "node_modules/oxlint/bin/oxlint"), ...oxlintArgs(frontend, ".oxlintrc.retained-hooks.json", extraArgs)]];
 } else if (candidate === "lint-oxlint-hybrid" || candidate === "lint-oxlint-hybrid-cached") {
-  const native = spawn(process.execPath, [path.join(toolRoot, "node_modules/oxlint/bin/oxlint"), ".", "--config", ".oxlintrc.residual.json", "--max-warnings", "0", ...extraArgs], { cwd: frontend, stdio: "inherit", env: process.env });
+  const native = spawn(process.execPath, [path.join(toolRoot, "node_modules/oxlint/bin/oxlint"), ...oxlintArgs(frontend, ".oxlintrc.residual.json", extraArgs)], { cwd: frontend, stdio: "inherit", env: process.env });
   const code = await new Promise((resolve, reject) => { native.on("error", reject); native.on("close", (status, signal) => resolve(signal ? 1 : status ?? 1)); });
   if (code !== 0) process.exit(code);
   command = [process.execPath, [bin("eslint/bin/eslint.js"), ".", "--config", "eslint.residual.config.js", "--max-warnings", "0", ...(candidate.endsWith("-cached") ? ["--cache", "--cache-strategy", "content", "--cache-location", "node_modules/.cache/eslint-residual-speed"] : []), ...extraArgs]];

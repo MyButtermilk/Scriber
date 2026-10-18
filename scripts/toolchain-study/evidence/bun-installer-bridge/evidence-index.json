@@ -1,0 +1,57 @@
+{
+  "source": "/tmp/scriber-bun-frozen-IeKMZY",
+  "copied": [
+    {
+      "name": "probe.mjs",
+      "bytes": 7413,
+      "sha256": "a542e3fb9c8018ae679dccdddd10dd9a1091e73489c3e4a7bd57594548a6fd0e"
+    },
+    {
+      "name": "npm-control.mjs",
+      "bytes": 2841,
+      "sha256": "ad3499aa49a854a47dcc88835c1c7aa5f1a33a56d47a4675302bc77613a3aa53"
+    },
+    {
+      "name": "conclusion.json",
+      "bytes": 9649,
+      "sha256": "a0f66c4d7f66a74e17fda8552048c0a0aba5744fa6c6832bc59cc311c5fc7ce9"
+    },
+    {
+      "name": "npm-control-results.json",
+      "bytes": 1303,
+      "sha256": "ac112014df1ef2233b1c2582fac6513c65d28619e746b0a7dbf8116ebe67c5e5"
+    },
+    {
+      "name": "original.log",
+      "bytes": 1700,
+      "sha256": "aab41266e363f2d546d2774d01df7ab66a4e2246e604aa679f44a104807c94bf"
+    },
+    {
+      "name": "trusted.log",
+      "bytes": 1703,
+      "sha256": "2726e207642f59477b7f1f4d9b8d7083d9110d60af5bd64b23c55fb9968bcbd3"
+    },
+    {
+      "name": "drift-incompatible.log",
+      "bytes": 275,
+      "sha256": "bba43807cc3d80372ed025fb106e21da262b05a8b29a84050929a1b6ad495b9d"
+    },
+    {
+      "name": "drift-range.log",
+      "bytes": 1703,
+      "sha256": "6b22354389e2924e4f91b38bae86720c397b57638d89e2ebddc8c1a12db6fb31"
+    },
+    {
+      "name": "missing-lock.log",
+      "bytes": 25755,
+      "sha256": "82a742fdda14660b707c4c401475813fb6ef876c30ee0420c22b1f9859ea7961"
+    },
+    {
+      "name": "npm-drift-range.log",
+      "bytes": 758,
+      "sha256": "8e195627266420ba00be34553e95494972187a9cb7dba18fb2f28d4e33523313"
+    }
+  ],
+  "sourceLockSha256": "14e70a551421b46970bc9de30a6d54e47d1607bc5655b086acd4f711e4052741",
+  "note": "Copied executed scripts, compact results and raw logs. Full graph contexts remain in the original results.json; conclusion.json retains graph counts and the proven optional-platform normalization."
+}

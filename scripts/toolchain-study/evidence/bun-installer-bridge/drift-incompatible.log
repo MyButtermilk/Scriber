@@ -1,0 +1,6 @@
+bun install v1.4.3 (c6da4a4d3)
+[2.44ms] migrated lockfile from package-lock.json
+Resolving dependencies
+Resolved, downloaded and extracted [66]
+error: lockfile had changes, but lockfile is frozen
+note: try re-running without --frozen-lockfile and commit the updated lockfile

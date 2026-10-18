@@ -1,9 +1,6 @@
 name: Frontend Toolchain Study
 
 on:
-  push:
-    branches:
-      - perf/frontend-toolchain-study-20261017
   workflow_dispatch:
 
 permissions:

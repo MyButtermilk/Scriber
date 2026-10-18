@@ -1,0 +1,306 @@
+{
+  "question": "Can pinned Bun 1.4.3 consume canonical npm lock with install --frozen-lockfile --no-save without generating a Bun lock?",
+  "answer": false,
+  "runtime": {
+    "node": "v26.5.0",
+    "bun": "1.4.3",
+    "npm": "11.17.0",
+    "bunExecutable": "/workspace/scratch/1ff238d8a5f3/Scriber-study/scripts/toolchain-study/runtime-tools/node_modules/bun/bin/bun.exe"
+  },
+  "cases": {
+    "original": {
+      "command": [
+        "/workspace/scratch/1ff238d8a5f3/Scriber-study/scripts/toolchain-study/runtime-tools/node_modules/bun/bin/bun.exe",
+        "install",
+        "--frozen-lockfile",
+        "--no-save"
+      ],
+      "exitCode": 0,
+      "error": null,
+      "signal": null,
+      "manifestUnchanged": true,
+      "lockUnchanged": true,
+      "npmLockSha256": "14e70a551421b46970bc9de30a6d54e47d1607bc5655b086acd4f711e4052741",
+      "bunLockSha256": "bdc44b3ac7ab46e9edb3d6630cc157ff90d8f04c1da0a9a65f8e956558791410",
+      "nodeModulesExists": true,
+      "metadata": [
+        ".bin"
+      ],
+      "installed": {
+        "bun": {
+          "name": "bun",
+          "version": "1.4.3"
+        },
+        "typescript": {
+          "name": "@typescript/typescript6",
+          "version": "6.0.2"
+        },
+        "@typescript/old": {
+          "name": "typescript",
+          "version": "6.0.3"
+        },
+        "eslint": {
+          "name": "eslint",
+          "version": "10.8.0"
+        },
+        "esbuild": {
+          "name": "esbuild",
+          "version": "0.28.1"
+        },
+        "react": {
+          "name": "react",
+          "version": "19.2.0"
+        },
+        "vite": {
+          "name": "vite",
+          "version": "8.1.0"
+        },
+        "vitest": {
+          "name": "vitest",
+          "version": "4.1.10"
+        }
+      },
+      "graph": {
+        "identities": 435,
+        "contexts": 436,
+        "versionsMatch": true,
+        "missingRequired": [],
+        "nativeContextsMatchAfterProvenPlatformNormalization": true
+      },
+      "log": "/tmp/scriber-bun-frozen-IeKMZY/original.log"
+    },
+    "trusted": {
+      "command": [
+        "/workspace/scratch/1ff238d8a5f3/Scriber-study/scripts/toolchain-study/runtime-tools/node_modules/bun/bin/bun.exe",
+        "install",
+        "--frozen-lockfile",
+        "--no-save"
+      ],
+      "exitCode": 0,
+      "error": null,
+      "signal": null,
+      "manifestUnchanged": true,
+      "lockUnchanged": true,
+      "npmLockSha256": "14e70a551421b46970bc9de30a6d54e47d1607bc5655b086acd4f711e4052741",
+      "bunLockSha256": "0c315a6c5c3869bcde4e566799236e311bc63c673db3a553ea4529f59012d578",
+      "nodeModulesExists": true,
+      "metadata": [
+        ".bin"
+      ],
+      "installed": {
+        "bun": {
+          "name": "bun",
+          "version": "1.4.3"
+        },
+        "typescript": {
+          "name": "@typescript/typescript6",
+          "version": "6.0.2"
+        },
+        "@typescript/old": {
+          "name": "typescript",
+          "version": "6.0.3"
+        },
+        "eslint": {
+          "name": "eslint",
+          "version": "10.8.0"
+        },
+        "esbuild": {
+          "name": "esbuild",
+          "version": "0.28.1"
+        },
+        "react": {
+          "name": "react",
+          "version": "19.2.0"
+        },
+        "vite": {
+          "name": "vite",
+          "version": "8.1.0"
+        },
+        "vitest": {
+          "name": "vitest",
+          "version": "4.1.10"
+        }
+      },
+      "graph": {
+        "identities": 435,
+        "contexts": 436,
+        "versionsMatch": true,
+        "missingRequired": [],
+        "nativeContextsMatchAfterProvenPlatformNormalization": true
+      },
+      "log": "/tmp/scriber-bun-frozen-IeKMZY/trusted.log"
+    },
+    "drift-incompatible": {
+      "command": [
+        "/workspace/scratch/1ff238d8a5f3/Scriber-study/scripts/toolchain-study/runtime-tools/node_modules/bun/bin/bun.exe",
+        "install",
+        "--frozen-lockfile",
+        "--no-save"
+      ],
+      "exitCode": 1,
+      "error": null,
+      "signal": null,
+      "manifestUnchanged": true,
+      "lockUnchanged": true,
+      "npmLockSha256": "14e70a551421b46970bc9de30a6d54e47d1607bc5655b086acd4f711e4052741",
+      "bunLockSha256": null,
+      "nodeModulesExists": false,
+      "metadata": [],
+      "installed": {},
+      "log": "/tmp/scriber-bun-frozen-IeKMZY/drift-incompatible.log"
+    },
+    "drift-range": {
+      "command": [
+        "/workspace/scratch/1ff238d8a5f3/Scriber-study/scripts/toolchain-study/runtime-tools/node_modules/bun/bin/bun.exe",
+        "install",
+        "--frozen-lockfile",
+        "--no-save"
+      ],
+      "exitCode": 0,
+      "error": null,
+      "signal": null,
+      "manifestUnchanged": true,
+      "lockUnchanged": true,
+      "npmLockSha256": "14e70a551421b46970bc9de30a6d54e47d1607bc5655b086acd4f711e4052741",
+      "bunLockSha256": "778dacfa45f0fa16d794e248a4b12778ae615afb5ecff850962cfd2c10c85c2d",
+      "nodeModulesExists": true,
+      "metadata": [
+        ".bin"
+      ],
+      "installed": {
+        "bun": {
+          "name": "bun",
+          "version": "1.4.3"
+        },
+        "typescript": {
+          "name": "@typescript/typescript6",
+          "version": "6.0.2"
+        },
+        "@typescript/old": {
+          "name": "typescript",
+          "version": "6.0.3"
+        },
+        "eslint": {
+          "name": "eslint",
+          "version": "10.8.0"
+        },
+        "esbuild": {
+          "name": "esbuild",
+          "version": "0.28.1"
+        },
+        "react": {
+          "name": "react",
+          "version": "19.2.0"
+        },
+        "vite": {
+          "name": "vite",
+          "version": "8.1.0"
+        },
+        "vitest": {
+          "name": "vitest",
+          "version": "4.1.10"
+        }
+      },
+      "log": "/tmp/scriber-bun-frozen-IeKMZY/drift-range.log"
+    },
+    "missing-lock": {
+      "command": [
+        "/workspace/scratch/1ff238d8a5f3/Scriber-study/scripts/toolchain-study/runtime-tools/node_modules/bun/bin/bun.exe",
+        "install",
+        "--frozen-lockfile",
+        "--no-save",
+        "--dry-run"
+      ],
+      "exitCode": 0,
+      "error": null,
+      "signal": null,
+      "manifestUnchanged": true,
+      "lockUnchanged": true,
+      "npmLockSha256": null,
+      "bunLockSha256": null,
+      "nodeModulesExists": false,
+      "metadata": [],
+      "installed": {},
+      "log": "/tmp/scriber-bun-frozen-IeKMZY/missing-lock.log"
+    }
+  },
+  "optionalPlatformExplanation": {
+    "package": {
+      "name": "@oven/bun-linux-x64-musl",
+      "version": "1.4.3",
+      "os": [
+        "linux"
+      ],
+      "cpu": [
+        "x64"
+      ],
+      "libc": [
+        "musl"
+      ]
+    },
+    "host": {
+      "os": "linux",
+      "cpu": "x64",
+      "libc": "glibc"
+    },
+    "explanation": "Bun also materializes its pinned musl executable package. npm omits it. The installed musl manifest proves it is incompatible with this glibc host; the one missing-vs-platform-skipped edge is excluded consistently from the native runtime graph."
+  },
+  "trustChange": {
+    "original": null,
+    "modified": [
+      "bun",
+      "esbuild"
+    ],
+    "lockRoot": null,
+    "dependencyGroupsStillMatch": true
+  },
+  "npmCompatibleRangeControl": {
+    "node": "v26.5.0",
+    "npm": "11.17.0",
+    "command": [
+      "/workspace/scratch/1ff238d8a5f3/toolchain/node_modules/.bin/node",
+      "/workspace/scratch/1ff238d8a5f3/toolchain/node_modules/npm/bin/npm-cli.js",
+      "ci",
+      "--no-audit",
+      "--no-fund",
+      "--cache",
+      "/tmp/scriber-bun-frozen-IeKMZY/npm-cache"
+    ],
+    "cwd": "/tmp/scriber-bun-frozen-IeKMZY/npm-drift-range",
+    "mutation": {
+      "dependency": "eslint",
+      "original": "10.8.0",
+      "actual": "^10.8.0",
+      "locked": "10.8.0"
+    },
+    "exitCode": 0,
+    "error": null,
+    "signal": null,
+    "before": {
+      "package.json": "e04d203f0ab2c09f1f53dc48d9e96030fa6aa50994329c5ef42d448356c251e9",
+      "package-lock.json": "14e70a551421b46970bc9de30a6d54e47d1607bc5655b086acd4f711e4052741",
+      "bun.lock": null,
+      "node_modules/.package-lock.json": null
+    },
+    "after": {
+      "package.json": "e04d203f0ab2c09f1f53dc48d9e96030fa6aa50994329c5ef42d448356c251e9",
+      "package-lock.json": "14e70a551421b46970bc9de30a6d54e47d1607bc5655b086acd4f711e4052741",
+      "bun.lock": null,
+      "node_modules/.package-lock.json": "80fed7d1ffe93cfa4a25986a61d2a17a030febedc1038551c88f1d2305c5bc78"
+    },
+    "installedEslint": "10.8.0",
+    "metadata": [
+      ".bin",
+      ".package-lock.json"
+    ],
+    "log": "/tmp/scriber-bun-frozen-IeKMZY/npm-drift-range.log"
+  },
+  "finding": "Bun preserves the relevant Linux dependency and peer graph and the npm lock, but creates bun.lock despite --no-save. npm ci and Bun both accept the compatible range-only mutation, so that acceptance is not a Bun regression relative to the pinned baseline.",
+  "metadataImpact": "Bun installs omit node_modules/.package-lock.json, which current Windows release cache-hit validation requires in both the cold-producer and main release paths. No marker substitution was performed.",
+  "scopeLimitations": [
+    "The no-lock control used --dry-run only.",
+    "Current online Bun docs disagree with the pinned runtime; no later Bun version was tested.",
+    "This was a bounded correctness probe, not an installer timing measurement."
+  ],
+  "recommendation": "Keep the canonical npm package-lock and existing npm release cache contract for this PR; adopt independently proven checker/test/lint improvements. Native manager measurements do not include a complete bootstrap/import/release-cache migration, and have different Windows and Linux winners."
+}
