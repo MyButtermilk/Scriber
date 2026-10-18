@@ -40,3 +40,8 @@ describe("Accordion transitions", () => {
     expect(screen.queryByRole("button", { name: "Inside action" })).not.toBeInTheDocument();
   });
 });
+
+it("deliberate Windows VM-pool failure probe", async () => {
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  expect(1).toBe(2);
+});
