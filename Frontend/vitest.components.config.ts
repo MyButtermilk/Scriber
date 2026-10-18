@@ -15,11 +15,11 @@ export default defineConfig({
     environment: "jsdom",
     // Workers persist and load jsdom once instead of once per test file. With at
     // least two workers, Vitest schedules every file separately, so each file
-    // still gets a fresh VM context, jsdom window, storage and module graph.
+    // still gets a fresh VM context, jsdom window and Vitest-managed modules.
     // vitest.setup.ts fails the run if files ever share one context.
     pool: "vmThreads",
-    // Four workers suit the four-vCPU CI runners. Smaller hosts are not
-    // oversubscribed, but never drop below the two workers isolation requires.
+    // Use up to four available CPUs, with a two-worker floor for isolation.
+    // Even a one-CPU host needs two workers unless it selects isolated threads.
     maxWorkers: Math.max(2, Math.min(4, availableParallelism())),
     execArgv: ["--no-experimental-webstorage"],
     setupFiles: [path.resolve(import.meta.dirname, "vitest.setup.ts")],

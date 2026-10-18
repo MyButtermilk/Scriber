@@ -255,16 +255,31 @@ Bun/pnpm locks in the separate experiments.
 | `npm run check:app` | `bun --check --tsconfig-override tsconfig.json` checks application sources, excluding test files. |
 | `npm run check:tests` | `bun --check --tsconfig-override tsconfig.tests.json` checks both `.test.ts` and `.test.tsx` files plus `vitest.setup.ts`, with the test declarations enabled. |
 | `npm run test:lib` | The Node wrapper discovers and sorts every `client/src/**/*.test.ts` file, then runs the local Bun executable with `test --isolate --parallel=4`. The current suite contains 35 files and 142 tests. |
-| `npm run test:components` | Node runs Vitest/jsdom in the `vmThreads` pool through `vitest.components.config.ts`: currently 49 files and 253 tests. Up to four workers (at least two) persist and load jsdom once; every file still receives its own VM context, jsdom window, storage and module graph. |
+| `npm run test:components` | Node runs Vitest/jsdom in the `vmThreads` pool through `vitest.components.config.ts`: currently 49 files and 253 tests. Up to four workers (at least two) persist and load jsdom once; every file still receives its own VM context, jsdom window, storage and Vitest-managed module graph. |
 | `npm run lint` | ESLint checks the full scope with zero warnings allowed and `--cache --cache-strategy content --cache-location node_modules/.cache/eslint`. Use `npm exec -- eslint . --max-warnings 0` for a full uncached pass. |
 
 `npm run check` runs both type projects; `npm test` runs both behavior suites.
 The logic wrapper fails if discovery finds no files or the Bun process fails.
-Vitest 4 schedules VM-pool files individually only with two or more workers;
+Vitest 4.1.10 schedules VM-pool files individually only with two or more workers;
 a single worker batches files into one shared context. `vitest.setup.ts`
-therefore fails a component run whose files share a global context, so do not
-use `--maxWorkers=1` or `--no-file-parallelism` for this suite. Running one
-selected test file remains supported.
+therefore rejects reuse of a test file's global context. For serial debugging,
+select the ordinary `threads` pool explicitly; it retains per-file isolation
+with one worker:
+
+```powershell
+npm run test:components -- --pool=threads --maxWorkers=1
+# Equivalent serial mode; test-file filters may follow either command.
+npm run test:components -- --pool=threads --no-file-parallelism
+```
+
+Both forms were verified through the actual npm command on two existing
+module/mock test files (14 tests), with the resolved pool `threads`,
+`isolate: true`, and one worker. A single selected file is also supported by
+the default VM pool. Do not combine a serial option with `vmThreads` when
+running multiple files. Ordinary threads are also the reference option for
+tests that depend on Node built-in errors sharing the test's `Error`
+constructor; VM contexts have a separate realm.
+
 ESLint and other compiler API consumers import `typescript` through the pinned
 `npm:@typescript/typescript6@6.0.2` alias; Bun performs the package type checks.
 

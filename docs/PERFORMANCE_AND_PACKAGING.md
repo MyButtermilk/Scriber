@@ -117,14 +117,22 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 ### Frontend verification toolchain (2026-10-18)
 
-The frontend keeps its Node 26.5.0 Vite build and canonical npm package-lock.
-The selected verification path uses the pinned Bun 1.4.3 checker and isolated
-logic-test runner, Node Vitest/jsdom in reused VM-pool workers (see the
-component follow-up below), and ESLint's content-based cache. Bun is a development dependency installed by the existing `npm ci`; no
-global Bun installation is required. The TypeScript 6 compatibility package
-preserves the JavaScript compiler API used by other development tools. These
-changes concern developer and CI verification, not transcription throughput
-or desktop startup.
+The current frontend verification path uses Bun 1.4.3 for both type projects
+and isolated logic tests, Node Vitest/jsdom for component tests, and ESLint's
+content cache. Node 26.5.0 remains the Vite build runtime, and npm owns the
+canonical dependency lock. Bun is installed by `npm ci`; no global Bun
+installation is required. The TypeScript 6 compatibility package preserves
+the JavaScript compiler API used by other development tools. These changes
+concern developer and CI verification, not transcription throughput or
+desktop startup.
+
+The original native study selected the Bun-thread component configuration at
+[`c47e89d6`](https://github.com/MyButtermilk/Scriber/commit/c47e89d60da2e10874736bb9d5158461e4dd41c7);
+`e58ee351` changes only its documentation. The component follow-up at
+[`c85d165e`](https://github.com/MyButtermilk/Scriber/commit/c85d165ef77ed88bb1da1992b977b15438e2d0ee)
+switches the component runtime, pool and setup guard. The earlier measurements
+below retain their exact source revisions and do not describe the later VM
+configuration.
 
 The comparison starts from
 [`d061ad75`](https://github.com/MyButtermilk/Scriber/commit/d061ad75a0b39ca1b299eb8174ac828b122ef136).
@@ -134,8 +142,8 @@ The corrected lint comparison uses
 [`d91b93de`](https://github.com/MyButtermilk/Scriber/tree/d91b93deb1c1fb2d5977f50eb854129d0de59abc/scripts/toolchain-study).
 [Native study run 39100986882](https://github.com/MyButtermilk/Scriber/actions/runs/39100986882)
 retains separate Linux/Windows compiler, installer, and test/lint artifacts.
-Each admitted comparison uses at least five timed repetitions on a native
-four-CPU hosted runner with about 16 GiB RAM. Commands within a job are
+In the original native matrix, admitted timing comparisons use at least five
+repetitions on four-CPU hosted runners with about 16 GiB RAM. Commands within a job are
 serialized and their order rotates; five repetitions do not completely balance
 positions for every candidate count. Medians below are wall seconds, including
 process startup, and compare tools within each runner rather than hardware
@@ -177,7 +185,7 @@ explain the speedup. Vite continues to own emitted JavaScript. See the
 [TypeScript 6 migration notes](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html),
 and [Bun checker documentation](https://bun.com/docs/runtime/check).
 
-**Installer decision.** All three converted-lock candidates pass the native
+**Installer decision.** All three installer candidates pass the native
 reachable dependency/peer-context and tarball-integrity comparison, unchanged
 lock checks, lifecycle checks, and complete frontend gates. pnpm requires the
 explicit scoped override `cmdk@1.1.1>@radix-ui/react-primitive: 2.1.3`; its naive
@@ -234,14 +242,16 @@ baseline, best Node/Bun alternatives and candidates within
 Four Bun workers win the Windows logic comparison; their Linux result overlaps
 the two-worker range. Bun with four Vitest threads wins the repeated Windows
 component comparison and is effectively tied with Bun's default thread count
-on Linux. All ten native repetitions of the selected component pool pass.
+on Linux. All ten original native repetitions of Bun threads/four pass; these
+results describe `c47e89d6`, before the VM follow-up.
 The Bun four-fork variant passes only three of five Linux and four of five
 Windows repetitions; Bun's default fork pool passes only two of five Linux
 repetitions. These variants are ineligible. All ten failed native fork samples
 (including screens) fail the same compact summary-retry accessibility case:
-the button remains busy instead of returning to its ready label. The production
-configuration retains jsdom, setup,
-file scope, mock restoration and Vitest's isolation default. These four-CPU x64
+the button remains busy instead of returning to its ready label. The
+`c47e89d6` Bun-thread configuration retains jsdom, setup, file scope, mock
+restoration and Vitest's default per-file worker isolation. The later VM pool
+uses a different isolation mechanism, described below. These four-CPU x64
 measurements do not establish the best worker count on other hardware.
 
 **Lint selection.** The original Oxlint directory call in the first matrix
@@ -308,8 +318,8 @@ Node remains the build runtime. The recorded Linux memory metric is the largest
 single-process RSS for each command, not simultaneous process-tree peak memory;
 no total-memory improvement is claimed.
 
-**Complete production commands and negative controls.** The integrated
-comparison uses the frozen production candidate
+**Historical complete pipeline and production controls: d061ad75 → c47e89d6.**
+The integrated comparison uses the frozen production candidate
 [`c47e89d6`](https://github.com/MyButtermilk/Scriber/commit/c47e89d60da2e10874736bb9d5158461e4dd41c7)
 against `d061ad75`, with independent installations under Node 26.5.0/npm 11.17.0.
 It runs the actual `npm run check`, `npm run lint`, `npm test` and `npm run build`
@@ -373,51 +383,118 @@ failed Linux series remains separate evidence.
 
 #### Component tests in reused jsdom VM workers (2026-10-18 follow-up)
 
-After the Bun selection, the component suite remained the largest stage. A
-per-file profile attributes most of it to environment setup: each isolated
-worker imports jsdom again (about 0.4–0.5 s, plus about 0.08 s construction
-per file on the two-vCPU host), so the 49 files spend 68–77 s of cumulative
-Vitest `environment` time with four Bun threads. `test:components` now runs
+The follow-up at
+[`c85d165e`](https://github.com/MyButtermilk/Scriber/commit/c85d165ef77ed88bb1da1992b977b15438e2d0ee)
+reduces repeated jsdom loading by reusing Node workers. `test:components` runs
 Node Vitest with `pool: "vmThreads"` and
-`maxWorkers: Math.max(2, Math.min(4, availableParallelism()))`. Workers persist
-and import jsdom once; each file still receives a new VM context and jsdom
-window. Bun remains the type checker and logic-test runner.
+`maxWorkers: Math.max(2, Math.min(4, availableParallelism()))`. Bun remains
+the type checker and logic-test runner; npm, ESLint, the application and test
+files under `client/src`, and the Node Vite build stay as in the preceding
+`e58ee351` configuration.
 
-Vitest 4.1.10 forces `isolate: false` for VM pools. With two or more workers,
-its scheduler dispatches each file as a separate task and creates a context per
-task; with one worker it batches all files into one context. Probes confirm
-both: eight files on two or three workers, plus a `vi.mock` file followed by an
-unmocked importer, see fresh module state, `window` and `globalThis` properties,
-local/session storage, document title and body while threads are reused (four
-files per thread). The single-worker control leaks every one of them. The
-configuration therefore never selects fewer than two workers, and
-`vitest.setup.ts` fails any file whose global context another file already
-used. The guard fires for `--maxWorkers=1` and `--no-file-parallelism` and is
-silent for default, isolated-thread and single-file runs; a contract test pins
-the pool, worker floor and guard.
+The [pinned Vitest 4.1.10 scheduler](https://github.com/vitest-dev/vitest/blob/v4.1.10/packages/vitest/src/node/pool.ts)
+dispatches VM-pool files as separate tasks with two or more workers. Each task
+receives a [fresh VM context and module runner](https://github.com/vitest-dev/vitest/blob/v4.1.10/packages/vitest/src/runtime/workers/vm.ts),
+jsdom window, storage and Vitest-managed module graph, even though Vitest
+forces `isolate: false` for VM pools. A single worker batches files into one
+context. The two-worker floor and the global-context
+reuse guard in `vitest.setup.ts` therefore work together; even a one-CPU host
+needs two VM workers. This is the behavior verified for the pinned version,
+not isolation of Node processes or built-in modules.
 
-| Linux x64, two vCPUs, cold caches | Before | After | Less time |
+**Native complete-pipeline confirmation.** The new comparison freezes
+[`e58ee351`](https://github.com/MyButtermilk/Scriber/commit/e58ee3510583f1e8edcec464f1117f1b34b74946)
+as the Bun-thread baseline and `c85d165e` as the VM candidate. Each runner has
+four available CPUs and uses Node 26.5.0/npm 11.17.0. It runs exactly five
+alternating pairs of the actual `check → lint → test → build` npm pipeline.
+The total clock is measured directly. Cold means empty compiler/ESLint caches;
+Vitest/Vite transform caches and operating-system caches are not flushed.
+Each build starts without the preceding `dist/public` output. Installations,
+reporting-only test inventories, controls, cache preparation, restoration and
+manifest hashing are outside the measured clock.
+
+| Native complete pipeline, compiler/lint caches empty | Bun threads (`e58ee351`) | Node VM (`c85d165e`) | Less time |
 | --- | ---: | ---: | ---: |
-| Component suite, two workers each (median of 3 / 5 runs) | 49.0 s | 25.4 s | 48% |
-| Complete `check`, `lint`, `test`, `build` (median of 3, alternating) | 62.1 s | 36.7 s | 41% |
+| Linux x64, four CPUs | 26.275 s | 18.453 s | 29.8% |
+| Windows x64, four CPUs | 48.843 s | 38.311 s | 21.6% |
 
-"Before" is the Bun-thread configuration at the PR head `e58ee351`; the
-pipeline row uses each revision's committed configuration (four Bun threads
-before, two VM workers after on this host). Cumulative `environment` time falls
-from 32–34 s to 1.9–2.2 s at two workers. The inventory is unchanged: 253 tests
-in 49 files with identical full names and status. Five consecutive runs and two
-shuffled orders (seeds 11 and 4242) pass. A deliberate assertion failure exits
-nonzero through `npm run test:components` and `npm test`, as do in-test
-unhandled rejections, timer throws and microtask throws. A rejection scheduled
-after its test has finished races with environment teardown in both the
-Bun-thread and VM configurations (each missed it in some samples), so that edge
-is unchanged. VM contexts share Node built-in modules, so errors raised by
-built-ins carry the worker realm's constructors; no current test depends on
-that. Peak resident memory with four workers rises from about 1.2 GiB (Bun
-threads) to about 2.0 GiB; Vitest's default VM memory limit recycles workers.
-Production build output is byte-identical (77 files, 2,846,216 bytes on
-Linux). These are two-vCPU Linux measurements; the four-vCPU Windows effect is
-observed in the regular CI frontend job, not in a five-round harness.
+The [Linux job](https://github.com/MyButtermilk/Scriber/actions/runs/39123035895/job/117662366625)
+and its [raw artifact](https://github.com/MyButtermilk/Scriber/actions/runs/39123035895/artifacts/12135063169),
+plus the [Windows job](https://github.com/MyButtermilk/Scriber/actions/runs/39123791512/job/117664605445)
+and its [raw artifact](https://github.com/MyButtermilk/Scriber/actions/runs/39123791512/artifacts/12135965519),
+each contain all ten successful complete pipelines, all 40 successful command
+stages and five matching paired build manifests. Every run retains 142 logic
+tests in 35 files and 253 component tests in 49 files; full names and file
+inventories match. Every build contains 77 files: 2,846,216 bytes on Linux and
+2,846,533 bytes on Windows. The complete `npm test` stage falls from 20.910 to
+13.173 seconds on Linux and from 39.224 to 28.372 seconds on Windows; this
+includes both logic and component tests, not just components.
+These are additional improvements over `e58ee351`, not a fresh comparison
+against `d061ad75`. Do not add them to the earlier percentages or infer new
+warm/changed-input medians from this cold-only follow-up.
+
+The Linux series uses the
+[`add48c8a` harness](https://github.com/MyButtermilk/Scriber/tree/add48c8acf79d6843a4e9de418f5269eb801f082/scripts/toolchain-study).
+Its `setup/environment.json` and `pipeline/results.json` project `gitHead`
+fields bind the actual `e58ee351`/`c85d165e` inputs. The latter's inherited
+`metadata.sourceCommit` still names the original matrix's `d061ad75`; that
+stale label does not describe these checkouts. The
+[`0850b4b4` harness correction](https://github.com/MyButtermilk/Scriber/commit/0850b4b4b432dee3020f4cd945ef66b86812b41d)
+reports both actual source commits explicitly, without changing timed commands,
+measurement boundaries, failure policy or selection rules.
+
+**Failure propagation and isolation.** The archived controls on both native
+operating systems verify:
+
+- Actual production npm type gates reject an application-only TS2322 before
+  starting the test project, and reject a test-only TS2322 after the application
+  check passes. Asynchronous logic and component assertion controls execute
+  143 tests/36 files and 255 tests/50 files respectively, with exactly the
+  deliberate assertion failing and no unrelated errors.
+- Six external fixture files execute 24 tests with two and three VM
+  workers. Worker traces prove reuse while browser globals, storage, cookies,
+  source and external package state, mocks, module resets and React cleanup
+  remain correct. Both unsafe serial VM controls reject the remaining five
+  files with exactly the context-reuse guard after the first file passes.
+- Separate actual npm commands with `--pool=threads --maxWorkers=1` and
+  `--pool=threads --no-file-parallelism` each pass the same two existing module
+  and mock test files: 14 tests, one worker and `isolate: true`. These are the
+  supported serial debugging commands documented in `TESTING_AND_RELEASE.md`.
+- A separate actual `npm run test:components` control passes all four tests and
+  their assertions but triggers three errors during active tests: an unhandled
+  promise rejection, timer throw and microtask throw. The npm command exits 1.
+  Vitest's JSON test summary still says `success: true`; the public error
+  reporter and actual process exit are checked separately. A green assertion
+  summary alone is insufficient evidence of a successful run.
+
+Every control verifies restoration of its recorded source/configuration inputs
+and test-file inventory. No original test is removed or weakened. Active-test
+error controls do not establish reliable capture of arbitrarily late callbacks
+after test completion; the earlier failed baseline series remains documented
+above.
+
+The [initial Windows follow-up](https://github.com/MyButtermilk/Scriber/actions/runs/39123035895/job/117662366775)
+passes the production type/assertion controls, then stops before timing: its
+external fixture project on `C:` cannot resolve any of the six test modules
+from the checkout on `D:`. This contributes no performance samples and remains
+separate harness-failure evidence. The `0850b4b4` correction places that owned
+temporary project beside `Frontend` on its real drive and records original
+collection errors before looking for a worker trace. It retains all six strict
+isolation/serial phases and the five-round timing budget. The corrected Windows
+job passes every control and all ten complete pipelines. The successful Linux
+series remains separate and is not repeated or pooled with a new series.
+
+**VM limits.** As documented for the
+[pinned VM pool](https://github.com/vitest-dev/vitest/blob/v4.1.10/docs/config/pool.md),
+Node built-ins can return errors from the worker's realm, so `instanceof Error`
+inside the VM can be false. Use ordinary isolated threads when debugging tests
+that depend on those constructors. The current suite passes both runtimes;
+that does not make their Node realm semantics identical. VM workers can retain
+module memory. The
+[default VM memory limit](https://github.com/vitest-dev/vitest/blob/v4.1.10/docs/config/vmmemorylimit.md)
+recycles workers; it is not a ceiling on aggregate resident memory. This
+confirmation does not measure process-tree peak RSS, so no quantified memory
+tradeoff is claimed.
 
 ### Slider drafts and stable history boundaries (2026-10-06)
 
