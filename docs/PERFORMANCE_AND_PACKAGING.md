@@ -115,6 +115,93 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 ## Implemented Performance Work
 
+### Frontend verification toolchain (2026-10-18)
+
+The frontend keeps its Node 26.5.0 Vite build and canonical npm package-lock.
+The selected verification path uses the pinned Bun 1.4.3 checker and isolated
+logic-test runner, with ESLint's content-based cache. Bun is a development
+dependency installed by the existing `npm ci`; no global Bun installation is
+required. The TypeScript 6 compatibility package preserves the JavaScript
+compiler API used by other development tools. These changes concern developer
+and CI verification, not transcription throughput or desktop startup.
+
+The comparison starts from
+[`d061ad75`](https://github.com/MyButtermilk/Scriber/commit/d061ad75a0b39ca1b299eb8174ac828b122ef136).
+All alternatives and the executable probes are isolated on the
+[`4e6c9eca` study revision](https://github.com/MyButtermilk/Scriber/tree/4e6c9ecaf1e601c6db617427684fb614376fe806/scripts/toolchain-study).
+[Native study run 39100986882](https://github.com/MyButtermilk/Scriber/actions/runs/39100986882)
+retains separate Linux/Windows compiler, installer, and test/lint artifacts.
+Each admitted comparison uses at least five timed repetitions on a native
+four-CPU hosted runner with about 16 GiB RAM. Commands within a job are
+serialized and their order rotates; five repetitions do not completely balance
+positions for every candidate count. Medians below are wall seconds, including
+process startup, and compare tools within each runner rather than hardware
+across operating systems.
+
+**Compiler selection.** Each value covers both application and test projects.
+The gate compares all 159 application and 244 test-project source files, checks
+eight deliberate application diagnostics and eleven test-project diagnostics,
+and verifies a changed imported module invalidates an unchanged consumer. The
+production `bun --check --tsconfig-override ...` spelling is separately checked
+inside a package that also defines an npm `check` script. This avoids accidentally
+dispatching that script recursively.
+
+| Compiler | Linux cold | Linux warm | Linux changed | Windows cold | Windows warm | Windows changed |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| TypeScript 5.6.3, original | 20.851 | 3.700 | 20.315 | 13.322 | 2.517 | 13.030 |
+| TypeScript 5.6.3, normalized config | 21.005 | 3.714 | 20.355 | 13.177 | 2.502 | 13.029 |
+| TypeScript 7.0.2 | 2.886 | 0.543 | 3.148 | 2.019 | 0.513 | 2.265 |
+| tsrs 0.16.0 prerelease | 0.728 | 0.254 | 0.771 | Unavailable | Unavailable | Unavailable |
+| tsc-rs 0.7.0 | 1.060 | 0.315 | 1.179 | 0.853 | 0.356 | 0.957 |
+| tsc-rs 0.7.0, fast | 1.088 | 0.312 | 1.197 | 0.872 | 0.352 | 0.986 |
+| tsc-ts 0.0.2 | 1.878 | 0.620 | 2.064 | 1.492 | 0.620 | 1.652 |
+| Bun 1.4.3 | 1.044 | 1.040 | 1.048 | 0.592 | 0.597 | 0.602 |
+
+Bun wins the cold and changed-source Windows checks and supplies the selected
+logic-test runtime without adding a second native compiler dependency. tsc-rs
+has the faster unchanged incremental path; tsrs wins on Linux but has no tested
+Windows distribution. Neither fact is hidden by the selection. The exact tsrs
+pin is `0.16.0-ts7.1.0-dev.20260929`; reference compiler versions and individual
+diagnostics are recorded in the artifacts. Passing these project-specific
+probes is not a proof of universal compiler equivalence.
+
+The modern compiler configuration explicitly targets ES2015 for checking and
+removes deprecated `baseUrl`, while preserving the relative alias, strictness,
+no-emit scope, and previous side-effect-import/class-field defaults. The original
+ES5-default boundary is recorded separately; normalization alone does not
+explain the speedup. Vite continues to own emitted JavaScript. See the
+[TypeScript 7 announcement](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/),
+[TypeScript 6 migration notes](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html),
+and [Bun checker documentation](https://bun.com/docs/runtime/check).
+
+**Installer decision.** All three converted-lock candidates pass the native
+reachable dependency/peer-context and tarball-integrity comparison, unchanged
+lock checks, lifecycle checks, and complete frontend gates. pnpm requires the
+explicit scoped override `cmdk@1.1.1>@radix-ui/react-primitive: 2.1.3`; its naive
+import selected 2.1.4. The corrected and naive locks are both retained as
+evidence. Platform-inapplicable optional dependencies are excluded only with
+manifest evidence; all-platform WASI/bundled-lock differences remain reported.
+
+| Installer | Linux empty cache | Linux warm cache, fresh tree | Windows empty cache | Windows warm cache, fresh tree |
+| --- | ---: | ---: | ---: | ---: |
+| npm 11.17.0 | 7.052 | 5.218 | 15.810 | 12.996 |
+| Bun 1.4.3 | 0.951 | 0.157 | 12.784 | 10.774 |
+| pnpm 12.14.0 | 2.832 | 0.384 | 6.502 | 2.680 |
+
+These clocks exclude provisioning the package manager and importing its lock.
+Empty cache means empty local package/metadata caches, not flushed OS or CDN
+caches. Repeated Bun/pnpm frozen commands are mostly no-ops, whereas `npm ci`
+recreates the tree; those observations are retained in the raw results but are
+not an equal-work developer-install comparison.
+
+The production installer remains npm. Windows and Linux have different winners,
+and the existing exact release `node_modules` hit already skips installation.
+A Bun 1.4.3 package-lock-only bridge also creates `bun.lock` despite `--no-save`
+and omits the `.package-lock.json` metadata required by both release cache-hit
+guards. A complete alternative bootstrap/import/cache path has not established
+an end-to-end win. The study therefore does not change canonical lock ownership
+or weaken those release guards.
+
 ### Slider drafts and stable history boundaries (2026-10-06)
 
 The Visualizer-bars control now owns its drag state and saved-value reference.

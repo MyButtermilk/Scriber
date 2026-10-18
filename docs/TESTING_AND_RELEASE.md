@@ -237,9 +237,41 @@ covered by the behavior suites.
 cd Frontend
 npm ci
 npm run check
+npm run lint
 npm test
 npm run build
 ```
+
+`npm ci` installs the pinned Bun 1.4.3 package locally; these npm scripts do
+not require a global Bun installation. Node.js 26.5.0 remains the runtime for
+Vite and Vitest. `package-lock.json` remains the canonical dependency lock:
+the installer comparisons have different Windows and Linux winners, and an
+exact release `node_modules` cache hit already skips installation. Keep
+converted Bun/pnpm locks in the separate experiments.
+
+| Focused command | Scope and implementation |
+| --- | --- |
+| `npm run check:app` | `bun --check --tsconfig-override tsconfig.json` checks application sources, excluding test files. |
+| `npm run check:tests` | `bun --check --tsconfig-override tsconfig.tests.json` checks both `.test.ts` and `.test.tsx` files plus `vitest.setup.ts`, with the test declarations enabled. |
+| `npm run test:lib` | The Node wrapper discovers and sorts every `client/src/**/*.test.ts` file, then runs the local Bun executable with `test --isolate --parallel=4`. The current suite contains 35 files and 142 tests. |
+| `npm run test:components` | Vitest/jsdom runs the `.test.tsx` suites through `vitest.components.config.ts`: currently 49 files and 253 tests. |
+| `npm run lint` | ESLint checks the full scope with zero warnings allowed and `--cache --cache-strategy content --cache-location node_modules/.cache/eslint`. Use `npm run lint -- --no-cache` for a full uncached pass. |
+
+`npm run check` runs both type projects; `npm test` runs both behavior suites.
+The logic wrapper fails if discovery finds no files or the Bun process fails.
+ESLint and other compiler API consumers import `typescript` through the pinned
+`npm:@typescript/typescript6@6.0.2` alias; Bun performs the package type checks.
+
+The TypeScript 6/7-compatible configuration explicitly changes the previous
+implicit ES5 target to ES2015, keeps `noEmit`, and leaves JavaScript generation
+with Vite. `baseUrl` is removed, and `@/*` resolves through the relative target
+`./client/src/*`. The configs fix `rootDir` to `.` and retain the existing
+strictness, libraries and declaration scopes. Explicit
+`noUncheckedSideEffectImports: false`, `useDefineForClassFields: false` and
+`libReplacement: true` preserve the corresponding prior option behavior.
+The two projects have separate TypeScript 6 build-info paths under
+`node_modules/.cache/typescript6`; Bun's checker does not use those incremental
+cache files.
 
 Meeting review performance: `npm run benchmark:meeting-review` (from
 `Frontend`) compares the indexed playback lookup with its linear reference,

@@ -9,7 +9,7 @@ export default tseslint.config(
     ignores: ["dist/**", "node_modules/**", "output/**", "src-tauri/**", "client/public/**"],
   },
   {
-    files: ["**/*.{js,ts,tsx}"],
+    files: ["**/*.{js,mjs,ts,tsx}"],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     languageOptions: {
       ecmaVersion: "latest",

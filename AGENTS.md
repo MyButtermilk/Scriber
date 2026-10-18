@@ -66,7 +66,16 @@ the user explicitly asks for a temporary investigation note.
   TypeScript, Tailwind v4, Wouter, and TanStack Query. The Vite-only frontend
   toolchain is pinned to Node.js 26.5.0 through `.node-version` and
   `Frontend/package.json`; the removed Express/Replit scaffold is not part of
-  the desktop runtime or build.
+  the desktop runtime or build. `npm ci` consumes the canonical npm lock and
+  installs Bun 1.4.3 locally for the app/test type checks and isolated logic
+  tests. Keep the `typescript` alias to `@typescript/typescript6@6.0.2` for
+  ESLint and other API consumers. The normalized configs use an explicit
+  ES2015 target with `noEmit` and relative path aliases; Vite produces the
+  JavaScript. Component tests use Vitest/jsdom, and ESLint uses its content
+  cache. Installer comparisons have different Windows and Linux winners;
+  retain npm and the release path that skips installation on an exact
+  `node_modules` cache hit. Converted-lock experiments stay separate from
+  the production dependency workflow.
 - Runtime is Windows-first. Linux/macOS support is mostly fallback/dev support.
 - Legacy Python tray/UI code was removed. The Tauri shell owns desktop UI,
   tray/menu actions, global hotkeys, and the recording overlay.
