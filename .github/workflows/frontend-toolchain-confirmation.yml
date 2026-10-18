@@ -9,6 +9,8 @@ on:
       - scripts/toolchain-study/combined.mjs
       - scripts/toolchain-study/combined-policy*.mjs
       - scripts/toolchain-study/verify-production-gates.mjs
+      - scripts/toolchain-study/verify-vm-isolation.mjs
+      - scripts/toolchain-study/verify-component-errors.mjs
       - scripts/toolchain-study/verify-lint-migrations.mjs
       - scripts/toolchain-study/run-test-lint.mjs
       - scripts/toolchain-study/test-lint-templates/**
@@ -23,22 +25,22 @@ concurrency:
 
 jobs:
   confirm:
-    # Keep the original f1e03338 run and its failed Linux baseline sample.
-    # This revision collects one fixed five-round Linux batch without replacing
-    # failed samples. A manual replay includes both operating systems.
-    name: ${{ matrix.os }} / complete selected pipeline
+    # The original d061/c47 comparisons remain at their immutable revisions.
+    # This bounded follow-up isolates e58/c85's component-runtime change in five
+    # complete cold pipeline pairs on each OS; failed samples are never replaced.
+    name: ${{ matrix.os }} / complete VM follow-up pipeline
     runs-on: ${{ matrix.os }}
     timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["ubuntu-latest", "windows-latest"]' || '["ubuntu-latest"]') }}
+        os: [ubuntu-latest, windows-latest]
     defaults:
       run:
         shell: bash
     env:
-      SCRIBER_CONFIRM_BASELINE_SHA: d061ad75a0b39ca1b299eb8174ac828b122ef136
-      SCRIBER_CONFIRM_CANDIDATE_SHA: c47e89d60da2e10874736bb9d5158461e4dd41c7
+      SCRIBER_CONFIRM_BASELINE_SHA: e58ee3510583f1e8edcec464f1117f1b34b74946
+      SCRIBER_CONFIRM_CANDIDATE_SHA: c85d165ef77ed88bb1da1992b977b15438e2d0ee
       SCRIBER_CONFIRM_HARNESS_SHA: ${{ github.sha }}
     steps:
       - name: Checkout the immutable comparison harness
@@ -49,12 +51,12 @@ jobs:
       - name: Checkout the frozen baseline
         uses: actions/checkout@v7
         with:
-          ref: d061ad75a0b39ca1b299eb8174ac828b122ef136
+          ref: e58ee3510583f1e8edcec464f1117f1b34b74946
           path: baseline
       - name: Checkout the selected candidate
         uses: actions/checkout@v7
         with:
-          ref: c47e89d60da2e10874736bb9d5158461e4dd41c7
+          ref: c85d165ef77ed88bb1da1992b977b15438e2d0ee
           path: candidate
       - name: Use the pinned Scriber Node version
         uses: actions/setup-node@v6
@@ -176,15 +178,28 @@ jobs:
             "--frontend", path.join(workspace, "candidate/Frontend"),
             "--npm", process.env.SCRIBER_CONFIRM_NPM,
             "--output", path.join(workspace, "confirmation-results/production-gates"),
+            "--component-runtime", "node-vm",
           ];
           const result = spawnSync(process.execPath, args, { cwd: workspace, stdio: "inherit" });
           const record = { command: process.execPath, args, status: result.status, signal: result.signal, error: result.error?.message ?? null };
           fs.writeFileSync(path.join(workspace, "confirmation-results/production-gates-launch.json"), `${JSON.stringify(record, null, 2)}\n`);
           if (result.error || result.signal || result.status !== 0) throw new Error("A production failure control failed; inspect the uploaded evidence");
           NODE
+      - name: Verify reused VM workers preserve file isolation and reject unsafe serial modes
+        run: |
+          node harness/scripts/toolchain-study/verify-vm-isolation.mjs \
+            --frontend "$GITHUB_WORKSPACE/candidate/Frontend" \
+            --npm "$SCRIBER_CONFIRM_NPM" \
+            --output "$GITHUB_WORKSPACE/confirmation-results/vm-isolation"
+      - name: Verify active unhandled errors fail even when every assertion passes
+        run: |
+          node harness/scripts/toolchain-study/verify-component-errors.mjs \
+            --frontend "$GITHUB_WORKSPACE/candidate/Frontend" \
+            --npm "$SCRIBER_CONFIRM_NPM" \
+            --output "$GITHUB_WORKSPACE/confirmation-results/component-errors"
       - name: Verify fixed-budget failure accounting
         run: node --test harness/scripts/toolchain-study/combined-policy.test.mjs
-      - name: Compare the complete selected pipeline in five rounds per scenario
+      - name: Compare the complete pipeline in five fixed cold rounds
         run: |
           node --input-type=module <<'NODE'
           import fs from "node:fs";
@@ -197,7 +212,7 @@ jobs:
             "--candidate", path.join(workspace, "candidate/Frontend"),
             "--npm", process.env.SCRIBER_CONFIRM_NPM,
             "--output", path.join(workspace, "confirmation-results/pipeline"),
-            "--rounds", "5", "--scenarios", "cold,warm,changed",
+            "--rounds", "5", "--scenarios", "cold",
           ];
           const result = spawnSync(process.execPath, args, { cwd: workspace, stdio: "inherit" });
           const record = { command: process.execPath, args, status: result.status, signal: result.signal, error: result.error?.message ?? null };
@@ -208,11 +223,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: frontend-toolchain-confirmation-${{ matrix.os }}-${{ github.run_attempt }}
+          name: frontend-vm-follow-up-${{ matrix.os }}-${{ github.run_attempt }}
           path: |
             confirmation-results/setup/
             confirmation-results/production-gates-launch.json
             confirmation-results/production-gates/
+            confirmation-results/vm-isolation/
+            confirmation-results/component-errors/
             confirmation-results/pipeline-launch.json
             confirmation-results/pipeline/results.json
             confirmation-results/pipeline/logs/

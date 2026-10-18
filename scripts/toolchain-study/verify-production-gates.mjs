@@ -1,6 +1,7 @@
 /**
  * Untimed production failure controls for the prepared candidate Frontend.
  * Usage: node verify-production-gates.mjs --frontend ABS --npm ABS --output ABS
+ *        [--component-runtime bun|node-vm]
  * --npm is npm/bin/npm-cli.js (a Unix npm symlink is also accepted).
  * Runs the actual npm scripts, then restores every owned source fixture.
  */
@@ -11,7 +12,14 @@ import { spawn, spawnSync } from "node:child_process";
 import { parseArgs, stripVTControlCharacters } from "node:util";
 import { fileURLToPath } from "node:url";
 
-const { values } = parseArgs({ options: Object.fromEntries(["frontend", "npm", "output"].map(name => [name, { type: "string" }])) });
+const { values } = parseArgs({ options: Object.fromEntries(["frontend", "npm", "output", "component-runtime"].map(name => [name, { type: "string" }])) });
+const componentRuntimeKind = values["component-runtime"] ?? "bun";
+if (!["bun", "node-vm"].includes(componentRuntimeKind)) throw new Error("--component-runtime must be bun or node-vm");
+const expectedComponentBun = componentRuntimeKind === "bun" ? "1.4.3" : null;
+const expectedComponentPool = componentRuntimeKind === "bun" ? "threads" : "vmThreads";
+const expectedComponentCommand = componentRuntimeKind === "bun"
+  ? "bun ./node_modules/vitest/vitest.mjs run --config vitest.components.config.ts"
+  : "vitest run --config vitest.components.config.ts";
 for (const name of ["frontend", "npm", "output"]) {
   if (!values[name] || !path.isAbsolute(values[name])) throw new Error(`--${name} must be an absolute path`);
 }
@@ -58,12 +66,13 @@ const probes = {
   app: { relative: "client/src/__production_type_gate_app_probe.ts", source: 'export const productionAppTypeGateProbe: number = "deliberate app type-gate failure";\n' },
   tests: { relative: "client/src/__production_type_gate_test_probe.test.ts", source: 'export const productionTestTypeGateProbe: number = "deliberate test type-gate failure";\n' },
   logic: { relative: "client/src/lib/__integration_wrapper_async_failure.test.ts", source: `import test from "node:test";\nimport assert from "node:assert/strict";\ntest("${sentinel}", async () => { await Promise.resolve(); assert.equal(1, 2); });\n` },
-  components: { relative: "client/src/lib/__production_component_gate_probe.test.tsx", source: `import { expect, test } from "vitest";\ntest("${componentRuntime}", () => { expect(process.versions.bun).toBe("1.4.3"); expect(navigator.userAgent).toContain("jsdom"); expect(document.createElement("div")).toBeInstanceOf(HTMLElement); });\ntest("${componentSentinel}", async () => { await Promise.resolve(); expect(1).toBe(2); });\n` },
+  components: { relative: "client/src/lib/__production_component_gate_probe.test.tsx", source: `import { expect, test } from "vitest";\ntest("${componentRuntime}", () => { expect(process.versions.bun ?? null).toBe(${JSON.stringify(expectedComponentBun)}); ${componentRuntimeKind === "node-vm" ? 'expect(process.versions.node).toBe("26.5.0"); expect(globalThis).toBe(window); expect(Reflect.get(globalThis, Symbol.for("scriber.components.fileContext"))).toBe(true); ' : ""}expect(navigator.userAgent).toContain("jsdom"); expect(document.createElement("div")).toBeInstanceOf(HTMLElement); });\ntest("${componentSentinel}", async () => { await Promise.resolve(); expect(1).toBe(2); });\n` },
 };
 const owned = new Set();
 const report = {
   startedAt: new Date().toISOString(), platform: process.platform, architecture: process.arch,
   node: process.version, nodeExecutable: process.execPath, npmExecutable: npm, frontend,
+  componentRuntime: { kind: componentRuntimeKind, bun: expectedComponentBun, pool: expectedComponentPool, command: expectedComponentCommand },
   harnessSha256: digest(fs.readFileSync(fileURLToPath(import.meta.url))),
   inputHashesBefore: hashInputs(), sourceBefore: sourceSnapshot(), logicFilesBefore: inventory(), componentFilesBefore: inventory("tsx"),
   environment: { GITHUB_ACTIONS: env.GITHUB_ACTIONS ?? null, GITHUB_WORKSPACE: env.GITHUB_WORKSPACE ?? null },
@@ -255,7 +264,7 @@ export default class {
       { file: module.moduleId, suite: null, errors: errors(module.errors()) },
       ...[...module.children.allSuites()].map(suite => ({ file: module.moduleId, suite: suite.fullName, errors: errors(suite.errors()) })),
     ]).filter(entry => entry.errors.length);
-    writeFileSync(${JSON.stringify(errorsJson)}, JSON.stringify({ reason, bun: process.versions.bun ?? null, modules: modules.map(module => module.moduleId), unhandledErrors: errors(unhandledErrors), collectionErrors }, null, 2) + "\\n", { flag: "wx" });
+    writeFileSync(${JSON.stringify(errorsJson)}, JSON.stringify({ reason, node: process.versions.node, bun: process.versions.bun ?? null, pools: [...new Set(modules.map(module => module.project.config.pool))], modules: modules.map(module => module.moduleId), unhandledErrors: errors(unhandledErrors), collectionErrors }, null, 2) + "\\n", { flag: "wx" });
   }
 }
 `, { flag: "wx" });
@@ -286,7 +295,9 @@ export default class {
   entry.fileStatusesMatch = data.testResults.every(file => file.status === (normalizeFile(file.name) === canonical(probes.components.relative) ? "failed" : "passed") && file.message === "");
   entry.runtimeErrors = runtimeErrors;
   entry.unexpectedRuntimeLogLines = text.split(/\r?\n/).filter(line => /Vitest caught \d+ unhandled errors?|Unhandled Errors|Unhandled Rejection|Uncaught Exception|^\s*Errors\s+[1-9]\d* errors?\b/i.test(line));
-  entry.noAdditionalRuntimeErrors = runtimeErrors.reason === "failed" && runtimeErrors.bun === "1.4.3"
+  entry.noAdditionalRuntimeErrors = runtimeErrors.reason === "failed" && runtimeErrors.bun === expectedComponentBun
+    && (componentRuntimeKind !== "node-vm" || runtimeErrors.node === "26.5.0")
+    && JSON.stringify(runtimeErrors.pools) === JSON.stringify([expectedComponentPool])
     && Array.isArray(runtimeErrors.unhandledErrors) && runtimeErrors.unhandledErrors.length === 0
     && Array.isArray(runtimeErrors.collectionErrors) && runtimeErrors.collectionErrors.length === 0
     && Array.isArray(runtimeErrors.modules) && JSON.stringify(runtimeErrors.modules.map(normalizeFile).sort()) === JSON.stringify(expectedFiles)
@@ -299,7 +310,7 @@ export default class {
     && entry.fileStatusesMatch && entry.noAdditionalRuntimeErrors && entry.componentCommandRan;
   save();
   console.log(`component-async-error: tests=${entry.tests}, files=${files.length}, passes=${entry.passes}, failures=${entry.failures}, runtimeProof=${entry.runtimeProofPassed}, passed=${entry.passed}`);
-  requireResult(entry.passed, "The component control did not retain all 253 original passes, the Bun/jsdom runtime proof and only the deliberate async failure");
+  requireResult(entry.passed, "The component control did not retain all 253 original passes, the selected runtime/jsdom proof and only the deliberate async failure");
 }
 
 let prerequisitesPassed = false;
@@ -312,7 +323,7 @@ try {
   requireResult(report.diagnosticParserChecks.every(check => check.passed), "Source/annotation parser regression control failed");
   const manifest = JSON.parse(fs.readFileSync(path.join(frontend, "package.json"), "utf8"));
   report.scripts = manifest.scripts;
-  const expectedScripts = { check: "npm run check:app && npm run check:tests", "check:app": "bun --check --tsconfig-override tsconfig.json", "check:tests": "bun --check --tsconfig-override tsconfig.tests.json", "test:lib": "node scripts/test-lib.mjs", "test:components": "bun ./node_modules/vitest/vitest.mjs run --config vitest.components.config.ts" };
+  const expectedScripts = { check: "npm run check:app && npm run check:tests", "check:app": "bun --check --tsconfig-override tsconfig.json", "check:tests": "bun --check --tsconfig-override tsconfig.tests.json", "test:lib": "node scripts/test-lib.mjs", "test:components": expectedComponentCommand };
   for (const [name, expected] of Object.entries(expectedScripts)) requireResult(manifest.scripts?.[name] === expected, `Unexpected production script ${name}`);
   const npmVersion = await run(process.execPath, [npm, "--version"], "npm-version", 10000);
   const bunVersion = await run(bun, ["--version"], "bun-version", 10000);
