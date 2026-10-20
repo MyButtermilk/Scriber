@@ -1558,6 +1558,57 @@ def test_rust_audio_prewarm_manager_pause_stops_sidecar_session(monkeypatch):
     assert "prewarm-2" not in str(snapshot)
 
 
+def test_deferred_device_refresh_retry_preserves_prewarm_resume(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
+    commands: list[str] = []
+    start_ids = iter(["before-undock", "after-redock"])
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        if command == "audioPrewarmStart":
+            return {"success": True, "payload": {"prewarmId": next(start_ids)}}
+        if command == "audioPrewarmStop":
+            return {
+                "success": True,
+                "payload": {
+                    "stopped": True,
+                    "prewarmId": payload["prewarmId"],
+                    "reason": "device_refresh",
+                },
+            }
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    monkeypatch.setattr(
+        manager,
+        "_device_selection_payload",
+        lambda *_args, **_kwargs: {
+            "devicePreference": "default",
+            "portAudioLabel": "",
+            "nativeEndpointIdHash": None,
+        },
+    )
+    assert manager.start_if_enabled() is True
+
+    # DeviceMonitor quiesces before attempting its guarded PortAudio refresh.
+    # If that attempt is deferred, its retry quiesces again before resuming.
+    manager.quiesce_for_device_refresh()
+    assert manager.is_active is False
+    manager.quiesce_for_device_refresh()
+
+    assert manager.resume_after_device_refresh() is True
+    assert manager.is_active is True
+    assert commands == [
+        "audioPrewarmStart",
+        "audioPrewarmStop",
+        "audioPrewarmStart",
+    ]
+    assert manager.diagnostic_snapshot()["deviceRefreshPauseCount"] == 1
+    assert manager.diagnostic_snapshot()["deviceRefreshResumeCount"] == 1
+
+
 def test_rust_audio_prewarm_stop_does_not_report_failed_transport_as_stopped(monkeypatch):
     monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
 
@@ -1644,6 +1695,148 @@ def test_rust_audio_prewarm_watchdog_queries_sidecar_status(monkeypatch):
     assert snapshot["lastStatus"]["active"] is True
     assert snapshot["lastStatus"]["prewarmIdHash"]
     assert "prewarm-status-ok" not in str(snapshot)
+
+
+@pytest.mark.parametrize(
+    ("observed_frames", "last_frame_age_ms", "uptime_ms", "stalled"),
+    [
+        (0, None, 1_000, False),
+        (0, None, 20_000, True),
+        (6_400, 1, 20_000, False),
+        (6_400, 20_000, 30_000, True),
+    ],
+)
+@pytest.mark.parametrize("prebuffer_ms", [0, 400])
+def test_prewarm_watchdog_requires_recent_audio_frames(
+    monkeypatch, observed_frames, last_frame_age_ms, uptime_ms, stalled, prebuffer_ms
+):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
+    monkeypatch.setattr(Config, "MIC_PREBUFFER_MS", prebuffer_ms, raising=False)
+    commands: list[str] = []
+    start_ids = iter(["before-redock", "recovered"])
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        if command == "audioPrewarmStart":
+            return {"success": True, "payload": {"prewarmId": next(start_ids)}}
+        if command == "audioPrewarmStatus":
+            return {
+                "success": True,
+                "payload": {
+                    "active": True,
+                    "workerFinished": False,
+                    "reason": "active",
+                    "prewarmId": payload["prewarmId"],
+                    "totalAudioFramesObserved": observed_frames,
+                    "lastAudioFrameAgoMs": last_frame_age_ms,
+                    "sidecarUptimeMs": uptime_ms,
+                    "bufferedBlocks": 40 if prebuffer_ms and observed_frames else 0,
+                },
+            }
+        if command == "audioPrewarmStop":
+            return {"success": True, "payload": {"stopped": True}}
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    assert manager.start_if_enabled() is True
+    assert manager.ensure_healthy(max_callback_gap_seconds=15.0) is True
+    assert commands == (
+        ["audioPrewarmStart", "audioPrewarmStatus", "audioPrewarmStop", "audioPrewarmStart"]
+        if stalled
+        else ["audioPrewarmStart", "audioPrewarmStatus"]
+    )
+    assert manager.diagnostic_snapshot()["healthRestartCount"] == int(stalled)
+    if stalled:
+        assert manager.diagnostic_snapshot()["lastHealthError"] == "prewarmAudioStalled"
+
+
+def test_stalled_prewarm_waits_for_confirmed_native_stop_before_replacement(monkeypatch):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
+    commands: list[str] = []
+    stop_confirmed = False
+    start_ids = iter(["stalled", "recovered"])
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        if command == "audioPrewarmStart":
+            return {"success": True, "payload": {"prewarmId": next(start_ids)}}
+        if command == "audioPrewarmStatus":
+            return {
+                "success": True,
+                "payload": {
+                    "active": True,
+                    "totalAudioFramesObserved": 0,
+                    "lastAudioFrameAgoMs": None,
+                    "sidecarUptimeMs": 20_000,
+                },
+            }
+        if command == "audioPrewarmStop":
+            return {"success": stop_confirmed, "payload": {"stopped": stop_confirmed}}
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    assert manager.start_if_enabled() is True
+    assert manager.ensure_healthy(max_callback_gap_seconds=15.0) is False
+    assert manager.diagnostic_snapshot()["stopPending"] is True
+    assert commands == ["audioPrewarmStart", "audioPrewarmStatus", "audioPrewarmStop"]
+
+    stop_confirmed = True
+    assert manager.ensure_healthy(max_callback_gap_seconds=15.0) is True
+    assert commands[-2:] == ["audioPrewarmStop", "audioPrewarmStart"]
+    assert manager.diagnostic_snapshot()["stopPending"] is False
+
+
+@pytest.mark.parametrize("transition", ["adopt", "replace", "shutdown"])
+def test_stale_prewarm_health_response_cannot_interrupt_new_owner(monkeypatch, transition):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
+    monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)
+    monkeypatch.setattr(Config, "CHANNELS", 1, raising=False)
+    monkeypatch.setattr(Config, "MIC_BLOCK_SIZE", 160, raising=False)
+    commands: list[str] = []
+    start_ids = iter(["old-route", "new-route"])
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        if command == "audioPrewarmStart":
+            return {"success": True, "payload": {"prewarmId": next(start_ids)}}
+        if command == "audioPrewarmStop":
+            return {"success": True, "payload": {"stopped": True}}
+        if command == "audioPrewarmStatus":
+            if transition == "adopt":
+                assert manager.attach_active_capture(
+                    None, sample_rate=16000, target_channels=1, block_size=160, device="default"
+                )
+            else:
+                manager.stop(reason="shutdown" if transition == "shutdown" else "settings_route_changed")
+                if transition == "replace":
+                    assert manager.start_if_enabled() is True
+            return {
+                "success": True,
+                "payload": {
+                    "active": True,
+                    "totalAudioFramesObserved": 0,
+                    "lastAudioFrameAgoMs": None,
+                    "sidecarUptimeMs": 20_000,
+                },
+            }
+        raise AssertionError(command)
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    assert manager.start_if_enabled() is True
+    assert manager.ensure_healthy(max_callback_gap_seconds=15.0) is False
+    assert manager.diagnostic_snapshot()["healthRestartCount"] == 0
+    expected = ["audioPrewarmStart", "audioPrewarmStatus"]
+    if transition != "adopt":
+        expected.append("audioPrewarmStop")
+    if transition == "replace":
+        expected.append("audioPrewarmStart")
+    assert commands == expected
 
 
 def test_rust_audio_prewarm_watchdog_keeps_session_on_transport_error(monkeypatch):

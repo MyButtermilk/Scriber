@@ -1542,6 +1542,8 @@ struct PrewarmBuffer {
     max_blocks: usize,
     blocks: VecDeque<Vec<u8>>,
     handoff_tail: Option<PrewarmHandoffTail>,
+    total_blocks_observed: u64,
+    last_audio_frame_at: Option<Instant>,
 }
 
 impl PrewarmBuffer {
@@ -1550,10 +1552,16 @@ impl PrewarmBuffer {
             max_blocks: max_blocks as usize,
             blocks: VecDeque::new(),
             handoff_tail: None,
+            total_blocks_observed: 0,
+            last_audio_frame_at: None,
         }
     }
 
     fn push(&mut self, payload: Vec<u8>) -> Result<(), &'static str> {
+        // Track physical frame progress independently of retained prebuffer
+        // contents, including when prebuffering is disabled.
+        self.total_blocks_observed = self.total_blocks_observed.saturating_add(1);
+        self.last_audio_frame_at = Some(Instant::now());
         if let Some(handoff_tail) = self.handoff_tail.as_mut() {
             let next_payload_bytes = handoff_tail.payload_bytes.saturating_add(payload.len());
             if next_payload_bytes > handoff_tail.max_payload_bytes {
@@ -1987,7 +1995,13 @@ impl PrewarmSession {
     }
 
     fn status(&self) -> Value {
-        let (buffered_blocks, buffered_audio_frames, buffered_payload_bytes) = self
+        let (
+            buffered_blocks,
+            buffered_audio_frames,
+            buffered_payload_bytes,
+            total_blocks_observed,
+            last_audio_frame_ago_ms,
+        ) = self
             .buffer
             .lock()
             .map(|buffer| {
@@ -1995,9 +2009,13 @@ impl PrewarmSession {
                     buffer.block_count(),
                     buffer.audio_frame_count(self.block_size),
                     buffer.payload_bytes(),
+                    buffer.total_blocks_observed,
+                    buffer
+                        .last_audio_frame_at
+                        .map(|at| at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64),
                 )
             })
-            .unwrap_or((0, 0, 0));
+            .unwrap_or((0, 0, 0, 0, None));
         let worker_finished = self.worker_finished();
         json!({
             "sidecar": SIDECAR_NAME,
@@ -2009,6 +2027,9 @@ impl PrewarmSession {
             "bufferedBlocks": buffered_blocks,
             "bufferedAudioFrames": buffered_audio_frames,
             "bufferedPayloadBytes": buffered_payload_bytes,
+            "totalBlocksObserved": total_blocks_observed,
+            "totalAudioFramesObserved": total_blocks_observed.saturating_mul(u64::from(self.block_size)),
+            "lastAudioFrameAgoMs": last_audio_frame_ago_ms,
             "sidecarUptimeMs": self.started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         })
     }
@@ -3433,7 +3454,6 @@ fn run_synthetic_prewarm_worker(
     let frame_interval = Duration::from_secs_f64(
         (request.block_size as f64 / f64::from(request.sample_rate)).max(0.001),
     );
-    let max_buffered_blocks = u64::from(requested_prebuffer_frame_count(&request));
     let payload_len = usize::from(request.channels) * request.block_size as usize * 2;
     loop {
         match control_rx.recv_timeout(frame_interval) {
@@ -3452,29 +3472,27 @@ fn run_synthetic_prewarm_worker(
         stats.total_audio_frames_observed = stats
             .total_audio_frames_observed
             .saturating_add(u64::from(request.block_size));
-        if max_buffered_blocks > 0 {
-            match buffer.lock() {
-                Ok(mut buffer) => {
-                    if let Err(error) = buffer.push(payload) {
-                        let error = error.to_string();
-                        if let Some(ready_tx) = ready_tx.take() {
-                            let _ = ready_tx.send(Err(error.clone()));
-                        }
-                        stats.error = Some(error);
-                        break;
-                    }
-                    stats.buffered_blocks = buffer.block_count();
-                    stats.buffered_audio_frames = buffer.audio_frame_count(request.block_size);
-                    stats.buffered_payload_bytes = buffer.payload_bytes();
-                }
-                Err(_) => {
-                    let error = "prewarmBufferLockPoisoned".to_string();
+        match buffer.lock() {
+            Ok(mut buffer) => {
+                if let Err(error) = buffer.push(payload) {
+                    let error = error.to_string();
                     if let Some(ready_tx) = ready_tx.take() {
                         let _ = ready_tx.send(Err(error.clone()));
                     }
                     stats.error = Some(error);
                     break;
                 }
+                stats.buffered_blocks = buffer.block_count();
+                stats.buffered_audio_frames = buffer.audio_frame_count(request.block_size);
+                stats.buffered_payload_bytes = buffer.payload_bytes();
+            }
+            Err(_) => {
+                let error = "prewarmBufferLockPoisoned".to_string();
+                if let Some(ready_tx) = ready_tx.take() {
+                    let _ = ready_tx.send(Err(error.clone()));
+                }
+                stats.error = Some(error);
+                break;
             }
         }
         if let Some(ready_tx) = ready_tx.take() {
@@ -5025,7 +5043,6 @@ fn pump_wasapi_prewarm(context: WasapiPrewarmPumpContext<'_>) -> Result<(), Stri
         request,
         microphone_channel_selection,
     );
-    let max_buffered_blocks = u64::from(requested_prebuffer_frame_count(request));
     let mut promotion_state: Option<PromotedCaptureState> = None;
     let mut stop_requested = false;
     let result = (|| -> Result<(), String> {
@@ -5251,7 +5268,7 @@ fn pump_wasapi_prewarm(context: WasapiPrewarmPumpContext<'_>) -> Result<(), Stri
                             &mut state.sequence,
                             capture_stats,
                         )?;
-                    } else if max_buffered_blocks > 0 || promotion_state.is_some() {
+                    } else {
                         match buffer.lock() {
                             Ok(mut buffer) => {
                                 buffer.push(payload).map_err(str::to_string)?;
@@ -7061,6 +7078,38 @@ mod tests {
         assert_eq!(response["payload"]["active"], false);
         assert_eq!(response["payload"]["prewarmId"], "missing-prewarm");
         assert_eq!(response["payload"]["reason"], "noActivePrewarm");
+    }
+
+    #[test]
+    fn synthetic_prewarm_status_reports_frames_without_retained_audio() {
+        let request = CaptureRequest {
+            sample_rate: 16_000,
+            channels: 1,
+            block_size: 16,
+            device_preference: "default".to_string(),
+            port_audio_label: "".to_string(),
+            native_endpoint_id_hash: "".to_string(),
+            prebuffer_ms: 0,
+            prewarm_id: "".to_string(),
+            provider_replay_fixture_exact_end: false,
+            capture_kind: "microphone".to_string(),
+            clock_origin: None,
+            audio_preparation: None,
+            artifact_target: None,
+        };
+        let (mut session, _) = start_synthetic_prewarm_impl(request).unwrap();
+        let status = session.status();
+        session.stop("test");
+
+        assert_eq!(status["active"], true);
+        assert_eq!(status["bufferedBlocks"], 0);
+        assert_eq!(status["bufferedPayloadBytes"], 0);
+        assert!(status["totalBlocksObserved"].as_u64().unwrap() > 0);
+        assert_eq!(
+            status["totalAudioFramesObserved"].as_u64().unwrap(),
+            status["totalBlocksObserved"].as_u64().unwrap() * 16,
+        );
+        assert!(status["lastAudioFrameAgoMs"].as_u64().is_some());
     }
 
     #[test]

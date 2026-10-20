@@ -2,11 +2,50 @@ import asyncio
 import json
 import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src import web_api
 from src.web_api import ScriberWebController
+
+
+@pytest.mark.asyncio
+async def test_audio_admission_rejection_emits_bounded_diagnostics(monkeypatch):
+    controller = object.__new__(ScriberWebController)
+    controller._shutting_down = False
+    controller._is_stopping = False
+    controller._background_stop_task = None
+    controller._is_listening = False
+    controller._audio_controller_id = "test-controller"
+    controller.broadcast = AsyncMock()
+    for method in (
+        "_start_hot_path_tracer",
+        "_mark_hot_path",
+        "_clear_hot_path_tracer",
+        "_begin_live_mic_start_transition",
+        "_finish_live_mic_start_transition",
+        "_emit_workflow_event",
+        "_select_available_provider",
+    ):
+        setattr(controller, method, MagicMock())
+    controller._live_mic_start_transition_cancelled = MagicMock(return_value=False)
+    conflict = web_api._live_mic_admission_conflict_info(
+        controller,
+        SimpleNamespace(controller_id="test-controller"),
+    )
+    monkeypatch.setattr(web_api, "_live_mic_audio_conflict", AsyncMock(return_value=conflict))
+
+    assert await controller.start_listening() is conflict
+
+    controller._select_available_provider.assert_not_called()
+    controller.broadcast.assert_awaited_once()
+    event = controller._emit_workflow_event.call_args.kwargs
+    assert event["event"] == "api.session.start_rejected"
+    assert event["stage"] == "audio_admission"
+    assert event["outcome"] == "rejected"
+    assert event["meta"] == {"provider_error_code": "recording_cleanup_pending"}
+    assert "test-controller" not in json.dumps(event)
 
 
 def test_native_microphone_failure_does_not_open_selected_provider_circuit():

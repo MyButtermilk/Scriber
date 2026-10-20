@@ -719,8 +719,10 @@ class DeviceMonitor:
                 # Active live stream: remember the refresh and run it once after the stream closes.
                 self._defer_refresh_until_idle(trigger=trigger)
                 return
+            self._clear_deferred_refresh()
 
-        self._clear_deferred_refresh()
+        # A non-invasive poll cannot discharge the pending PortAudio refresh
+        # or its paired idle-stream resume after a hotplug event.
         devices = _enumerate_microphones(sample_rate=self._sample_rate, channels=self._channels)
         signature = self._signature_for(devices)
         changed = False

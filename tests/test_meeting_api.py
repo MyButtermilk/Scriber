@@ -319,6 +319,7 @@ async def test_meeting_capture_watchdog_stops_visibly_on_disk_full(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("registered_watchdog", [False, True])
 @pytest.mark.parametrize(
     ("claim_kind", "claim_id", "should_release"),
     [
@@ -331,6 +332,7 @@ async def test_meeting_capture_watchdog_fails_after_three_status_exceptions_and_
     claim_kind,
     claim_id,
     should_release,
+    registered_watchdog,
 ):
     meeting_id = "meeting-status-errors"
     capture_id = "capture-status-errors"
@@ -404,11 +406,20 @@ async def test_meeting_capture_watchdog_fails_after_three_status_exceptions_and_
     monkeypatch.setattr(web_api, "call_shell_ipc", shell_call)
     monkeypatch.setattr(web_api, "_release_persistent_audio", release_audio)
 
-    await web_api.ScriberWebController._meeting_capture_watchdog(
-        controller,
-        meeting_id,
-        capture_id,
-    )
+    if registered_watchdog:
+        controller._loop = asyncio.get_running_loop()
+        controller._meeting_capture_watchdogs = {}
+        controller.start_meeting_capture_watchdog(meeting_id, capture_id)
+        watchdog = controller._meeting_capture_watchdogs[meeting_id]
+        # Capture cleanup stops its registered watchdog. Its cancellation must
+        # not strand the native-audio claim after the recorder has stopped.
+        await asyncio.wait_for(asyncio.gather(watchdog, return_exceptions=True), timeout=5)
+    else:
+        await web_api.ScriberWebController._meeting_capture_watchdog(
+            controller,
+            meeting_id,
+            capture_id,
+        )
 
     assert [command for command, _payload in shell_calls] == [
         "audioMeetingStatus",
@@ -436,6 +447,7 @@ async def test_meeting_capture_watchdog_fails_after_three_status_exceptions_and_
     assert live.stop_count == 1
     assert prewarm_resumes == [True]
     assert events[-1]["type"] == "meeting_state"
+    assert web_api._meeting_capture_ownership_registry(controller) == {}
     if should_release:
         assert released == [claim]
         assert controller._persistent_audio_claim is None

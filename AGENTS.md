@@ -1149,6 +1149,9 @@ Packaging and scripts:
   With active native events, polling is only a sparse safety net; faster polling
   is fallback-only when native events are unavailable.
 - Device refresh is recording-aware and can be deferred until idle.
+  Passive polling must preserve an outstanding PortAudio refresh and its
+  paired prewarm resume. Repeated quiesce calls retain that resume obligation
+  until the actual refresh completes.
 - Persisted `SCRIBER_MIC_ALWAYS_ON=1` prewarm starts only after DeviceMonitor's
   initial PortAudio refresh callback has completed. Startup keeps a bounded
   fallback when initial device discovery cannot finish; do not reintroduce a
@@ -1189,7 +1192,13 @@ Packaging and scripts:
   and passes its `prewarmId` to the next Rust capture. The
   Rust prewarm watchdog must verify live sidecar state with `audioPrewarmStatus`;
   a cached `prewarmId` alone is not proof that the microphone stream is still
-  active. Status diagnostics must keep prewarm IDs redacted and preserve
+  active. A running worker is not proof of audio progress either: cumulative
+  frame counts and last-frame age are independent of retained prebuffer size
+  and include silent PCM. After the bounded startup/freshness grace, a stalled
+  worker must be stopped with native confirmation before replacement. Fence
+  status results and recovery by the current route generation and capture
+  ownership so a concurrent hotkey cannot lose its producer.
+  Status diagnostics must keep prewarm IDs redacted and preserve
   response time, active/inactive reason, buffered-frame counters, and restart
   counts. The prewarm diagnostics also expose a bounded redacted `recentEvents`
   timeline for start/stop/adoption/watchdog restarts so short Windows
