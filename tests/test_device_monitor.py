@@ -380,6 +380,47 @@ def test_poll_refresh_does_not_quiesce_or_refresh_portaudio(monkeypatch):
     assert calls == []
 
 
+def test_non_invasive_poll_preserves_hotplug_refresh_deferred_until_idle(monkeypatch):
+    monitor = device_monitor.DeviceMonitor()
+    calls: list[str] = []
+    stream_active = True
+    monitor.on_portaudio_refresh_quiesce(
+        lambda: calls.append("pause"),
+        lambda: calls.append("resume"),
+    )
+
+    def refresh_portaudio():
+        if stream_active:
+            return False, True
+        calls.append("refresh")
+        return True, False
+
+    monkeypatch.setattr(device_monitor, "_refresh_portaudio_cache", refresh_portaudio)
+    monkeypatch.setattr(device_monitor, "get_active_stream_count", lambda: int(stream_active))
+    monkeypatch.setattr(
+        device_monitor,
+        "_enumerate_microphones",
+        lambda **_kwargs: [{"deviceId": "default", "label": "Default"}],
+    )
+
+    monitor._refresh_devices(trigger="device_removed", force=False)
+    assert monitor.diagnostic_snapshot()["refreshDeferredUntilIdle"] is True
+    assert calls == ["pause"]
+
+    monitor._refresh_devices(trigger="poll", force=False, refresh_portaudio=False)
+    assert monitor.diagnostic_snapshot()["refreshDeferredUntilIdle"] is True
+    assert monitor._take_deferred_refresh_trigger_if_idle() is None
+    assert calls == ["pause"]
+
+    stream_active = False
+    trigger = monitor._take_deferred_refresh_trigger_if_idle()
+    assert trigger == "device_removed_stream_idle"
+    monitor._refresh_devices(trigger=trigger, force=False)
+
+    assert calls == ["pause", "pause", "refresh", "resume"]
+    assert monitor.diagnostic_snapshot()["refreshDeferredUntilIdle"] is False
+
+
 def test_poll_interval_is_sparse_when_native_events_are_active():
     monitor = device_monitor.DeviceMonitor()
     monitor._poll_seconds_override = None

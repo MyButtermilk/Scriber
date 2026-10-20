@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import threading
 import time
 from collections import deque
@@ -1007,8 +1008,11 @@ class RustAudioPrewarmManager:
 
     def quiesce_for_device_refresh(self) -> None:
         with self._lock:
-            self._paused_for_device_refresh = bool(self._prewarm_id)
-            if self._paused_for_device_refresh:
+            # A deferred PortAudio refresh can quiesce again before its
+            # successful retry resumes us. The first stop clears the native
+            # lease, but must not erase that outstanding resume obligation.
+            if self._prewarm_id and not self._paused_for_device_refresh:
+                self._paused_for_device_refresh = True
                 self._device_refresh_pause_count += 1
                 self._record_transition_locked("device_refresh_pause", "device_refresh")
                 self._record_event_locked("device_refresh_pause", "device_refresh")
@@ -1067,7 +1071,9 @@ class RustAudioPrewarmManager:
         reason: str = "watchdog",
         max_callback_gap_seconds: float | None = None,
     ) -> bool:
-        del max_callback_gap_seconds
+        callback_gap_seconds = max_callback_gap_seconds
+        if callback_gap_seconds is None or not math.isfinite(callback_gap_seconds) or callback_gap_seconds <= 0:
+            callback_gap_seconds = 15.0
         with self._lock:
             if self._route_restart_in_progress:
                 return False
@@ -1082,6 +1088,7 @@ class RustAudioPrewarmManager:
             if self._paused_for_active_capture or self._paused_for_device_refresh:
                 return False
             prewarm_id = self._prewarm_id
+            status_generation = self._start_generation
             active = bool(prewarm_id)
             had_previous_session = (
                 self._stream_start_count > 0 or self._stream_close_count > 0 or bool(self._last_transition)
@@ -1149,20 +1156,52 @@ class RustAudioPrewarmManager:
                 )
                 return True
             status_active = success and bool(response_payload.get("active"))
+            observed_frames = response_payload.get("totalAudioFramesObserved")
+            audio_age_ms = (
+                response_payload.get("sidecarUptimeMs")
+                if observed_frames == 0
+                else response_payload.get("lastAudioFrameAgoMs")
+            )
+            audio_stalled = bool(
+                status_active
+                and isinstance(observed_frames, int)
+                and not isinstance(observed_frames, bool)
+                and observed_frames >= 0
+                and isinstance(audio_age_ms, (int, float))
+                and not isinstance(audio_age_ms, bool)
+                and math.isfinite(audio_age_ms)
+                and audio_age_ms > callback_gap_seconds * 1000.0
+            )
+            if audio_stalled:
+                status_active = False
             with self._lock:
+                # Status IPC runs outside the state lock. A hotkey, refresh or
+                # route change may already own this producer or a replacement.
+                if (
+                    self._start_generation != status_generation
+                    or self._prewarm_id != prewarm_id
+                    or self._paused_for_active_capture
+                    or self._paused_for_device_refresh
+                    or self._active_capture_attached
+                ):
+                    return False
                 self._last_status_payload = dict(response_payload)
                 self._last_health_check_active = status_active
                 self._last_health_response_ms = response_ms
                 self._last_health_error = (
-                    "" if status_active else (str(response_payload.get("reason") or error_code or "inactive"))
+                    "prewarmAudioStalled"
+                    if audio_stalled
+                    else ("" if status_active else (str(response_payload.get("reason") or error_code or "inactive")))
                 )
-            if status_active:
-                return True
-            with self._lock:
-                if self._prewarm_id == prewarm_id:
-                    self._prewarm_id = ""
-                    self._prewarm_payload = {}
-                    self._stream_signature = {}
+                if status_active:
+                    return True
+                self._prewarm_id = ""
+                self._prewarm_payload = {}
+                self._stream_signature = {}
+                if audio_stalled:
+                    # A live worker without frames may still own its native
+                    # client. Reserve its stop before exposing the empty lease.
+                    self._pending_stop_prewarm_id = prewarm_id
                 self._health_restart_count += 1
                 self._record_transition_locked("watchdog_restart", reason)
                 self._record_event_locked(
@@ -1177,7 +1216,14 @@ class RustAudioPrewarmManager:
                 "Rust mic prewarm session unhealthy; restarting "
                 f"({reason}, status={self._last_health_error or 'inactive'})"
             )
-            return self.start_if_enabled(temporary=temporary_idle_prewarm)
+            if audio_stalled and not self._stop_owned_prewarm(prewarm_id, reason="prewarm_audio_stalled"):
+                return False
+            if not Config.MIC_ALWAYS_ON and not temporary_idle_prewarm:
+                return False
+            return self.start(
+                temporary=temporary_idle_prewarm,
+                expected_generation=status_generation,
+            )
         with self._lock:
             self._last_health_check_active = False
             if had_previous_session:

@@ -1093,8 +1093,13 @@ An acknowledged native stop releases the SQLite lease even when later provider,
 queue, or text-injection cleanup times out; an unknown native result still
 retains the lease and fails closed.
 
-Meeting start and resume treat capture cleanup plus admission release as one
-repeated-cancellation barrier. Device-test cleanup likewise settles its tone
+Meeting start, resume, and watchdog failure recovery treat capture cleanup,
+matching admission release, and ownership-registry removal as one
+repeated-cancellation barrier. In particular, cleanup cancels the registered
+watchdog; that cancellation cannot leave a `capture_failed` Meeting renewing
+its audio lease and blocking later Live Mic starts. Admission rejection emits
+a bounded diagnostic code before the hotkey preview is hidden.
+Device-test cleanup likewise settles its tone
 task, native producer, probe, active flag, lease, and prewarm state before a
 pending cancellation can escape. The Meeting start request is parsed into an
 immutable command before admission; JSON booleans and integer identifiers are

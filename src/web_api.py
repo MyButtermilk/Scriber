@@ -12501,6 +12501,18 @@ class ScriberWebController:
                 self._clear_hot_path_tracer(session_id)
                 return None
             if info is not None:
+                self._emit_workflow_event(
+                    message="Live mic session rejected by native audio admission",
+                    event="api.session.start_rejected",
+                    workflow="live_mic",
+                    stage="audio_admission",
+                    level="WARNING",
+                    session_id=session_id,
+                    milestone=True,
+                    outcome="rejected",
+                    error_category=info.category.value,
+                    meta={"provider_error_code": info.code},
+                )
                 self._finish_live_mic_start_transition(start_generation)
                 self._clear_hot_path_tracer(session_id)
                 await self.broadcast(self._provider_error_event_from_info(info))
@@ -16168,24 +16180,46 @@ class ScriberWebController:
                         ownership.identity_settled.set()
                         registry[meeting_id] = ownership
                     ownership.failure_state = "capture_failed"
-                    try:
+
+                    async def settle_failed_capture(
+                        ownership: _MeetingCaptureOwnership,
+                        failure_code: str,
+                        failure_message: str,
+                        meeting_claim: AudioAdmissionClaim | None,
+                        registry: dict[str, _MeetingCaptureOwnership],
+                    ) -> None:
                         async with ownership.setup_lock:
-                            await _cleanup_meeting_capture_ownership_barrier(
+                            await _cleanup_meeting_capture_ownership(
                                 self,
                                 ownership,
                                 error_code=failure_code,
                                 error_message=failure_message,
                             )
+                        if meeting_claim is not None:
+                            await _release_persistent_audio(self, meeting_claim)
+                        if registry.get(meeting_id) is ownership:
+                            registry.pop(meeting_id, None)
+
+                    try:
+                        # Capture cleanup stops this registered watchdog. Keep
+                        # lease release and ownership removal in the same
+                        # barrier, or that cancellation strands a failed
+                        # Meeting's renewing claim and blocks future Live Mic.
+                        await _await_cleanup_barrier(
+                            settle_failed_capture(
+                                ownership,
+                                failure_code,
+                                failure_message,
+                                meeting_claim,
+                                registry,
+                            )
+                        )
                     except _MeetingCaptureCleanupIncomplete as exc:
                         logger.error(
                             "Meeting capture watchdog retained native-audio ownership: {}",
                             type(exc).__name__,
                         )
                         return
-                    if meeting_claim is not None:
-                        await _release_persistent_audio(self, meeting_claim)
-                    if registry.get(meeting_id) is ownership:
-                        registry.pop(meeting_id, None)
                     return
         except asyncio.CancelledError:
             raise
