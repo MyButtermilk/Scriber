@@ -1008,10 +1008,15 @@ class RustAudioPrewarmManager:
 
     def quiesce_for_device_refresh(self) -> None:
         with self._lock:
+            # Native capture may already have consumed this ID while Python
+            # still awaits its first live frame. Keep that provisional handoff
+            # intact; the capture owner performs the eventual idle resume.
+            if self._active_capture_attached:
+                return
             # A deferred PortAudio refresh can quiesce again before its
             # successful retry resumes us. The first stop clears the native
             # lease, but must not erase that outstanding resume obligation.
-            if self._prewarm_id and not self._paused_for_device_refresh:
+            if (self._prewarm_id or self._pending_stop_prewarm_id) and not self._paused_for_device_refresh:
                 self._paused_for_device_refresh = True
                 self._device_refresh_pause_count += 1
                 self._record_transition_locked("device_refresh_pause", "device_refresh")
@@ -1174,6 +1179,7 @@ class RustAudioPrewarmManager:
             )
             if audio_stalled:
                 status_active = False
+            needs_stop = audio_stalled or error_code == "audioPrewarmStopPending"
             with self._lock:
                 # Status IPC runs outside the state lock. A hotkey, refresh or
                 # route change may already own this producer or a replacement.
@@ -1198,8 +1204,8 @@ class RustAudioPrewarmManager:
                 self._prewarm_id = ""
                 self._prewarm_payload = {}
                 self._stream_signature = {}
-                if audio_stalled:
-                    # A live worker without frames may still own its native
+                if needs_stop:
+                    # A stalled or retiring worker may still own its native
                     # client. Reserve its stop before exposing the empty lease.
                     self._pending_stop_prewarm_id = prewarm_id
                 self._health_restart_count += 1
@@ -1216,7 +1222,10 @@ class RustAudioPrewarmManager:
                 "Rust mic prewarm session unhealthy; restarting "
                 f"({reason}, status={self._last_health_error or 'inactive'})"
             )
-            if audio_stalled and not self._stop_owned_prewarm(prewarm_id, reason="prewarm_audio_stalled"):
+            if needs_stop and not self._stop_owned_prewarm(
+                prewarm_id,
+                reason="prewarm_audio_stalled" if audio_stalled else "pending_stop_retry",
+            ):
                 return False
             if not Config.MIC_ALWAYS_ON and not temporary_idle_prewarm:
                 return False
@@ -1277,9 +1286,19 @@ class RustAudioPrewarmManager:
             response_payload = response.get("payload") if isinstance(response, dict) else None
             if not isinstance(response_payload, dict):
                 response_payload = {}
-            response_success = bool(response.get("success")) if isinstance(response, dict) else False
+            # A successful command can report noActivePrewarm after an earlier
+            # timed-out stop removed the session. Only the native completion
+            # acknowledgement releases this producer; absence is not proof.
+            response_success = bool(
+                isinstance(response, dict) and response.get("success") and response_payload.get("stopped") is True
+            )
             response_error = (
-                str(response.get("fallbackReason") or response.get("errorCode") or "audioPrewarmStopFailed")
+                str(
+                    response.get("fallbackReason")
+                    or response.get("errorCode")
+                    or response_payload.get("reason")
+                    or "audioPrewarmStopUnconfirmed"
+                )
                 if isinstance(response, dict) and not response_success
                 else ""
             )
