@@ -43,6 +43,7 @@ const SIDECAR_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const SIDECAR_JSON_LINE_MAX_BYTES: usize = 1024 * 1024;
 const CAPTURE_STOP_RESULT_CACHE_TTL: Duration = Duration::from_secs(30);
 const CAPTURE_STOP_RESULT_CACHE_MAX_ENTRIES: usize = 8;
+const PREWARM_STOP_RESULT_CACHE_MAX_ENTRIES: usize = 8;
 static AUDIO_LIFECYCLE_EPOCH: AtomicU64 = AtomicU64::new(0);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -55,6 +56,7 @@ struct ActiveAudioSidecar {
     pid: u32,
     started_at: Instant,
     capture_artifact_lease: Option<CaptureArtifactLease>,
+    prewarm_stop_pending: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,7 +108,7 @@ enum AudioLifecycleDomain {
 
 fn audio_lifecycle_domain(command: &str) -> Option<AudioLifecycleDomain> {
     match command {
-        "captureStart" | "captureStop" | "prewarmStart" | "prewarmStop" => {
+        "captureStart" | "captureStop" | "prewarmStart" | "prewarmStop" | "prewarmStatus" => {
             Some(AudioLifecycleDomain::Microphone)
         }
         "meetingCaptureStart" | "meetingCaptureStop" => Some(AudioLifecycleDomain::Meeting),
@@ -167,12 +169,26 @@ fn lock_audio_lifecycle_lane(domain: AudioLifecycleDomain) -> MutexGuard<'static
 }
 
 pub fn call_audio_sidecar_command(command: &str, payload: Value) -> AudioSidecarCallResult {
+    with_audio_lifecycle_lane(command, || {
+        call_audio_sidecar_command_unlocked(command, payload)
+    })
+}
+
+fn with_audio_lifecycle_lane(
+    command: &str,
+    operation: impl FnOnce() -> AudioSidecarCallResult,
+) -> AudioSidecarCallResult {
     // A start is accepted in the current lifecycle generation before it waits for its owner
     // lane. A concurrent global shutdown increments the generation while holding both lanes;
     // once this call acquires its lane, an old accepted start is rejected instead of recreating a
     // sidecar behind the shutdown drain.
     let accepted_epoch = audio_lifecycle_start_command(command)
         .then(|| AUDIO_LIFECYCLE_EPOCH.load(Ordering::Acquire));
+    // Meeting startup also creates a microphone producer. Match global drain
+    // lock order so it cannot pass a pending-stop check before another lane
+    // retires that prewarm. Meeting stop/status remain independent.
+    let _microphone_guard = (command == "meetingCaptureStart")
+        .then(|| lock_audio_lifecycle_lane(AudioLifecycleDomain::Microphone));
     let _lifecycle_guard = audio_lifecycle_domain(command).map(lock_audio_lifecycle_lane);
     let current_epoch = AUDIO_LIFECYCLE_EPOCH.load(Ordering::Acquire);
     if !lifecycle_start_epoch_is_current(accepted_epoch, current_epoch) {
@@ -188,7 +204,22 @@ pub fn call_audio_sidecar_command(command: &str, payload: Value) -> AudioSidecar
             None,
         );
     }
-    call_audio_sidecar_command_unlocked(command, payload)
+    run_after_prewarm_stop_check(command, operation)
+}
+
+fn run_after_prewarm_stop_check(
+    command: &str,
+    operation: impl FnOnce() -> AudioSidecarCallResult,
+) -> AudioSidecarCallResult {
+    if matches!(
+        command,
+        "captureStart" | "prewarmStart" | "meetingCaptureStart"
+    ) {
+        if let Some(result) = pending_prewarm_stop_rejection() {
+            return result;
+        }
+    }
+    operation()
 }
 
 fn call_audio_sidecar_command_unlocked(command: &str, payload: Value) -> AudioSidecarCallResult {
@@ -320,6 +351,62 @@ fn active_audio_prewarm_sidecars() -> &'static Mutex<HashMap<String, ActiveAudio
     static ACTIVE_AUDIO_PREWARM_SIDECARS: OnceLock<Mutex<HashMap<String, ActiveAudioSidecar>>> =
         OnceLock::new();
     ACTIVE_AUDIO_PREWARM_SIDECARS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn prewarm_stop_result_cache() -> &'static Mutex<HashMap<String, CachedCaptureStopResult>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, CachedCaptureStopResult>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_prewarm_stop_result(prewarm_id: &str) -> Option<AudioSidecarCallResult> {
+    prewarm_stop_result_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(prewarm_id)
+        .map(|entry| entry.result.clone())
+}
+
+fn cache_prewarm_stop_result(prewarm_id: &str, result: &AudioSidecarCallResult) {
+    // A timeout can discard the Python response while this owner lane is still
+    // joining the worker. Keep the eventual proof for a later retry, including
+    // one delayed by a recording or device refresh. The cache is size-bounded,
+    // not time-bounded; a pending owner cannot create replacement prewarms.
+    if result.payload.get("processExited").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
+    let mut cache = prewarm_stop_result_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !cache.contains_key(prewarm_id) && cache.len() >= PREWARM_STOP_RESULT_CACHE_MAX_ENTRIES {
+        if let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, entry)| entry.completed_at)
+            .map(|(id, _)| id.clone())
+        {
+            cache.remove(&oldest);
+        }
+    }
+    cache.insert(
+        prewarm_id.to_string(),
+        CachedCaptureStopResult {
+            completed_at: Instant::now(),
+            result: result.clone(),
+        },
+    );
+}
+
+fn pending_prewarm_stop_rejection() -> Option<AudioSidecarCallResult> {
+    let sessions = lock_active_audio_prewarm_sidecars();
+    let sidecar = sessions
+        .values()
+        .find(|sidecar| sidecar.prewarm_stop_pending)?;
+    Some(unavailable_result(
+        "audioPrewarmStopPending",
+        "The previous microphone producer has not confirmed process exit",
+        json!({"sidecar": AUDIO_SIDECAR_NAME, "retryable": true}),
+        sidecar.path_hash.clone(),
+        Some(sidecar.pid),
+    ))
 }
 
 fn active_audio_meeting_sidecars() -> &'static Mutex<HashMap<String, ActiveAudioSidecar>> {
@@ -1360,7 +1447,10 @@ fn stop_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
     }
 
     let mut sessions = lock_active_audio_prewarm_sidecars();
-    let Some(mut sidecar) = sessions.remove(&prewarm_id) else {
+    let Some(sidecar) = sessions.get_mut(&prewarm_id) else {
+        if let Some(result) = cached_prewarm_stop_result(&prewarm_id) {
+            return result;
+        }
         let executable_available = audio_sidecar_executable_available();
         let reason = if executable_available {
             "noActivePrewarm"
@@ -1382,8 +1472,7 @@ fn stop_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
             pid: None,
         };
     };
-    drop(sessions);
-
+    sidecar.prewarm_stop_pending = true;
     let request_id = Uuid::new_v4().simple().to_string();
     let request = sidecar_request(
         &request_id,
@@ -1394,10 +1483,8 @@ fn stop_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
     );
     let path_hash = sidecar.path_hash.clone();
     let pid = Some(sidecar.pid);
-    if let Err(err) = write_sidecar_json_line(&mut sidecar.stdin, &request) {
-        let _ = sidecar.child.kill();
-        let _ = sidecar.child.wait();
-        return unavailable_result(
+    let mut result = if let Err(err) = write_sidecar_json_line(&mut sidecar.stdin, &request) {
+        unavailable_result(
             "audioSidecarWriteFailed",
             err,
             json!({
@@ -1406,17 +1493,18 @@ fn stop_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
                 "prewarmId": prewarm_id,
                 "stopped": false,
             }),
-            path_hash,
+            path_hash.clone(),
             pid,
-        );
-    }
-
-    let mut result = match read_sidecar_response_line(&sidecar.response_rx) {
-        Ok(line) => parse_sidecar_response(&line, &request_id, path_hash.clone(), pid),
-        Err(result) => with_process_identity(result, path_hash.clone(), pid),
+        )
+    } else {
+        match read_sidecar_response_line(&sidecar.response_rx) {
+            Ok(line) => parse_sidecar_response(&line, &request_id, path_hash.clone(), pid),
+            Err(result) => with_process_identity(result, path_hash.clone(), pid),
+        }
     };
     let _ = write_sidecar_json_line(&mut sidecar.stdin, &shutdown_request());
     let exit = wait_for_sidecar_exit_or_kill(&mut sidecar.child, SIDECAR_SHUTDOWN_TIMEOUT);
+    confirm_prewarm_stop_after_exit(&mut result, &prewarm_id, &exit);
     if let Some(object) = result.payload.as_object_mut() {
         object.insert(
             "sidecarUptimeMs".to_string(),
@@ -1434,7 +1522,38 @@ fn stop_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
         object.insert("sidecarPid".to_string(), json!(sidecar.pid));
         object.insert("sidecarPathHash".to_string(), json!(path_hash));
     }
+    if exit.status.is_some() {
+        sessions.remove(&prewarm_id);
+        cache_prewarm_stop_result(&prewarm_id, &result);
+    }
     result
+}
+
+fn confirm_prewarm_stop_after_exit(
+    result: &mut AudioSidecarCallResult,
+    prewarm_id: &str,
+    exit: &SidecarExitInfo,
+) {
+    let process_exited = exit.status.is_some();
+    if !result.payload.is_object() {
+        result.payload = json!({});
+    }
+    let object = result.payload.as_object_mut().unwrap();
+    object.insert("prewarmId".to_string(), json!(prewarm_id));
+    object.insert("processExited".to_string(), json!(process_exited));
+    object.insert("stopped".to_string(), json!(process_exited));
+    if process_exited {
+        if let Some(error) = result.error_code.take() {
+            object.insert("stopCommandError".to_string(), json!(error));
+        }
+        result.fallback_reason = None;
+        result.success = true;
+    } else {
+        result.success = false;
+        result.error_code = Some("audioPrewarmStopUnconfirmed".to_string());
+        result.fallback_reason =
+            Some("Microphone producer process exit was not confirmed".to_string());
+    }
 }
 
 fn status_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
@@ -1479,6 +1598,15 @@ fn status_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
             pid: None,
         };
     }
+    if sessions[&prewarm_id].prewarm_stop_pending {
+        return unavailable_result(
+            "audioPrewarmStopPending",
+            "The previous microphone producer is still stopping",
+            json!({"active": false, "prewarmId": prewarm_id, "reason": "prewarmStopPending"}),
+            sessions[&prewarm_id].path_hash.clone(),
+            Some(sessions[&prewarm_id].pid),
+        );
+    }
 
     let exited = {
         let sidecar = sessions.get_mut(&prewarm_id).unwrap();
@@ -1488,14 +1616,15 @@ fn status_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
             Err(err) => {
                 let path_hash = sidecar.path_hash.clone();
                 let pid = sidecar.pid;
+                sidecar.prewarm_stop_pending = true;
                 let mut result = unavailable_result(
-                    "audioSidecarStatusFailed",
+                    "audioPrewarmStopPending",
                     format!("Rust audio prewarm status check failed: {err}"),
                     json!({
                         "sidecar": AUDIO_SIDECAR_NAME,
                         "active": false,
                         "prewarmId": prewarm_id,
-                        "reason": "prewarmStatusFailed",
+                        "reason": "prewarmStopPending",
                     }),
                     path_hash,
                     Some(pid),
@@ -1509,7 +1638,7 @@ fn status_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
     };
     if let Some((status, path_hash, pid)) = exited {
         let _ = sessions.remove(&prewarm_id);
-        return AudioSidecarCallResult {
+        let mut result = AudioSidecarCallResult {
             success: true,
             error_code: None,
             fallback_reason: None,
@@ -1526,6 +1655,14 @@ fn status_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
             executable_path_hash: path_hash,
             pid: Some(pid),
         };
+        let exit = SidecarExitInfo {
+            status: Some(status),
+            killed_after_timeout: false,
+            wait_error: None,
+        };
+        confirm_prewarm_stop_after_exit(&mut result, &prewarm_id, &exit);
+        cache_prewarm_stop_result(&prewarm_id, &result);
+        return result;
     }
 
     let request_id = Uuid::new_v4().simple().to_string();
@@ -1537,15 +1674,16 @@ fn status_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
         }),
     );
 
-    let mut remove_after_status_error = false;
-    let response = {
+    let mut exit_after_status_error = None;
+    let mut response = {
         let sidecar = sessions.get_mut(&prewarm_id).unwrap();
         let path_hash = sidecar.path_hash.clone();
         let pid = Some(sidecar.pid);
         if let Err(err) = write_sidecar_json_line(&mut sidecar.stdin, &request) {
-            let _ = sidecar.child.kill();
-            let _ = sidecar.child.wait();
-            remove_after_status_error = true;
+            exit_after_status_error = Some(wait_for_sidecar_exit_or_kill(
+                &mut sidecar.child,
+                Duration::ZERO,
+            ));
             unavailable_result(
                 "audioSidecarWriteFailed",
                 err,
@@ -1565,17 +1703,33 @@ fn status_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
             ) {
                 Ok(line) => parse_sidecar_response(&line, &request_id, path_hash.clone(), pid),
                 Err(result) => {
-                    let _ = sidecar.child.kill();
-                    let _ = sidecar.child.wait();
-                    remove_after_status_error = true;
+                    exit_after_status_error = Some(wait_for_sidecar_exit_or_kill(
+                        &mut sidecar.child,
+                        Duration::ZERO,
+                    ));
                     with_process_identity(result, path_hash, pid)
                 }
             }
         }
     };
 
-    if remove_after_status_error {
-        let _ = sessions.remove(&prewarm_id);
+    if let Some(exit) = exit_after_status_error {
+        if exit.status.is_some() {
+            let _ = sessions.remove(&prewarm_id);
+            let mut stop_result = response.clone();
+            confirm_prewarm_stop_after_exit(&mut stop_result, &prewarm_id, &exit);
+            cache_prewarm_stop_result(&prewarm_id, &stop_result);
+        } else if let Some(sidecar) = sessions.get_mut(&prewarm_id) {
+            sidecar.prewarm_stop_pending = true;
+            response.error_code = Some("audioPrewarmStopPending".to_string());
+            response.fallback_reason =
+                Some("Microphone producer process exit was not confirmed".to_string());
+            response.payload = json!({
+                "active": false,
+                "prewarmId": prewarm_id,
+                "reason": "prewarmStopPending",
+            });
+        }
     }
 
     if response.success
@@ -1585,8 +1739,16 @@ fn status_audio_sidecar_prewarm(payload: Value) -> AudioSidecarCallResult {
             .and_then(Value::as_bool)
             .unwrap_or(false)
     {
-        if let Some(mut sidecar) = sessions.remove(&prewarm_id) {
-            stop_prewarm_sidecar_process(&prewarm_id, &mut sidecar, "prewarmStatusInactive");
+        drop(sessions);
+        let stop_result = stop_audio_sidecar_prewarm(json!({"prewarmId": prewarm_id}));
+        if !stop_result.success {
+            return unavailable_result(
+                "audioPrewarmStopPending",
+                "Microphone producer process exit was not confirmed",
+                json!({"active": false, "prewarmId": prewarm_id, "reason": "prewarmStopPending"}),
+                stop_result.executable_path_hash,
+                stop_result.pid,
+            );
         }
     }
     response
@@ -1744,6 +1906,7 @@ fn spawn_audio_sidecar_process(
         pid,
         started_at: Instant::now(),
         capture_artifact_lease: None,
+        prewarm_stop_pending: false,
     })
 }
 
@@ -1900,24 +2063,24 @@ fn wait_for_sidecar_exit_or_kill(child: &mut Child, timeout: Duration) -> Sideca
             }
             Ok(None) => {
                 if started.elapsed() >= timeout {
-                    let kill_error = child.kill().err().map(|err| err.to_string());
-                    let wait_result = child.wait();
+                    // A failed kill is not permission to wait indefinitely on
+                    // a still-running producer, nor evidence that it exited.
+                    let wait_result = child.kill().and_then(|()| child.wait());
                     return SidecarExitInfo {
-                        status: wait_result.ok(),
+                        status: wait_result.as_ref().ok().copied(),
                         killed_after_timeout: true,
-                        wait_error: kill_error,
+                        wait_error: wait_result.err().map(|err| err.to_string()),
                     };
                 }
                 thread::sleep(SIDECAR_SHUTDOWN_POLL_INTERVAL.min(timeout));
             }
             Err(err) => {
-                let kill_error = child.kill().err().map(|kill_err| kill_err.to_string());
-                let _ = child.wait();
+                let wait_result = child.kill().and_then(|()| child.wait());
                 return SidecarExitInfo {
-                    status: None,
+                    status: wait_result.as_ref().ok().copied(),
                     killed_after_timeout: true,
-                    wait_error: Some(match kill_error {
-                        Some(kill_err) => format!("{err}; kill failed: {kill_err}"),
+                    wait_error: Some(match wait_result.err() {
+                        Some(kill_err) => format!("{err}; termination failed: {kill_err}"),
                         None => err.to_string(),
                     }),
                 };
@@ -2385,7 +2548,7 @@ mod tests {
     }
 
     #[test]
-    fn audio_lifecycle_domains_serialize_only_owner_mutations() {
+    fn audio_lifecycle_domains_serialize_owner_mutations_and_prewarm_retirement() {
         assert_eq!(
             audio_lifecycle_domain("captureStart"),
             Some(AudioLifecycleDomain::Microphone)
@@ -2403,7 +2566,10 @@ mod tests {
             Some(AudioLifecycleDomain::Meeting)
         );
         assert_eq!(audio_lifecycle_domain("captureStatus"), None);
-        assert_eq!(audio_lifecycle_domain("prewarmStatus"), None);
+        assert_eq!(
+            audio_lifecycle_domain("prewarmStatus"),
+            Some(AudioLifecycleDomain::Microphone)
+        );
         assert_eq!(audio_lifecycle_domain("meetingCaptureStatus"), None);
         assert_eq!(audio_lifecycle_domain("selfTest"), None);
         assert!(audio_lifecycle_start_command("captureStart"));
@@ -2692,6 +2858,157 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.payload["stopped"], false);
         assert_eq!(result.payload["reason"], "missingPrewarmId");
+    }
+
+    // The subprocess exits only after its stdin receives a command. Its
+    // response channel is controlled by the parent, so no timing sleeps or
+    // audio hardware are needed to exercise lost/failed acknowledgements.
+    #[test]
+    fn prewarm_stop_test_child() {
+        if env::var("SCRIBER_TEST_PREWARM_STOP_CHILD").as_deref() == Ok("1") {
+            let mut request = String::new();
+            io::stdin().read_line(&mut request).unwrap();
+        }
+    }
+
+    fn prewarm_stop_test_sidecar() -> ActiveAudioSidecar {
+        let mut child = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "audio_sidecar_client::tests::prewarm_stop_test_child",
+                "--nocapture",
+            ])
+            .env("SCRIBER_TEST_PREWARM_STOP_CHILD", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let (response_tx, response_rx) = mpsc::channel();
+        response_tx.send(SidecarOutput::Eof).unwrap();
+        ActiveAudioSidecar {
+            pid: child.id(),
+            child,
+            stdin,
+            response_rx,
+            path_hash: Some("test-sidecar".to_string()),
+            started_at: Instant::now(),
+            capture_artifact_lease: None,
+            prewarm_stop_pending: false,
+        }
+    }
+
+    #[test]
+    fn prewarm_stop_retries_replay_confirmed_exit_after_lost_response() {
+        let _lifecycle_guard = lock_audio_lifecycle_lane(AudioLifecycleDomain::Microphone);
+        let id = format!("stop-retry-{}", Uuid::new_v4().simple());
+        lock_active_audio_prewarm_sidecars().insert(id.clone(), prewarm_stop_test_sidecar());
+
+        let stopped = stop_audio_sidecar_prewarm(json!({"prewarmId": id}));
+        assert!(stopped.success, "{stopped:?}");
+        assert_eq!(stopped.payload["stopped"], true);
+        assert_eq!(stopped.payload["processExited"], true);
+        assert_eq!(
+            stopped.payload["stopCommandError"],
+            "audioSidecarEmptyResponse"
+        );
+        assert!(!lock_active_audio_prewarm_sidecars().contains_key(&id));
+        // A device refresh or active recording may delay retry beyond the
+        // capture-stop cache TTL. Prewarm stop proof must survive that pause.
+        prewarm_stop_result_cache()
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .unwrap()
+            .completed_at = Instant::now() - Duration::from_secs(3_600);
+        let retry = stop_audio_sidecar_prewarm(json!({"prewarmId": id}));
+        assert!(retry.success);
+        assert_eq!(retry.payload, stopped.payload);
+        prewarm_stop_result_cache().lock().unwrap().remove(&id);
+    }
+
+    #[test]
+    fn prewarm_status_cleanup_preserves_stop_proof_for_refresh_retry() {
+        let _lifecycle_guard = lock_audio_lifecycle_lane(AudioLifecycleDomain::Microphone);
+        let id = format!("status-stop-retry-{}", Uuid::new_v4().simple());
+        lock_active_audio_prewarm_sidecars().insert(id.clone(), prewarm_stop_test_sidecar());
+
+        let status = status_audio_sidecar_prewarm(json!({"prewarmId": id}));
+        assert!(!status.success);
+        assert!(!lock_active_audio_prewarm_sidecars().contains_key(&id));
+        let retry = stop_audio_sidecar_prewarm(json!({"prewarmId": id}));
+        assert!(retry.success);
+        assert_eq!(retry.payload["stopped"], true);
+        assert_eq!(retry.payload["processExited"], true);
+        prewarm_stop_result_cache().lock().unwrap().remove(&id);
+    }
+
+    #[test]
+    fn prewarm_stop_without_exit_proof_cannot_be_cached_as_complete() {
+        let id = format!("unconfirmed-stop-{}", Uuid::new_v4().simple());
+        let mut result = AudioSidecarCallResult {
+            success: true,
+            error_code: None,
+            fallback_reason: None,
+            payload: json!({"stopped": true}),
+            executable_available: true,
+            executable_path_hash: None,
+            pid: None,
+        };
+        let exit = SidecarExitInfo {
+            status: None,
+            killed_after_timeout: true,
+            wait_error: Some("kill failed".to_string()),
+        };
+
+        confirm_prewarm_stop_after_exit(&mut result, &id, &exit);
+        cache_prewarm_stop_result(&id, &result);
+
+        assert!(!result.success);
+        assert_eq!(result.payload["stopped"], false);
+        assert_eq!(result.payload["processExited"], false);
+        assert!(cached_prewarm_stop_result(&id).is_none());
+    }
+
+    #[test]
+    fn pending_prewarm_stop_blocks_all_new_microphone_producers() {
+        let _microphone_guard = lock_audio_lifecycle_lane(AudioLifecycleDomain::Microphone);
+        let id = format!("pending-stop-{}", Uuid::new_v4().simple());
+        let mut sidecar = prewarm_stop_test_sidecar();
+        sidecar.prewarm_stop_pending = true;
+        lock_active_audio_prewarm_sidecars().insert(id.clone(), sidecar);
+
+        let rejection = pending_prewarm_stop_rejection().unwrap();
+        assert!(!rejection.success);
+        assert_eq!(
+            rejection.error_code.as_deref(),
+            Some("audioPrewarmStopPending")
+        );
+        // Meeting owns a separate lane; it must still consult the same
+        // pending producer registry before running its start operation.
+        for command in ["captureStart", "prewarmStart", "meetingCaptureStart"] {
+            let result = run_after_prewarm_stop_check(command, || {
+                panic!("a pending prewarm stop must prevent {command}")
+            });
+            assert_eq!(
+                result.error_code.as_deref(),
+                Some("audioPrewarmStopPending")
+            );
+        }
+        let stopped = stop_audio_sidecar_prewarm(json!({"prewarmId": id}));
+        assert!(stopped.success);
+        assert!(pending_prewarm_stop_rejection().is_none());
+        prewarm_stop_result_cache().lock().unwrap().remove(&id);
+    }
+
+    #[test]
+    fn pending_prewarm_stop_is_not_inferred_from_an_unknown_id() {
+        let id = format!("unknown-stop-{}", Uuid::new_v4().simple());
+        let result = call_audio_sidecar_command("prewarmStop", json!({"prewarmId": id}));
+        assert!(result.success);
+        assert_eq!(result.payload["stopped"], false);
+        assert_ne!(result.payload["processExited"], true);
     }
 
     #[test]

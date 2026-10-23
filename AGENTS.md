@@ -1151,7 +1151,10 @@ Packaging and scripts:
 - Device refresh is recording-aware and can be deferred until idle.
   Passive polling must preserve an outstanding PortAudio refresh and its
   paired prewarm resume. Repeated quiesce calls retain that resume obligation
-  until the actual refresh completes.
+  until the actual refresh completes, including when the old producer is
+  already pending a confirmed stop and no public prewarm ID remains.
+  Refresh quiescence must preserve a capture-owned prewarm handoff, including
+  the interval after native adoption and before Python's first-live commit.
 - Persisted `SCRIBER_MIC_ALWAYS_ON=1` prewarm starts only after DeviceMonitor's
   initial PortAudio refresh callback has completed. Startup keeps a bounded
   fallback when initial device discovery cannot finish; do not reintroduce a
@@ -1198,6 +1201,11 @@ Packaging and scripts:
   worker must be stopped with native confirmation before replacement. Fence
   status results and recovery by the current route generation and capture
   ownership so a concurrent hotkey cannot lose its producer.
+  A successful stop RPC alone is not confirmation: Python requires the boolean
+  `payload.stopped`. Native retries must preserve a bounded completion receipt
+  for that exact prewarm ID after a lost response. An unknown ID is not a stop
+  receipt; retain an unconfirmed retiring process and block new microphone
+  producers until its release is proven.
   Status diagnostics must keep prewarm IDs redacted and preserve
   response time, active/inactive reason, buffered-frame counters, and restart
   counts. The prewarm diagnostics also expose a bounded redacted `recentEvents`
