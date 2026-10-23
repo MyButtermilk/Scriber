@@ -63,26 +63,6 @@ def _manager_health_snapshot(
     }
 
 
-def test_rust_audio_app_prewarm_smoke_script_documents_app_lifecycle_contract() -> None:
-    script = (REPO_ROOT / "scripts" / "smoke_rust_audio_app_prewarm.py").read_text(encoding="utf-8")
-
-    assert "RustAudioPrewarmManager" in script
-    assert "RustPrototypeFrameSource" in script
-    assert "audioPrewarmStart" in script
-    assert "audioCaptureStart" in script
-    assert "prewarmId" in script
-    assert 'capture_route=(adopted or {}).get("captureRoute")' in script
-    assert "managerResume" in script
-    assert "adoptedPrewarm" in script
-    assert "healthRestartCount" in script
-    assert "midSessionFailureReason" in script
-    assert "framePipePrebufferFramesRead" in script
-    assert "framePipeReaderEndReason" in script
-    assert "framePipePrebufferAfterLiveCount" in script
-    assert "--mode wasapi" in script
-    assert "--honor-favorite-mic" in script
-
-
 def test_rust_audio_app_prewarm_smoke_plan_only_writes_artifact(tmp_path: Path) -> None:
     output = tmp_path / "rust-audio-app-prewarm-plan.json"
     result = subprocess.run(

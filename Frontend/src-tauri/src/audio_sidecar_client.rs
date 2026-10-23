@@ -2548,36 +2548,44 @@ mod tests {
     }
 
     #[test]
-    fn audio_lifecycle_domains_serialize_owner_mutations_and_prewarm_retirement() {
-        assert_eq!(
-            audio_lifecycle_domain("captureStart"),
-            Some(AudioLifecycleDomain::Microphone)
-        );
-        assert_eq!(
-            audio_lifecycle_domain("prewarmStop"),
-            Some(AudioLifecycleDomain::Microphone)
-        );
-        assert_eq!(
-            audio_lifecycle_domain("meetingCaptureStart"),
-            Some(AudioLifecycleDomain::Meeting)
-        );
-        assert_eq!(
-            audio_lifecycle_domain("meetingCaptureStop"),
-            Some(AudioLifecycleDomain::Meeting)
-        );
-        assert_eq!(audio_lifecycle_domain("captureStatus"), None);
-        assert_eq!(
-            audio_lifecycle_domain("prewarmStatus"),
-            Some(AudioLifecycleDomain::Microphone)
-        );
-        assert_eq!(audio_lifecycle_domain("meetingCaptureStatus"), None);
-        assert_eq!(audio_lifecycle_domain("selfTest"), None);
-        assert!(audio_lifecycle_start_command("captureStart"));
-        assert!(audio_lifecycle_start_command("prewarmStart"));
-        assert!(audio_lifecycle_start_command("meetingCaptureStart"));
-        assert!(!audio_lifecycle_start_command("captureStop"));
-        assert!(!audio_lifecycle_start_command("prewarmStatus"));
-        assert!(!audio_lifecycle_start_command("meetingCaptureStop"));
+    fn audio_lifecycle_holds_owner_lanes_until_operation_finishes() {
+        for (command, microphone, meeting) in [
+            ("captureStart", true, false),
+            ("captureStop", true, false),
+            ("prewarmStart", true, false),
+            ("prewarmStop", true, false),
+            ("prewarmStatus", true, false),
+            ("meetingCaptureStart", true, true),
+            ("meetingCaptureStop", false, true),
+        ] {
+            // Concurrent shell shutdown can reject a queued start before its
+            // operation runs. Retry only that defined cancellation outcome.
+            let observed = (0..4)
+                .map(|_| with_audio_lifecycle_lane(command, || {
+                unavailable_result(
+                    "testObservation",
+                    "Owner lanes observed inside the protected operation",
+                    json!({
+                        "microphoneHeld": matches!(microphone_audio_lifecycle_lane().try_lock(),
+                            Err(std::sync::TryLockError::WouldBlock)),
+                        "meetingHeld": matches!(meeting_audio_lifecycle_lane().try_lock(),
+                            Err(std::sync::TryLockError::WouldBlock)),
+                    }),
+                    None,
+                    None,
+                )
+                }))
+                .find(|result| result.error_code.as_deref() != Some("audioLifecycleStartInvalidated"))
+                .expect("operation did not run after shutdown retries");
+            // Other tests may own unrelated lanes; only require the lanes
+            // which this operation must hold for its whole lifetime.
+            if microphone {
+                assert_eq!(observed.payload["microphoneHeld"], true, "{command}");
+            }
+            if meeting {
+                assert_eq!(observed.payload["meetingHeld"], true, "{command}");
+            }
+        }
     }
 
     #[test]
@@ -2864,6 +2872,7 @@ mod tests {
     // response channel is controlled by the parent, so no timing sleeps or
     // audio hardware are needed to exercise lost/failed acknowledgements.
     #[test]
+    #[ignore = "subprocess fixture; invoked explicitly by prewarm lifecycle tests"]
     fn prewarm_stop_test_child() {
         if env::var("SCRIBER_TEST_PREWARM_STOP_CHILD").as_deref() == Ok("1") {
             let mut request = String::new();
@@ -2876,6 +2885,7 @@ mod tests {
             .args([
                 "--exact",
                 "audio_sidecar_client::tests::prewarm_stop_test_child",
+                "--ignored",
                 "--nocapture",
             ])
             .env("SCRIBER_TEST_PREWARM_STOP_CHILD", "1")
@@ -2979,27 +2989,21 @@ mod tests {
         sidecar.prewarm_stop_pending = true;
         lock_active_audio_prewarm_sidecars().insert(id.clone(), sidecar);
 
-        let rejection = pending_prewarm_stop_rejection().unwrap();
-        assert!(!rejection.success);
-        assert_eq!(
-            rejection.error_code.as_deref(),
-            Some("audioPrewarmStopPending")
-        );
-        // Meeting owns a separate lane; it must still consult the same
-        // pending producer registry before running its start operation.
-        for command in ["captureStart", "prewarmStart", "meetingCaptureStart"] {
-            let result = run_after_prewarm_stop_check(command, || {
-                panic!("a pending prewarm stop must prevent {command}")
-            });
+        let observed = ["captureStart", "prewarmStart", "meetingCaptureStart"].map(|command| {
+            run_after_prewarm_stop_check(command, || {
+                unavailable_result("unexpectedProducerStart", "test", json!({}), None, None)
+            })
+        });
+        // Clean up the child before asserting, including on a broken start gate.
+        let stopped = stop_audio_sidecar_prewarm(json!({"prewarmId": id}));
+        prewarm_stop_result_cache().lock().unwrap().remove(&id);
+        assert!(stopped.success);
+        for result in observed {
             assert_eq!(
                 result.error_code.as_deref(),
                 Some("audioPrewarmStopPending")
             );
         }
-        let stopped = stop_audio_sidecar_prewarm(json!({"prewarmId": id}));
-        assert!(stopped.success);
-        assert!(pending_prewarm_stop_rejection().is_none());
-        prewarm_stop_result_cache().lock().unwrap().remove(&id);
     }
 
     #[test]

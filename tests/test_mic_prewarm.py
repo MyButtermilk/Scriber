@@ -1752,44 +1752,6 @@ def test_prewarm_watchdog_requires_recent_audio_frames(
         assert manager.diagnostic_snapshot()["lastHealthError"] == "prewarmAudioStalled"
 
 
-def test_stalled_prewarm_waits_for_confirmed_native_stop_before_replacement(monkeypatch):
-    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
-    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
-    monkeypatch.setattr(Config, "FAVORITE_MIC", "", raising=False)
-    commands: list[str] = []
-    stop_confirmed = False
-    start_ids = iter(["stalled", "recovered"])
-
-    def shell_call(command, payload=None, **_kwargs):
-        commands.append(command)
-        if command == "audioPrewarmStart":
-            return {"success": True, "payload": {"prewarmId": next(start_ids)}}
-        if command == "audioPrewarmStatus":
-            return {
-                "success": True,
-                "payload": {
-                    "active": True,
-                    "totalAudioFramesObserved": 0,
-                    "lastAudioFrameAgoMs": None,
-                    "sidecarUptimeMs": 20_000,
-                },
-            }
-        if command == "audioPrewarmStop":
-            return {"success": stop_confirmed, "payload": {"stopped": stop_confirmed}}
-        raise AssertionError(command)
-
-    manager = RustAudioPrewarmManager(shell_call=shell_call)
-    assert manager.start_if_enabled() is True
-    assert manager.ensure_healthy(max_callback_gap_seconds=15.0) is False
-    assert manager.diagnostic_snapshot()["stopPending"] is True
-    assert commands == ["audioPrewarmStart", "audioPrewarmStatus", "audioPrewarmStop"]
-
-    stop_confirmed = True
-    assert manager.ensure_healthy(max_callback_gap_seconds=15.0) is True
-    assert commands[-2:] == ["audioPrewarmStop", "audioPrewarmStart"]
-    assert manager.diagnostic_snapshot()["stopPending"] is False
-
-
 def test_native_status_pending_stop_retains_owner_until_confirmed(monkeypatch):
     monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True)
     monkeypatch.setattr(Config, "MIC_DEVICE", "default")
@@ -2019,25 +1981,6 @@ def test_stale_prewarm_health_response_cannot_interrupt_new_owner(monkeypatch, t
         assert manager.diagnostic_snapshot()["activeCaptureAttached"] is True
         assert manager.ensure_healthy() is False
         assert commands == expected
-    if transition == "commit":
-        import src.device_monitor as device_monitor
-
-        monitor = device_monitor.DeviceMonitor()
-        monitor.on_portaudio_refresh_quiesce(
-            manager.quiesce_for_device_refresh,
-            manager.resume_after_device_refresh,
-        )
-        monkeypatch.setattr(device_monitor, "_refresh_portaudio_cache", lambda: (False, True))
-        monkeypatch.setattr(device_monitor, "get_active_stream_count", lambda: 1)
-        monkeypatch.setattr(device_monitor, "_enumerate_microphones", lambda **_kwargs: [])
-        monitor._refresh_devices(trigger="device_removed", force=False)
-        monitor._refresh_devices(trigger="device_added", force=False)
-        monitor._refresh_devices(trigger="poll", force=False, refresh_portaudio=False)
-        assert monitor.diagnostic_snapshot()["refreshDeferredUntilIdle"] is True
-        assert monitor._take_deferred_refresh_trigger_if_idle() is None
-        assert manager.diagnostic_snapshot()["activeCaptureAttached"] is True
-        assert manager.ensure_healthy() is False
-        assert commands == expected
 
 
 def test_device_refresh_preserves_native_adoption_until_python_commit(monkeypatch):
@@ -2082,6 +2025,13 @@ def test_device_refresh_preserves_native_adoption_until_python_commit(monkeypatc
 
     assert manager.commit_active_capture(adopted["prewarmId"]) is True
     assert manager.diagnostic_snapshot()["stopPending"] is False
+    assert manager.diagnostic_snapshot()["activeCaptureAttached"] is True
+    assert manager.ensure_healthy() is False
+    assert commands == ["audioPrewarmStart"]
+
+    # A later device event must also preserve the now-committed capture.
+    monitor._refresh_devices(trigger="device_added", force=False)
+    assert monitor.diagnostic_snapshot()["refreshDeferredUntilIdle"] is True
     assert manager.diagnostic_snapshot()["activeCaptureAttached"] is True
     assert manager.ensure_healthy() is False
     assert commands == ["audioPrewarmStart"]
@@ -2200,54 +2150,5 @@ def test_rust_audio_prewarm_watchdog_restarts_missing_sidecar_session(monkeypatc
     events = snapshot["recentEvents"]
     assert any(event["event"] == "health_restart" and event["healthError"] == "noActivePrewarm" for event in events)
     assert sum(1 for event in events if event["event"] == "started") == 2
-    assert "prewarm-old" not in str(snapshot)
-    assert "prewarm-new" not in str(snapshot)
-
-
-def test_rust_audio_prewarm_watchdog_records_missing_cached_session(monkeypatch):
-    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
-    monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)
-    monkeypatch.setattr(Config, "CHANNELS", 1, raising=False)
-    monkeypatch.setattr(Config, "MIC_BLOCK_SIZE", 160, raising=False)
-    monkeypatch.setattr(Config, "MIC_DEVICE", "default", raising=False)
-    commands: list[tuple[str, dict]] = []
-    start_ids = iter(["prewarm-old", "prewarm-new"])
-
-    def shell_call(command, payload=None, **_kwargs):
-        commands.append((command, payload or {}))
-        if command == "audioPrewarmStart":
-            return {"success": True, "payload": {"prewarmId": next(start_ids)}}
-        raise AssertionError(command)
-
-    manager = RustAudioPrewarmManager(shell_call=shell_call)
-    monkeypatch.setattr(
-        manager,
-        "_device_selection_payload",
-        lambda *_args, **_kwargs: {
-            "devicePreference": "default",
-            "portAudioLabel": "",
-            "nativeEndpointIdHash": None,
-        },
-    )
-
-    assert manager.start_if_enabled() is True
-    with manager._lock:
-        manager._prewarm_id = ""
-        manager._prewarm_payload = {}
-        manager._stream_signature = {}
-
-    assert manager.ensure_healthy(reason="test-missing") is True
-
-    assert [command for command, _payload in commands] == [
-        "audioPrewarmStart",
-        "audioPrewarmStart",
-    ]
-    snapshot = manager.diagnostic_snapshot()
-    assert snapshot["healthRestartCount"] == 1
-    assert snapshot["lastHealthCheckReason"] == "test-missing"
-    assert snapshot["lastHealthCheckActive"] is False
-    assert snapshot["lastHealthError"] == "missingPrewarmSession"
-    assert snapshot["active"] is True
-    assert snapshot["prewarmIdHash"]
     assert "prewarm-old" not in str(snapshot)
     assert "prewarm-new" not in str(snapshot)

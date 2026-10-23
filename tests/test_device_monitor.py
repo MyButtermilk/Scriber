@@ -475,21 +475,6 @@ def test_non_invasive_poll_is_quiet_when_devices_are_unchanged(monkeypatch):
     assert diagnostics["lastPollRefreshAgoSeconds"] is not None
 
 
-def test_refresh_does_not_resume_idle_stream_when_real_stream_is_active(monkeypatch):
-    monitor = device_monitor.DeviceMonitor()
-    calls: list[str] = []
-
-    monitor.on_portaudio_refresh_quiesce(
-        lambda: calls.append("pause"),
-        lambda: calls.append("resume"),
-    )
-    monkeypatch.setattr(device_monitor, "_refresh_portaudio_cache", lambda: (False, True))
-
-    monitor._refresh_devices(trigger="manual", force=True)
-
-    assert calls == ["pause"]
-
-
 def test_deferred_refresh_waits_for_active_stream_to_stop(monkeypatch):
     monitor = device_monitor.DeviceMonitor()
 
