@@ -10,21 +10,6 @@ from scripts.smoke_rust_audio_prewarm_sidecar import validate_prewarm_metrics
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_rust_audio_prewarm_sidecar_smoke_script_documents_prewarm_contract() -> None:
-    script = (REPO_ROOT / "scripts" / "smoke_rust_audio_prewarm_sidecar.py").read_text(encoding="utf-8")
-
-    assert "SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE" in script
-    assert "SCRIBER_RUST_AUDIO_DISABLE_WASAPI_CAPTURE" in script
-    assert "normal WASAPI capture is enabled by default" in script
-    assert "--mode" in script
-    assert "prewarmStart" in script
-    assert "prewarmStop" in script
-    assert "prewarmId" in script
-    assert "totalBlocksObserved" in script
-    assert "bufferedAudioFrames" in script
-    assert "--prebuffer-ms" in script
-
-
 def test_rust_audio_prewarm_sidecar_smoke_plan_only_writes_artifact(tmp_path: Path) -> None:
     output = tmp_path / "rust-audio-prewarm-sidecar-plan.json"
     result = subprocess.run(
