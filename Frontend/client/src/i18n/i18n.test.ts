@@ -220,30 +220,3 @@ test("browser language preference respects the declared priority order", () => {
   assert.equal(localeFromLanguages(["fr-FR", "de-DE", "en-US"]), "de");
   assert.equal(localeFromLanguages(["fr-FR"]), "en");
 });
-
-test("long-lived UI state keeps translation keys instead of rendered locale text", () => {
-  const sourceRoot = path.resolve(import.meta.dirname, "..");
-  const uploadStore = readFileSync(path.join(sourceRoot, "lib/file-upload-store.ts"), "utf8");
-  const filePage = readFileSync(path.join(sourceRoot, "pages/FileTranscribe.tsx"), "utf8");
-  const debugConsole = readFileSync(path.join(sourceRoot, "pages/DebugConsole.tsx"), "utf8");
-  const trayPanel = readFileSync(path.join(sourceRoot, "components/TrayPanel.tsx"), "utf8");
-  const desktopUpdates = readFileSync(path.join(sourceRoot, "lib/desktop-updates.ts"), "utf8");
-  const settingsPage = readFileSync(path.join(sourceRoot, "pages/Settings.tsx"), "utf8");
-
-  assert.doesNotMatch(uploadStore, /statusText:\s*translateNow\(/);
-  assert.match(uploadStore, /statusValues/);
-  assert.doesNotMatch(filePage, /setDropError\([^)]*t\(/);
-  assert.match(filePage, /translateNow\("File uploaded"\)/);
-  assert.match(filePage, /formatNumberNow\(result\.responses\.length\)/);
-  assert.doesNotMatch(debugConsole, /setActionStatus\(t\(/);
-  assert.doesNotMatch(debugConsole, /setError\(t\(/);
-  assert.match(debugConsole, /renderLocalizedMessage\(actionStatus, t, formatNumber\)/);
-  assert.match(debugConsole, /renderLocalizedMessage\(error, t, formatNumber\)/);
-  assert.doesNotMatch(trayPanel, /setUpdateCheckMessage\(t\(/);
-  assert.match(trayPanel, /t\(updateCheckMessage\.source, updateCheckMessage\.values\)/);
-  assert.doesNotMatch(desktopUpdates, /translateNow\(/);
-  assert.match(desktopUpdates, /message:\s*status\.message/);
-  assert.match(settingsPage, /message:\s*"Update check failed\."/);
-  assert.match(settingsPage, /message:\s*"Update installation failed\."/);
-  assert.match(settingsPage, /description:\s*t\(status\.message, status\.messageValues\)/);
-});

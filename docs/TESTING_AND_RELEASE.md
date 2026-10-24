@@ -32,6 +32,26 @@ bounded, redacted local diagnostics before cleanup, including failures before
 the backend has opened its HTTP listener. Diagnose the same hash-bound installer
 before rebuilding or raising startup timeouts.
 
+## Test Value
+
+Judge tests by the faults they detect, their resilience to harmless refactoring,
+and how clearly a failure identifies the broken behavior. Test counts and line
+coverage are not quality targets. Parameterize distinct input boundaries and
+failure modes; avoid multiplying equivalent examples just to increase coverage.
+
+Exercise application behavior, emitted artifacts, or actual configuration
+contracts. Do not add source-substring checklists for function names, JSX,
+CSS classes, or comments as substitutes for executing the relevant code.
+Parsed manifests, deployment policies, privacy boundaries, and destructive
+cleanup guards can be legitimate static contracts; retain them until equivalent
+protection is demonstrated. Do not test library primitives or test-only stubs
+without exercising application behavior.
+
+Before deleting a duplicate, identify the retained behavior test. For important
+regressions, confirm that the remaining suite fails against the original bug or
+a deliberately introduced fault. Consolidate repeated setup without combining
+unrelated behaviors into large tests that hide the cause of failures.
+
 ## Core Test Commands
 
 Muse Voice Transcribe regression coverage is in `tests/test_meta_stt.py`.
@@ -638,7 +658,6 @@ Performance/packaging:
 - `tests/perf/test_windows_autoresearch_contract.py`
 - `tests/test_provider_replay_runtime.py`
 - `tests/runtime/test_audio_frame_pipe.py`
-- `tests/perf/test_frontend_vendor_chunk_config.py`
 - `tests/test_tauri_security_gates.py`
 - `tests/test_tauri_stability_smoke_gates.py`
 - `tests/test_local_polishing_runtime_packaging.py`

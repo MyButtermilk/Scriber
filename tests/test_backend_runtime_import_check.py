@@ -870,14 +870,6 @@ def test_standard_requirements_include_audio_runtime_dependencies():
     assert all("pipecat-ai" not in line for line in local_requirements)
 
 
-def test_pipeline_uses_pipecat_1_5_smart_turn_import_without_removed_processor():
-    pipeline_source = (Path(__file__).resolve().parents[1] / "src" / "pipeline.py").read_text(encoding="utf-8")
-
-    assert "local_smart_turn_v3 import LocalSmartTurnAnalyzerV3" in pipeline_source
-    assert "UserIdleProcessor" not in pipeline_source
-    assert "pipecat.audio.streams.input" not in pipeline_source
-
-
 def test_backend_worker_import_does_not_eagerly_import_web_api():
     repo_root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
@@ -1062,18 +1054,6 @@ def test_backend_media_resolution_supports_fresh_full_and_runtime_cache_hits():
     ]
     assert 'Resolve-BackendStableMediaTool -Names @("yt-dlp.exe", "yt-dlp")' not in copier
     assert "Copy-Item -LiteralPath $ytDlp" not in copier
-
-
-def test_local_stt_services_do_not_override_pipecat_settings_object():
-    repo_root = Path(__file__).resolve().parents[1]
-    onnx_service = (repo_root / "src" / "onnx_local_service.py").read_text(encoding="utf-8")
-
-    assert "self._local_settings" in onnx_service
-    assert "self._settings = {" not in onnx_service
-    assert "AIService.process_frame(self, frame, direction)" in onnx_service
-    assert "frame.delta" in onnx_service
-    assert "frame.settings" not in onnx_service
-    assert "super(STTService, self)" not in onnx_service
 
 
 def test_backend_runtime_import_check_reports_missing_modules():

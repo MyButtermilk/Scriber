@@ -218,14 +218,3 @@ fn main() {
         std::process::exit(2);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn supported_matrix_is_exact() {
-        assert_eq!(ALLOWED_DURATIONS_SECONDS, [5, 15, 30, 60]);
-        assert_eq!(ALLOWED_SAMPLE_RATES_HZ, [16_000, 48_000]);
-    }
-}

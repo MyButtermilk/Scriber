@@ -11,29 +11,6 @@ import {
   geminiSettingsPatchForModel,
 } from "@/lib/gemini-transcription-settings";
 
-test("offers Gemini 3.5 Transcribe as separate live and async provider choices", () => {
-  assert.deepEqual(GEMINI_REALTIME_TRANSCRIPTION_OPTION, {
-    value: "gemini-realtime",
-    service: "gemini_realtime",
-    label: "Gemini 3.5 Transcribe Live",
-    usdPerThousandMinutes: 9.0,
-    wordErrorRatePercent: 4.0,
-    group: "cloud_streaming",
-    icon: "gemini",
-    routeNote: "Interim and final text · smart transcription",
-  });
-  assert.deepEqual(GEMINI_ASYNC_TRANSCRIPTION_OPTION, {
-    value: "gemini-stt",
-    service: "gemini_stt",
-    label: "Gemini 3.5 Transcribe",
-    usdPerThousandMinutes: 5.0,
-    wordErrorRatePercent: 2.6,
-    group: "cloud_async",
-    icon: "gemini",
-    routeNote: "Speaker diarization and word timestamps · final text",
-  });
-});
-
 test("round-trips Gemini provider choices through the settings API contract", () => {
   assert.equal(geminiFrontendModelForService("gemini_realtime"), "gemini-realtime");
   assert.equal(geminiFrontendModelForService("gemini_stt"), "gemini-stt");

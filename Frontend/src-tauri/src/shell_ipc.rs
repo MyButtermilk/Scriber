@@ -3964,11 +3964,6 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_owner_class_is_named_for_diagnostics() {
-        assert_eq!(super::CLIPBOARD_OWNER_CLASS, "ScriberClipboardOwner");
-    }
-
-    #[test]
     fn clipboard_format_filter_keeps_registered_hglobal_and_rejects_handle_formats() {
         assert!(super::is_restorable_clipboard_format(8)); // CF_DIB
         assert!(super::is_restorable_clipboard_format(13)); // CF_UNICODETEXT

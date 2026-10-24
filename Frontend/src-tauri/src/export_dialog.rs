@@ -1027,7 +1027,6 @@ mod tests {
         assert!(filename.ends_with(".pdf"));
         assert!(filename.len() <= MAX_FILENAME_UTF8_BYTES);
         assert!(filename.encode_utf16().count() <= MAX_FILENAME_UTF16_UNITS);
-        assert!(filename.is_char_boundary(filename.len()));
     }
 
     #[test]
@@ -1245,15 +1244,6 @@ mod tests {
             .to_string_lossy()
             .contains(".tmp")));
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn tauri_json_byte_array_deserializes_as_bounded_bytes() {
-        assert_eq!(
-            serde_json::from_str::<Vec<u8>>("[0,127,255]").unwrap(),
-            vec![0, 127, 255]
-        );
-        assert!(serde_json::from_str::<Vec<u8>>("[256]").is_err());
     }
 
     #[test]

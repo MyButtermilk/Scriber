@@ -41,31 +41,6 @@ def valid_lint_metric_value(name: str) -> int:
     return 0
 
 
-def test_required_autoresearch_files_exist():
-    for relative in [
-        "autoresearch.config.json",
-        "autoresearch.ps1",
-        "autoresearch.checks.ps1",
-        "scripts/perf/run.ps1",
-        "scripts/perf/benchmark_lint.py",
-        "scripts/perf/doctor.py",
-        "scripts/perf/runtime_attestation.py",
-        "benchmarks/windows/profile.ps1",
-        "benchmarks/windows/overlay_observer.py",
-        "benchmarks/windows/TextReceiver.ps1",
-        "benchmarks/windows/text_observer.ps1",
-        "benchmarks/windows/app_action.ps1",
-        "benchmarks/windows/app_observer.ps1",
-        "benchmarks/windows/app_ux_collector.py",
-        "benchmarks/windows/app_ux_lifecycle_import.schema.json",
-        "benchmarks/windows/endpoint_probe.py",
-        "benchmarks/windows/trace_collector.py",
-        "benchmarks/results/baseline.json",
-        "scripts/perf/evaluator/local_wux.py",
-    ]:
-        assert (REPO_ROOT / relative).exists(), relative
-
-
 def test_autoresearch_config_matches_goal_contract():
     config = json.loads((REPO_ROOT / "autoresearch.config.json").read_text(encoding="utf-8"))
     assert config["sessionName"] == "Scriber Windows Perceived Performance"
@@ -2662,71 +2637,6 @@ def test_endpoint_probe_overlay_uses_microsoft_and_soniox_not_local_stt():
     assert "SONIOX_API_KEY" in script
     assert "onnx_local" not in script
     assert "nemo_local" not in script
-
-
-def test_endpoint_probe_can_emit_metric_eligible_overlay_app_and_resource_metrics():
-    script = (REPO_ROOT / "benchmarks" / "windows" / "endpoint_probe.py").read_text(encoding="utf-8")
-    desktop = (REPO_ROOT / "scripts" / "smoke_tauri_desktop.ps1").read_text(encoding="utf-8")
-    app_observer = (REPO_ROOT / "benchmarks" / "windows" / "app_observer.ps1").read_text(encoding="utf-8")
-    run_script = (REPO_ROOT / "scripts" / "perf" / "run.ps1").read_text(encoding="utf-8")
-
-    assert "dispatchStartQpcTicks" in desktop
-    assert "triggerQpcTicks" in desktop
-    assert "[string]$StartAfterPath" in app_observer
-    assert "startGateObserved" in app_observer
-    assert "firstNonEmptyQpcTicks" in app_observer
-    assert "stableQpcTicks" in app_observer
-    assert "sampleCount" in app_observer
-    assert "lastTextSha256" in app_observer
-    assert "try {" in app_observer
-    assert 'shell_menu_trigger_path = probe_dir / "data" / "shell-menu-smoke.trigger"' in script
-    assert '"-StartAfterPath"' in script
-    assert '"observerStartGateObserved"' in script
-    assert '"observerFirstNonEmptyQpcTicks"' in script
-    assert '"observerSampleCount"' in script
-    assert '"observerFirstTextTraversalMs"' in script
-    assert '"observerMaxTextTraversalMs"' in script
-    assert '"observerStableConfirmedQpcTicks"' in script
-    assert '"observerStableConfirmedToOutputMs"' in script
-    assert '"observerStartGateToFirstNonEmptyMs"' in script
-    assert '"observerFirstNonEmptyToStableMs"' in script
-    assert '"internalShowWindowCompleteToStableApproxMs"' in script
-    assert '"-ShellMenuSmokeActionDelayMs"' not in script
-    assert '"marker": "hotkey_received"' in script
-    assert '"marker": "overlay_first_visible_frame"' in script
-    assert '"sameProcessWarmContract": True' in script
-    assert '"sameProcessAsCold": cycle > 0' in script
-    assert '"micAlwaysOn": False' in script
-    assert '"-LiveRecordingMicAlwaysOn"' not in script
-    assert "send_global_hotkey_chord()" in script
-    assert '"FullLocal": {' in script
-    assert '"overlayWarm": 30' in script
-    assert '"overlayCold": 15' in script
-    assert '"hotkey_mic_ready_p95_ms"' in script
-    assert '"hotkey_first_audio_frame_p95_ms"' in script
-    assert '"hotkeyToMicReadyMs"' in script
-    assert '"hotkeyToFirstAudioFrameMs"' in script
-    assert "USER_READY_METRICS" in script
-    assert "includeActive=1" in desktop
-    assert "function Wait-GlobalHotkeyUserReady" in desktop
-    assert "userReady = $userReady" in desktop
-    assert "hotPathMetrics = if ($userReady)" in desktop
-    assert '"marker": "user_input_received"' in script
-    assert '"marker": "first_stable_visible_frame"' in script
-    assert '"idle_cpu_pct"' in script
-    assert '"working_set_mb"' in script
-    assert '"ui_long_tasks_gt_200ms"' in script
-    assert '"hotkey_mic_ready_p95_ms"' in run_script
-    assert '"hotkey_first_audio_frame_p95_ms"' in run_script
-    assert 'statusWord = if ($Reason -eq "measured" -or $Reason -like "*measured*")' in run_script
-    assert '[string]$endpointProbe.status -eq "MEASURED"' in run_script
-
-
-def test_fastlocal_imports_repo_dotenv_without_logging_values():
-    script = (REPO_ROOT / "scripts" / "perf" / "run.ps1").read_text(encoding="utf-8")
-    assert "Import-DotEnvIntoProcess" in script
-    assert '[Environment]::SetEnvironmentVariable($name, $value, "Process")' in script
-    assert "importedEnvNames" in script
 
 
 def test_fastlocal_candidate_override_is_applied_after_dotenv_import():

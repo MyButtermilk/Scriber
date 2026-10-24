@@ -374,12 +374,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn supported_matrix_is_exact() {
-        assert_eq!(ALLOWED_DURATIONS_SECONDS, [5, 15, 30, 60]);
-        assert_eq!(ALLOWED_SAMPLE_RATES_HZ, [16_000, 48_000]);
-    }
-
-    #[test]
     fn pcm_shape_requires_exact_attested_duration() {
         let bytes = vec![0_u8; 16_000 * 5 * 2];
         assert_eq!(parse_pcm16_le(&bytes, 16_000, 5).unwrap().len(), 80_000);

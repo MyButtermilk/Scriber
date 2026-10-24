@@ -11,19 +11,6 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_media_preparation_smoke_script_covers_media_helper_paths() -> None:
-    script = (REPO_ROOT / "scripts" / "smoke_media_preparation.py").read_text(encoding="utf-8")
-
-    assert "_maybe_compress_audio_upload" in script
-    assert "_extract_audio_from_video" in script
-    assert "_ensure_audio_only_file" in script
-    assert "prepared_azure_mai_audio_file" in script
-    assert "azure_mai_content_type" in script
-    assert "_probe_media_duration_seconds" in script
-    assert "--media-tools-dir" in script
-    assert "--require-ffprobe" in script
-
-
 def test_windows_build_can_run_media_preparation_smoke_against_bundled_tools() -> None:
     build = (REPO_ROOT / "scripts" / "build_windows.ps1").read_text(encoding="utf-8")
 
@@ -91,24 +78,6 @@ def test_installed_transcription_workflow_smoke_uses_real_backend_jobs_without_c
     assert '"youtubeUrl"' not in script
     assert '"sourceUrl"' not in script
     assert '"dataDir": runtime.get' not in script
-
-
-def test_real_browser_file_smoke_crosses_the_production_aiohttp_composition() -> None:
-    script = (REPO_ROOT / "scripts" / "smoke_real_file_upload_browser.py").read_text(encoding="utf-8")
-    workflow = (REPO_ROOT / ".github" / "workflows" / "python-full-suite.yml").read_text(encoding="utf-8")
-
-    assert "web_api.create_app(controller)" in script
-    assert "JobStore(" in script
-    assert "set_file_input_files(" in script
-    assert '"realPythonCreateApp": True' in script
-    assert '"providerWorkerHeldAtQueuedBoundary": True' in script
-    assert 'route_handler_module == "src.api.file_transcription_routes"' in script
-    assert 'websocket_handler_module == "src.api.websocket_routes"' in script
-    assert '"realWebSocketRoute": True' in script
-    assert 'browser_state.get("ok") is True' in script
-    assert "from scripts.smoke_frontend_browser import FrontendSmokeBackend" not in script
-    assert "scripts\\smoke_real_file_upload_browser.py" in workflow
-    assert "real-file-browser-smoke.json" in workflow
 
 
 def test_media_preparation_smoke_script_writes_artifact(tmp_path: Path) -> None:

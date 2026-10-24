@@ -964,7 +964,7 @@ mod tests {
     #[test]
     fn paths_must_remain_below_their_canonical_roots() {
         let (temp, roots, _audio, _segmentation, _embedding) = fixture_roots();
-        let outside = temp.path().join("outside.onnx");
+        let outside = temp.path().join("private-client-model.onnx");
         File::create(&outside)
             .unwrap()
             .set_len(MIN_MODEL_BYTES)
@@ -979,6 +979,9 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code, "invalid_model_path");
+        let encoded = serde_json::to_string(&error_value(Some("safe-job"), error)).unwrap();
+        assert!(!encoded.contains("private-client-model.onnx"));
+        assert!(encoded.len() < 512);
     }
 
     #[test]
@@ -1056,20 +1059,6 @@ mod tests {
                 },
             ]
         );
-    }
-
-    #[test]
-    fn errors_never_echo_sensitive_paths_or_text() {
-        let sensitive = r#"C:\Users\Person\secret meeting.wav"#;
-        let transcript = "confidential transcript sentence";
-        let payload = error_value(
-            Some("safe-job"),
-            WorkerError::new("invalid_audio_path", "worker file path is invalid"),
-        );
-        let encoded = serde_json::to_string(&payload).unwrap();
-        assert!(!encoded.contains(sensitive));
-        assert!(!encoded.contains(transcript));
-        assert!(encoded.len() < 512);
     }
 
     #[test]

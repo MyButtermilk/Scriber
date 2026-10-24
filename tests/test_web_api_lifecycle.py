@@ -2881,6 +2881,7 @@ async def test_audio_diagnostics_reports_rust_probe_unavailable_without_shell_ip
         ctl.shutdown()
 
     assert audio["microphone"]["rustAudioProbe"]["requested"] is True
+    assert audio["microphone"]["rustAudioProbe"]["available"] is False
     assert audio["microphone"]["rustAudioProbe"]["reason"] == "shellIpcUnavailable"
     web_api.call_shell_ipc.assert_not_called()
 
@@ -2983,25 +2984,6 @@ async def test_audio_diagnostics_prefers_rust_native_endpoint_inventory_for_mapp
     assert "pycaw-hash" not in str(mapping)
     assert "SWD\\MMDEVAPI" not in str(inventory)
     assert "endpointId" not in mapping["mappings"][0]
-
-
-@pytest.mark.asyncio
-async def test_audio_diagnostics_skip_rust_probe_without_shell_ipc(monkeypatch):
-    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
-    monkeypatch.setenv("SCRIBER_RUST_AUDIO_PROBE", "1")
-    monkeypatch.setattr(web_api, "shell_ipc_available", lambda: False)
-    monkeypatch.setattr(web_api, "call_shell_ipc", MagicMock())
-    loop = asyncio.get_running_loop()
-    ctl = ScriberWebController(loop)
-    try:
-        audio = ctl.get_audio_diagnostics()
-    finally:
-        ctl.shutdown()
-
-    assert audio["microphone"]["rustAudioProbe"]["requested"] is True
-    assert audio["microphone"]["rustAudioProbe"]["available"] is False
-    assert audio["microphone"]["rustAudioProbe"]["reason"] == "shellIpcUnavailable"
-    web_api.call_shell_ipc.assert_not_called()
 
 
 @pytest.mark.asyncio

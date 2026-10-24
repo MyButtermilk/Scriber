@@ -229,16 +229,3 @@ def test_quality_environment_cache_is_exact_validated_and_only_saved_from_main()
     assert list(steps).index("Validate or create isolated test environment") < list(steps).index(
         "Save trusted test environment"
     )
-
-
-def test_python_quality_docs_install_the_pinned_local_ruff_tool() -> None:
-    install_command = "scripts\\project-python.cmd -m pip install ruff==0.15.22"
-    check_command = "scripts\\project-python.cmd -m ruff check src tests scripts"
-    for path in (
-        REPO_ROOT / "README.md",
-        REPO_ROOT / "AGENTS.md",
-        REPO_ROOT / "docs" / "TESTING_AND_RELEASE.md",
-    ):
-        documentation = path.read_text(encoding="utf-8")
-        assert documentation.count(install_command) == 1
-        assert documentation.index(install_command) < documentation.index(check_command)

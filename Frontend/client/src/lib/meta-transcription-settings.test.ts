@@ -3,7 +3,6 @@ import test from "node:test";
 
 import { settingsTranslations } from "@/i18n/translations/de/settings";
 import {
-  META_CREDENTIAL_REQUIREMENT,
   META_MEETING_FINAL_STT_OPTION,
   META_TRANSCRIPTION_OPTIONS,
   metaFrontendModelForService,
@@ -25,14 +24,6 @@ test("Meta offers separate realtime and async routes for one published model", (
   }
   assert.equal(metaSettingsPatchForModel("meta-unknown"), null);
   assert.equal(metaFrontendModelForService("meta"), null);
-});
-
-test("both Meta STT routes reuse the existing Meta Model API credential", () => {
-  assert.deepEqual(META_CREDENTIAL_REQUIREMENT, {
-    provider: "Meta Model API",
-    label: "Meta Model API key",
-    helpKey: "meta",
-  });
 });
 
 test("Meta Meeting option does not promise five-hour or word-level support", () => {

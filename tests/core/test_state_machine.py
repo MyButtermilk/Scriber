@@ -3,12 +3,6 @@ import pytest
 from src.core.state_machine import InvalidTransitionError, RecordingState, RecordingStateMachine
 
 
-def test_initial_state_is_idle():
-    sm = RecordingStateMachine()
-    assert sm.state is RecordingState.IDLE
-    assert sm.history == ()
-
-
 def test_valid_full_lifecycle_transitions():
     sm = RecordingStateMachine()
 
@@ -32,6 +26,8 @@ def test_invalid_transition_raises():
 
 def test_self_transition_is_noop():
     sm = RecordingStateMachine()
+    assert sm.state is RecordingState.IDLE
+    assert sm.history == ()
     assert sm.transition(RecordingState.IDLE) is None
     assert sm.state is RecordingState.IDLE
     assert sm.history == ()
