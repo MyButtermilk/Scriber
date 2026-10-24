@@ -2057,6 +2057,11 @@ Current packaging choices:
   ONNXRuntime 1.31 no longer depends on SymPy, which also leaves the closure.
   Upstream, Pipecat 1.8 loads heavy dependencies lazily and sets up services
   concurrently, so the first recording after startup pays less import time.
+  Pydantic 2.14 builds model classes faster. On 2026-10-24 importing the eight
+  Pipecat live-STT service modules plus the OpenAI, Deepgram and Google GenAI
+  SDKs took a median 1.98-2.12 s instead of 2.32 s with Pipecat 1.5 and
+  Pydantic 2.13 (Linux source venv, 7 interleaved cold processes per run;
+  informational, not an installed Windows measurement).
 - ONNXRuntime remains because Pipecat Silero VAD needs it.
 - SciPy, Torch, full NeMo, ONNX training/tooling stacks, numba, llvmlite, and
   unused ONNXRuntime tooling are excluded from the standard sidecar. The
