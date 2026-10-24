@@ -269,6 +269,13 @@ Backend and runtime:
   maintenance task before persistence-store close even after the general drain
   timeout or repeated cancellation. Synchronous shutdown retains its task
   reference until that join can finish.
+- `src/runtime/sqlite_guard.py`: every thread-local SQLite store
+  (`database.py`, job, latency-metrics, Meeting-import, and transcript-artifact
+  stores) opens `GuardedConnection`. Its `close()` waits for a foreign thread's
+  running statement step or `with connection:` transaction before freeing the
+  native handle; an orphaned `to_thread` read otherwise crashed shutdown with a
+  Windows access violation. A close that cannot wait leaves the retired handle
+  to its owner. Keep new store connections on this factory.
 - `src/runtime/task_supervisor.py`: event-loop-local ownership for intentionally
   concurrent asyncio work. It retains tasks, observes every result, reports
   failures through the loop handler, reserves thread-safe submissions before

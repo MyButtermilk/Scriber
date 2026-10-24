@@ -15,6 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 from src.runtime.paths import database_path
+from src.runtime.sqlite_guard import GuardedConnection
 
 
 # Keep the established ``str(member)`` representation; SQLite stores ``.value``.
@@ -316,6 +317,7 @@ class MeetingImportStore:
                 timeout=30.0,
                 check_same_thread=False,
                 isolation_level=None,
+                factory=GuardedConnection,
             )
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA journal_mode=WAL")
