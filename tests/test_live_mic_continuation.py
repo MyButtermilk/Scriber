@@ -722,13 +722,17 @@ async def test_start_immediately_after_stop_request_is_retained_before_finalizer
 
 
 @pytest.mark.asyncio
-async def test_queued_post_processing_start_begins_at_native_release(continuation):
+@pytest.mark.parametrize("post_process", [False, True], ids=["dictation-hotkey", "post-processing-hotkey"])
+async def test_queued_hotkey_start_begins_at_native_release(continuation, post_process):
     ctl = continuation.controller
     first, _record = await continuation.start("Eins.")
     first.native_gate.clear()
     stop_task = continuation.stop()
     await asyncio.wait_for(first.stop_started.wait(), 2)
-    await ctl._handle_post_processing_hotkey_toggle()
+    if post_process:
+        await ctl._handle_post_processing_hotkey_toggle()
+    else:
+        await ctl._handle_hotkey_toggle()
     assert ctl.get_state()["micStartPending"] is True
     continuation.pipeline_created.clear()
     first.native_gate.set()
@@ -740,7 +744,7 @@ async def test_queued_post_processing_start_begins_at_native_release(continuatio
 
     assert not stop_task.done()
     assert ctl._is_listening is True
-    assert ctl._session_id in ctl._post_processing_session_ids
+    assert (ctl._session_id in ctl._post_processing_session_ids) is post_process
     assert second.text_injection_enabled is False
     assert ctl.get_state()["micStartPending"] is False
 

@@ -4125,46 +4125,6 @@ async def test_pipeline_error_diagnostics_never_prevent_notification_and_emergen
 
 
 @pytest.mark.asyncio
-async def test_hotkey_toggle_is_deferred_while_stop_is_in_progress():
-    loop = asyncio.get_running_loop()
-    ctl = ScriberWebController(loop)
-
-    session_id = "deferred-hotkey-session"
-    rec = _make_record(session_id)
-    pipeline = _SlowStopPipeline()
-    ctl._current = rec
-    ctl._session_id = session_id
-    ctl._is_listening = True
-    ctl._pipeline = pipeline
-    ctl._pipeline_task = None
-
-    with (
-        patch.object(ctl, "broadcast", new=AsyncMock()),
-        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
-        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
-        patch.object(ctl, "start_listening", new=AsyncMock()) as start_mock,
-        patch("src.web_api.show_transcribing_overlay"),
-        patch("src.web_api.hide_recording_overlay"),
-    ):
-        stop_task = asyncio.create_task(ctl.stop_listening())
-
-        for _ in range(50):
-            if ctl._is_stopping:
-                break
-            await asyncio.sleep(0.01)
-        assert ctl._is_stopping is True
-
-        await ctl._handle_hotkey_toggle()
-        assert ctl._pending_hotkey_toggle is True
-
-        pipeline.stop_gate.set()
-        await stop_task
-
-    start_mock.assert_awaited_once()
-    assert ctl._pending_hotkey_toggle is False
-
-
-@pytest.mark.asyncio
 async def test_start_listening_missing_provider_key_returns_error_without_history(monkeypatch):
     loop = asyncio.get_running_loop()
     monkeypatch.setattr(web_api.Config, "DEFAULT_STT_SERVICE", "soniox")
