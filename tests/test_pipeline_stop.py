@@ -2748,6 +2748,79 @@ async def test_gladia_stop_sends_finalization_before_disconnect(monkeypatch):
     assert events == ["stop_recording", "disconnect"]
 
 
+@pytest.mark.asyncio
+async def test_gladia_stop_delivers_the_last_utterance_after_an_earlier_final(monkeypatch):
+    import json
+
+    from pipecat.utils.asyncio.task_manager import TaskManager
+
+    monkeypatch.setattr(Config, "GLADIA_API_KEY", "key")
+    pipeline = ScriberPipeline(service_name="gladia")
+    service = pipeline._create_stt_service(object())
+    service._task_manager = TaskManager()
+    # An earlier sentence was already finalized in this session.
+    pipeline._final_transcription_received.set()
+
+    class _Socket:
+        state = State.OPEN
+
+        def __init__(self):
+            self.sent = []
+            self._messages: asyncio.Queue = asyncio.Queue()
+
+        async def send(self, message):
+            self.sent.append(json.loads(message))
+            # Gladia finalizes the remaining audio, then closes with 1000.
+            self._messages.put_nowait(
+                json.dumps(
+                    {
+                        "type": "transcript",
+                        "data": {"is_final": True, "utterance": {"language": "de", "text": "der letzte Satz"}},
+                    }
+                )
+            )
+            self._messages.put_nowait(None)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            message = await self._messages.get()
+            if message is None:
+                self.state = State.CLOSED
+                raise StopAsyncIteration
+            return message
+
+        async def close(self):
+            self.state = State.CLOSED
+
+    pushed = []
+
+    async def _push_frame(frame, direction=FrameDirection.DOWNSTREAM):
+        pushed.append(frame)
+
+    reconnects = []
+
+    async def _try_reconnect(**_kwargs):
+        reconnects.append(True)
+        return False
+
+    monkeypatch.setattr(service, "push_frame", _push_frame)
+    monkeypatch.setattr(service, "_try_reconnect", _try_reconnect)
+    socket = _Socket()
+    service._websocket = socket
+    service._connection_active = True
+    service._disconnecting = False
+    service._receive_task = service.create_task(service._receive_task_handler(service._report_error))
+
+    await asyncio.wait_for(service.stop(EndFrame()), timeout=5.0)
+
+    assert socket.sent == [{"type": "stop_recording"}]
+    assert [frame.text for frame in pushed if isinstance(frame, TranscriptionFrame)] == ["der letzte Satz"]
+    assert reconnects == []
+    assert service._receive_task is None
+
+
 def test_speechmatics_factory_enables_batch_labeled_diarization(monkeypatch):
     class _Settings:
         def __init__(self, **kwargs):

@@ -1834,7 +1834,9 @@ Packaging and scripts:
   waits for an in-order marker; keep that flush or the last utterance of a
   dictation or file is lost. Gladia live
   transcription uses
-  Pipecat's Gladia service; Gladia file and YouTube transcription use the
+  Pipecat's Gladia service. Its stop waits (bounded) for the socket close that
+  follows `stop_recording`, with reconnection disabled first; a final from an
+  earlier utterance is not proof that the last one arrived. Gladia file and YouTube transcription use the
   direct pre-recorded HTTP upload/polling API and should not be routed through
   the live WebSocket pipeline. The direct async adapters
   `deepgram_async`, `gladia_async`, `openai_async`, `gemini_stt`, and

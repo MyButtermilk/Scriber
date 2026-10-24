@@ -3795,15 +3795,22 @@ class ScriberPipeline:
             GladiaSTTService = module.GladiaSTTService
             if not _get_api_key("gladia"):
                 raise ValueError("Gladia API Key is missing.")
-            pipeline_ref = self
 
             class ScriberGladiaSTTService(GladiaSTTService):
                 async def stop(self, frame: EndFrame):
                     await STTService.stop(self, frame)
+                    # After stop_recording Gladia finalizes the remaining audio,
+                    # sends the trailing finals and closes the socket with 1000.
+                    # A final from an earlier utterance proves nothing about the
+                    # last one, so wait for that close; it must end the receive
+                    # loop instead of reconnecting to the finished session.
+                    self._disconnecting = True
+                    receive_task = self._receive_task
                     try:
                         await self._send_stop_recording()
                     except Exception as exc:
-                        logger.debug(f"Gladia stop_recording warning: {exc}")
+                        logger.debug("Gladia stop_recording failed (error_type={})", type(exc).__name__)
+                        receive_task = None
 
                     timeout = env_float(
                         "SCRIBER_GLADIA_STOP_FINAL_TIMEOUT_SECONDS",
@@ -3811,17 +3818,10 @@ class ScriberPipeline:
                         minimum=0.25,
                         maximum=10.0,
                     )
-                    if not pipeline_ref._final_transcription_received.is_set():
-                        try:
-                            await asyncio.wait_for(
-                                pipeline_ref._final_transcription_received.wait(),
-                                timeout=timeout,
-                            )
-                            logger.debug("Gladia final transcription received before websocket cleanup")
-                        except TimeoutError:
-                            logger.debug(
-                                f"Timed out waiting {timeout:g}s for Gladia final transcription before websocket cleanup"
-                            )
+                    if receive_task is not None and not receive_task.done():
+                        _done, pending = await asyncio.wait({receive_task}, timeout=timeout)
+                        if pending:
+                            logger.debug(f"Timed out waiting {timeout:g}s for Gladia to close the finished session")
 
                     await self._disconnect()
 
