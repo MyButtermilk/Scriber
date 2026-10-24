@@ -1733,9 +1733,10 @@ Packaging and scripts:
   only recognized speech in transcript content. Preserve partial speech and
   empty failed history entries. Transcript Detail shows the failure separately
   and excludes legacy error-only content from word counts and copy/export
-  actions; never add an error string as a transcript segment. This includes
-  provider-error emergency stops and a pipeline task that ends without a stop
-  request; the latter must move INITIALIZING/RECORDING through FAILED before
+  actions; the Live Mic history marks failed cards and its copy action uses the
+  same `isFailureOnlyContent` rule. Never add an error string as a transcript
+  segment. This includes provider-error emergency stops and a pipeline task
+  that ends without a stop request; the latter must move INITIALIZING/RECORDING through FAILED before
   IDLE, or the next start ignores its microphone-ready edge. The app-global
   toast bridge suppresses a failed `session_finished` already reported by its
   session's `error` event, because one visible toast would otherwise replace

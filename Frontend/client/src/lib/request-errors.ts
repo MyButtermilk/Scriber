@@ -111,6 +111,11 @@ export async function responseErrorMessage(res: Response): Promise<string> {
   return `${res.status}: ${res.statusText || translateNow("Request failed")}`;
 }
 
+/** Legacy failed records stored only their failure text as transcript content. */
+export function isFailureOnlyContent(status: unknown, content: unknown): boolean {
+  return status === "failed" && /^\[(error|timeout|download error|storage error)\]/i.test(String(content || "").trim());
+}
+
 export function extractFailureMessage(content: string, step: string): string {
   const rawContent = (content || "").trim();
   if (rawContent) {

@@ -31,6 +31,7 @@ import {
   extractFailureMessage,
   friendlyError,
   friendlyRequestMessage,
+  isFailureOnlyContent,
   responseErrorMessage,
 } from "@/lib/request-errors";
 import { prepareSummaryHtml } from "@/lib/summary-html";
@@ -444,9 +445,7 @@ export default function TranscriptDetail() {
   const summaryCopyText = summaryFormat === "html" ? preparedSummaryHtml.plainText : summaryMarkdown;
   const hasSummary = summarySource.length > 0;
   const isFailedTranscript = transcript.status === "failed";
-  const failedContentLooksLikeErrorOnly =
-    isFailedTranscript &&
-    /^\[(error|timeout|download error|storage error)\]/i.test(String(transcript.content || "").trim());
+  const failedContentLooksLikeErrorOnly = isFailureOnlyContent(transcript.status, transcript.content);
   const transcriptContent = failedContentLooksLikeErrorOnly ? "" : String(transcript.content || "");
   const hasExportableContent = !failedContentLooksLikeErrorOnly && Boolean(transcriptContent.trim() || hasSummary);
   const transcriptWordCount = useMemo(
