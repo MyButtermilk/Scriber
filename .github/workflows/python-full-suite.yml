@@ -53,12 +53,23 @@ jobs:
           .\venv\Scripts\python.exe -m pytest -n 4 --dist loadfile -ra `
             --junitxml build\test-results\python-full-suite.xml
 
+      - name: Verify real Windows host profile serially
+        shell: pwsh
+        env:
+          SCRIBER_RUN_HOST_PROFILE_SMOKE: "1"
+        run: >-
+          .\venv\Scripts\python.exe -m pytest -q
+          tests/perf/test_windows_autoresearch_contract.py::test_profile_script_writes_profile_json
+          --junitxml build/test-results/windows-host-profile.xml
+
       - name: Upload Python test results
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: python-full-suite-${{ github.run_id }}-${{ github.run_attempt }}
-          path: build/test-results/python-full-suite.xml
+          path: |
+            build/test-results/python-full-suite.xml
+            build/test-results/windows-host-profile.xml
           if-no-files-found: warn
           retention-days: 14
 

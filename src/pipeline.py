@@ -1662,6 +1662,20 @@ class ConnectionErrorHandlerProcessor(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class _FileProviderErrorProcessor(FrameProcessor):
+    """Route downstream provider errors to the worker that owns file cleanup."""
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, ErrorFrame):
+            # The worker only receives errors upstream. Reuse its error handler
+            # so failures cancel unfinished input too, without a detached task
+            # or waiting for teardown from inside the provider's processing lane.
+            await self.push_frame(frame, FrameDirection.UPSTREAM)
+            return
+        await self.push_frame(frame, direction)
+
+
 class PipecatVadSpeechObserver(FrameProcessor):
     """Tracks Pipecat VAD speech events for diagnostics and silent-session skips."""
 
@@ -4280,9 +4294,7 @@ class ScriberPipeline:
                 if self._requires_provider_ingress_audio_drain():
                     self._provider_ingress_drain_processor = _ProviderIngressDrainProcessor()
                     steps.append(self._provider_ingress_drain_processor)
-                # Errors a provider pushes downstream never reach the worker's
-                # on_pipeline_error handler below; record them here instead.
-                steps.append(ConnectionErrorHandlerProcessor(on_provider_error=self._record_terminal_error))
+                steps.append(_FileProviderErrorProcessor())
                 if transcript_cb:
                     steps.append(transcript_cb)
 

@@ -892,11 +892,11 @@ class _FailingFileProvider(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-def _file_pipeline_with(monkeypatch, provider, file_input):
+def _file_pipeline_with(monkeypatch, provider, file_input, *, service_name="deepgram"):
     monkeypatch.setattr(pipeline_module, "FfmpegAudioFileInput", lambda *_a, **_k: file_input)
     texts = []
     pipeline = ScriberPipeline(
-        service_name="deepgram",
+        service_name=service_name,
         on_status_change=None,
         on_transcription=lambda text, *_a, **_k: texts.append(text),
     )
@@ -922,17 +922,50 @@ async def test_file_pipeline_provider_error_fails_instead_of_returning_partial_t
 
 
 @pytest.mark.asyncio
-async def test_file_pipeline_cancelled_by_provider_error_does_not_wait_for_unfinished_input(monkeypatch):
+@pytest.mark.parametrize("downstream", [False, True])
+async def test_file_pipeline_cancelled_by_provider_error_does_not_wait_for_unfinished_input(monkeypatch, downstream):
     # FfmpegAudioFileInput signals `done` only after its queue drains, which a
     # cancelled pipeline never does; the error must still end the call.
     file_input = _SingleFrameFileInput(finishes=False)
-    pipeline, _texts = _file_pipeline_with(monkeypatch, _FailingFileProvider(), file_input)
+    pipeline, _texts = _file_pipeline_with(monkeypatch, _FailingFileProvider(downstream=downstream), file_input)
 
     with pytest.raises(RuntimeError, match="provider rejected the file"):
         await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
 
     assert file_input.stopped is True
     assert pipeline.is_active is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["start", "audio"])
+async def test_gemini_file_provider_failure_aborts_unfinished_input(monkeypatch, failure_stage):
+    from src.gemini_realtime_stt import GeminiTranscribeLiveSTTService
+
+    file_input = _SingleFrameFileInput(finishes=False)
+    provider = GeminiTranscribeLiveSTTService(api_key="inert-test-key")
+    connection_attempts = 0
+
+    async def reject_connection():
+        nonlocal connection_attempts
+        connection_attempts += 1
+        if failure_stage == "start" or connection_attempts > 1:
+            # Exercise the actual adapter's downstream fatal ErrorFrame at
+            # startup and after StartFrame has already passed the provider.
+            await provider._fail("connection", "synthetic provider refusal", close_connection=False)
+            return False
+        return True
+
+    monkeypatch.setattr(provider, "_connect", reject_connection)
+    pipeline, _texts = _file_pipeline_with(monkeypatch, provider, file_input, service_name="gemini_realtime")
+
+    with pytest.raises(RuntimeError, match="synthetic provider refusal"):
+        await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert not file_input.done.is_set()
+    assert file_input.stopped is True
+    assert pipeline.is_active is False
+    assert pipeline.task.has_finished()
+    assert pipeline._provider_request_state != "result_received"
 
 
 @pytest.mark.asyncio

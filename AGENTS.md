@@ -928,6 +928,10 @@ Packaging and scripts:
   End/Stop/Cancel frames, flush, and cleanup wait for them. Finals arriving
   while an insertion runs (for example behind the previous paste's clipboard
   lease) are coalesced into one insertion instead of one lease wait each.
+  Emergency stops retain that session's insertion predecessor until its
+  remaining output settles, even after native capture is released. A later
+  recording may capture immediately but must not insert ahead of older text;
+  shutdown must retain and join the owning finalizer.
   The synchronous `flush()` remains only for the benchmark visible-text
   contract. Keystroke typing is the last fallback: an interrupted
   `keyboard.write` is terminal, never retyped through pyautogui, and injector
@@ -1501,9 +1505,10 @@ Packaging and scripts:
   `idle_timeout_secs=None`: Pipecat otherwise cancels a worker after 300 s
   without transcription or VAD speech frames, which discards a long
   whole-recording dictation and truncates a file with a long quiet passage.
-  The Pipecat file path fails on any provider `ErrorFrame`, upstream through
-  `on_pipeline_error` and downstream through `ConnectionErrorHandlerProcessor`,
-  cancels the worker, and never reports a pipeline that ended before its
+  The Pipecat file path routes every provider `ErrorFrame` to the worker's
+  `on_pipeline_error` handler, including downstream errors through
+  `_FileProviderErrorProcessor`. Cancel unfinished input immediately rather
+  than waiting for EOF, and never report a pipeline that ended before its
   `EndFrame` as a complete transcript. Synthetic VAD turn
   boundaries must use `VADUserStartedSpeakingFrame` and
   `VADUserStoppedSpeakingFrame`, which are the frames consumed by Pipecat
@@ -1766,7 +1771,10 @@ Packaging and scripts:
   and excludes legacy error-only content from word counts and copy/export
   actions; the Live Mic history marks failed cards and its copy action uses the
   same `isFailureOnlyContent` rule. Never add an error string as a transcript
-  segment. This includes provider-error emergency stops and a pipeline task
+  segment. This includes provider-error emergency stops: preserve the failed record
+  independently of cleanup errors and caller cancellation. A native cleanup
+  retry cannot recover speech after the record reference has been discarded.
+  It also includes a pipeline task
   that ends without a stop request; the latter must move INITIALIZING/RECORDING through FAILED before
   IDLE, or the next start ignores its microphone-ready edge. The app-global
   toast bridge suppresses a failed `session_finished` already reported by its
@@ -2674,6 +2682,11 @@ never make the suite depend on a developer `.env`, real API keys, or untracked
 AutoResearch session files. Keep the scoped mypy gate limited to `src/api`,
 `src/core`, `src/runtime`, and `src/data` until a separately reviewed branch
 expands the baseline.
+
+The real Windows host-profile smoke runs serially after parallel pytest in
+the full-suite CI job, with `SCRIBER_RUN_HOST_PROFILE_SMOKE=1`. Its CIM,
+PowerShell, and runtime inventory must not compete with four pytest workers;
+keep the serial step required and publish its separate JUnit result.
 
 Real-controller tests that acquire native-audio ownership must bind
 `src.database._DB_PATH` to a per-test temporary database before constructing the

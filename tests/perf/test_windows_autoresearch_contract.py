@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import math
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -449,11 +450,19 @@ def test_benchmark_lint_rejects_unknown_without_override():
     assert lint(output, allow_unknown=True) == []
 
 
-def test_profile_script_writes_profile_json(monkeypatch):
+@pytest.mark.skipif(
+    sys.platform != "win32" or os.environ.get("SCRIBER_RUN_HOST_PROFILE_SMOKE") != "1",
+    reason="Real Windows host profiling runs in the dedicated serial CI step, outside the parallel unit suite",
+)
+def test_profile_script_writes_profile_json(monkeypatch, tmp_path):
     monkeypatch.delenv("SCRIBER_AZURE_MAI_CAPTURE_TIME_MP3", raising=False)
     monkeypatch.delenv("SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV", raising=False)
-    profile_path = REPO_ROOT / "tmp" / "autoresearch-test-profile.json"
-    repeat_path = REPO_ROOT / "tmp" / "autoresearch-test-profile-repeat.json"
+    profile_path = tmp_path / "profile.json"
+    repeat_path = tmp_path / "profile-repeat.json"
+    # Host inventory is real, but the JSON contract must not inspect a local
+    # developer installation or share output files with another test run.
+    install_root = tmp_path / "empty-install"
+    install_root.mkdir()
 
     def collect(path: Path) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -466,6 +475,8 @@ def test_profile_script_writes_profile_json(monkeypatch):
                 str(REPO_ROOT / "benchmarks" / "windows" / "profile.ps1"),
                 "-OutputPath",
                 str(path),
+                "-InstallRoot",
+                str(install_root),
                 "-Python",
                 sys.executable,
             ],
@@ -473,7 +484,7 @@ def test_profile_script_writes_profile_json(monkeypatch):
             text=True,
             capture_output=True,
             check=False,
-            # Full xdist CI load can delay nested PowerShell and Git startup.
+            # Bound a stuck inventory subprocess, not parallel-suite throughput.
             timeout=120,
         )
 

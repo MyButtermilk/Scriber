@@ -56,7 +56,7 @@ def _payload(
             "lapack": "none" if "+scriber" in version else "scipy-openblas",
         },
         "numpyCoreSha256": core_sha256,
-        "packageVersions": dict(equivalence.EXPECTED_PACKAGE_VERSIONS),
+        "packageVersions": equivalence._locked_package_versions(Path(__file__).resolve().parents[1]),
         "fixture": {
             "contract": "ScriberSmartTurnSyntheticPcmV1",
             "sampleRateHz": 16_000,
@@ -107,6 +107,45 @@ def test_equivalent_public_and_no_blas_payloads_are_accepted() -> None:
 
     assert ok is True
     assert errors == []
+
+
+def test_current_release_package_versions_are_accepted_and_drift_is_rejected(tmp_path: Path) -> None:
+    constraints = Path(__file__).resolve().parents[1] / "requirements-release-constraints.txt"
+    pins = dict(
+        line.split("==", 1)
+        for line in constraints.read_text(encoding="utf-8").splitlines()
+        if line.startswith(("onnxruntime==", "pipecat-ai=="))
+    )
+    wheel = _wheel_identity()
+    baseline = _payload("2.4.6", role="baseline")
+    candidate = _payload("2.4.6+scriber.noblas.1", role="candidate")
+    for payload in (baseline, candidate):
+        payload["packageVersions"] = dict(pins)
+
+    assert compare_payloads(baseline, candidate, wheel_identity=wheel) == (True, [])
+
+    for role, payload in (("baseline", baseline), ("candidate", candidate)):
+        payload["packageVersions"]["pipecat-ai"] = "0.0.0"
+        assert compare_payloads(baseline, candidate, wheel_identity=wheel) == (
+            False,
+            [f"{role}_package_versions_mismatch"],
+        )
+        payload["packageVersions"] = dict(pins)
+
+    # --repo-root owns the evidence inputs, including a newer lock than the
+    # harness's own checkout. Both environments must follow that selected lock.
+    selected_pins = {**pins, "pipecat-ai": "99.0.0"}
+    (tmp_path / equivalence.RELEASE_CONSTRAINTS_PATH).write_text(
+        "\n".join(f"{name}=={version}" for name, version in selected_pins.items()),
+        encoding="utf-8",
+    )
+    assert compare_payloads(baseline, candidate, wheel_identity=wheel, repo_root=tmp_path) == (
+        False,
+        ["baseline_package_versions_mismatch", "candidate_package_versions_mismatch"],
+    )
+    for payload in (baseline, candidate):
+        payload["packageVersions"] = dict(selected_pins)
+    assert compare_payloads(baseline, candidate, wheel_identity=wheel, repo_root=tmp_path) == (True, [])
 
 
 def test_feature_probability_and_decision_drift_fail_closed() -> None:

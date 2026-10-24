@@ -174,6 +174,9 @@ async def test_capture_restarts_before_old_provider_finishes_and_late_text_stays
     first_stop = continuation.stop()
     await asyncio.wait_for(first.capture_stopped.wait(), 2)
     assert not first_stop.done()
+    # A late provider-error cleanup must not take over the finalizer after
+    # native release has lowered its busy gate, or replace its insertion chain.
+    assert await ctl._emergency_stop_pipeline(session_id=first_record.id) is False
 
     second, second_record = await continuation.start("Nachtrag.")
     assert second is not first
@@ -1140,3 +1143,95 @@ async def test_push_to_talk_new_press_survives_cancelled_start_cleanup(continuat
         result = await asyncio.wait_for(start_b, 2)
         assert (await result.json()).get("pushToTalkIgnored") is not True
         await asyncio.wait_for(continuation.pipeline_created.wait(), 2)
+
+
+@pytest.mark.asyncio
+async def test_emergency_stop_orders_real_injector_drain_before_successor_and_shutdown(continuation, monkeypatch):
+    import threading
+
+    from pipecat.frames.frames import TranscriptionFrame
+
+    from src.injector import TextInjector
+    from src.pipeline import Pipeline, PipelineParams, PipelineWorker, ScriberPipeline, WorkerRunner
+
+    ctl = continuation.controller
+    original, record = await continuation.start("")
+    previous_task = ctl._pipeline_task
+    injector = TextInjector(inject_immediately=True)
+    first_insert_started, release_insert = threading.Event(), threading.Event()
+
+    def insert(text):
+        if text == "A1 ":
+            first_insert_started.set()
+            assert release_insert.wait(10)
+        continuation.injected.append(text)
+
+    monkeypatch.setattr(injector, "_inject_text", insert)
+    pipeline = ScriberPipeline(service_name="soniox")
+    pipeline.pipeline = Pipeline([injector])
+    pipeline.text_injector = injector
+    pipeline.task = PipelineWorker(
+        pipeline.pipeline,
+        params=PipelineParams(),
+        enable_rtvi=False,
+        enable_turn_tracking=False,
+        idle_timeout_secs=None,
+        check_dangling_tasks=False,
+    )
+    pipeline.runner = WorkerRunner(handle_sigint=False, handle_sigterm=False, check_dangling_tasks=False)
+    await pipeline.runner.add_workers(pipeline.task)
+    pipeline.is_active = True
+    pipeline._start_done.clear()
+    ready = asyncio.Event()
+
+    @pipeline.runner.event_handler("on_ready")
+    async def on_ready(_runner):
+        ready.set()
+
+    async def run():
+        try:
+            await pipeline.runner.run()
+        finally:
+            pipeline.is_active = False
+            pipeline._start_done.set()
+
+    old_task = asyncio.create_task(run())
+    ctl._pipeline, ctl._pipeline_task = pipeline, old_task
+    original.finished.set()
+    await previous_task
+    await asyncio.wait_for(ready.wait(), 2)
+    close = AsyncMock()
+    monkeypatch.setattr(ctl._local_polisher, "close", close)
+    try:
+        await pipeline.task.queue_frame(TranscriptionFrame(text="A1", user_id="u", timestamp="now"))
+        assert await asyncio.to_thread(first_insert_started.wait, 2)
+        await pipeline.task.queue_frame(TranscriptionFrame(text="A2", user_id="u", timestamp="now"))
+        async with asyncio.timeout(2):
+            while injector._pending_immediate != ["A2 "]:
+                await asyncio.sleep(0)
+        # Exercise ScriberPipeline.stop and Pipecat's actual cancellation path.
+        # The native capture is free even though its first paste is still held.
+        assert await ctl._emergency_stop_pipeline(session_id=record.id)
+        assert web_api._audio_admission_owner(ctl).current is None
+        assert not ctl._is_stopping
+        successor, _ = await continuation.start("B1")
+        assert successor.text_injection_enabled is False
+        next_stop = continuation.stop()
+        successor.provider_gate.set()
+        await asyncio.wait_for(successor.provider_completed.wait(), 2)
+        assert continuation.injected == []
+        # A bounded shutdown must retain the real output drain and must not
+        # close its finalizer dependencies while A1/A2 still own insertion.
+        assert await ctl.drain_background_tasks_for_shutdown(timeout_seconds=0.01) > 0
+        close.assert_not_awaited()
+        release_insert.set()
+        await asyncio.wait_for(asyncio.gather(old_task, next_stop), 3)
+        await asyncio.wait_for(ctl._local_polishing_close_task, 2)
+        assert continuation.injected == ["A1 ", "A2 ", "B1"]
+        close.assert_awaited_once()
+        assert ctl._live_mic_finalizer_tasks == set()
+        assert ctl._live_mic_insertion_done == {}
+    finally:
+        release_insert.set()
+        await asyncio.wait_for(asyncio.gather(old_task, return_exceptions=True), 5)
+        await injector.flush_async()

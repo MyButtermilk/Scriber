@@ -3739,11 +3739,15 @@ async def test_emergency_stop_clears_state_before_resuming_idle_prewarm(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_emergency_stop_retains_partial_speech_as_failed_record():
-    loop = asyncio.get_running_loop()
-    ctl = ScriberWebController(loop)
-
+@pytest.mark.parametrize("release_fails", [False, True], ids=["confirmed-release", "release-error"])
+async def test_emergency_stop_retains_partial_speech_as_failed_record(monkeypatch, tmp_path, release_fails):
+    web_api.db._close_all_connections()
+    monkeypatch.setattr(web_api.db, "_DB_PATH", tmp_path / "transcripts.db")
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._audio_admission_store = web_api.AudioAdmissionStore(tmp_path / "audio.db")
+    ctl._audio_admission_store.initialize()
     session_id = "emergency-partial-session"
+    await web_api._claim_persistent_audio(ctl, owner_kind="live_mic", owner_id=session_id, heartbeat=False)
     rec = _make_record(session_id)
     rec.append_final_text("words before the outage")
     ctl._current = rec
@@ -3751,26 +3755,86 @@ async def test_emergency_stop_retains_partial_speech_as_failed_record():
     ctl._is_listening = True
     ctl._active_provider = "soniox"
     ctl._pipeline = _StopOkPipeline()
+    release = ctl._audio_admission_store.release
+    if release_fails:
+        monkeypatch.setattr(ctl._audio_admission_store, "release", MagicMock(side_effect=OSError("release failed")))
 
-    with (
-        patch.object(ctl, "broadcast", new=AsyncMock()),
-        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()) as history_mock,
-        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()) as save_mock,
-        patch.object(ctl, "_resume_idle_mic_prewarm_after_capture"),
-    ):
-        stopped = await ctl._emergency_stop_pipeline(
-            session_id=session_id,
-            failure_message="Soniox connection timed out.",
+    try:
+        with (
+            patch.object(ctl, "broadcast", new=AsyncMock()),
+            patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()) as history_mock,
+            patch.object(ctl, "_resume_idle_mic_prewarm_after_capture"),
+        ):
+            if release_fails:
+                with pytest.raises(OSError, match="release failed"):
+                    await ctl._emergency_stop_pipeline(session_id=session_id, failure_message="Soniox disconnected.")
+                assert ctl._pending_live_mic_native_cleanup is not None
+                monkeypatch.setattr(ctl._audio_admission_store, "release", release)
+                assert await ctl._retry_live_mic_native_cleanup(session_id=session_id)
+            else:
+                assert await ctl._emergency_stop_pipeline(session_id=session_id, failure_message="Soniox disconnected.")
+        assert ctl._current is None
+        assert rec.status == "failed"
+        assert rec.content_text() == "words before the outage"
+        assert rec.step == "Soniox disconnected."
+        assert ctl._history[0] is rec
+        saved = web_api.db.get_transcript(session_id)
+        assert saved is not None
+        assert (saved["content"], saved["status"], saved["step"]) == (
+            "words before the outage",
+            "failed",
+            "Soniox disconnected.",
         )
+        history_mock.assert_awaited_once_with(record=rec, reason="pipeline_failed")
+    finally:
+        monkeypatch.setattr(ctl._audio_admission_store, "release", release)
+        owner = web_api._audio_admission_owner(ctl)
+        if owner.current is not None:
+            await owner.release()
+        await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1)
+        ctl.shutdown()
+        ctl.close_persistence_stores()
 
-    assert stopped is True
-    assert ctl._current is None
-    assert rec.status == "failed"
-    assert rec.content_text() == "words before the outage"
-    assert rec.step == "Soniox connection timed out."
-    assert ctl._history[0] is rec
-    save_mock.assert_awaited_once_with(rec)
-    history_mock.assert_awaited_once_with(record=rec, reason="pipeline_failed")
+
+@pytest.mark.asyncio
+async def test_emergency_stop_finishes_retention_despite_repeated_caller_cancellation(monkeypatch, tmp_path):
+    web_api.db._close_all_connections()
+    monkeypatch.setattr(web_api.db, "_DB_PATH", tmp_path / "transcripts.db")
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    rec = _make_record("cancelled-emergency-waiter")
+    rec.append_final_text("retained despite cancellation")
+    ctl._current, ctl._session_id, ctl._is_listening = rec, rec.id, True
+    ctl._pipeline = _StopOkPipeline()
+    save_entered, allow_save = asyncio.Event(), asyncio.Event()
+    save = ctl._save_transcript_to_db_async
+
+    async def gated_save(record):
+        save_entered.set()
+        await allow_save.wait()
+        return await save(record)
+
+    monkeypatch.setattr(ctl, "_save_transcript_to_db_async", gated_save)
+    monkeypatch.setattr(ctl, "_resume_idle_mic_prewarm_after_capture", MagicMock())
+    task = asyncio.create_task(ctl._emergency_stop_pipeline(session_id=rec.id))
+    try:
+        await asyncio.wait_for(save_entered.wait(), 2)
+        for _ in range(2):
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+        allow_save.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        saved = web_api.db.get_transcript(rec.id)
+        assert saved is not None
+        assert saved["content"] == "retained despite cancellation"
+        assert saved["status"] == "failed"
+    finally:
+        allow_save.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1)
+        ctl.shutdown()
+        ctl.close_persistence_stores()
 
 
 class _StopRaisesProviderTextPipeline:

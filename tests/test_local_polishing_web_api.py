@@ -5,6 +5,7 @@ import hashlib
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -934,6 +935,13 @@ async def test_live_controller_cloud_deadline_injects_raw_before_failure_broadca
     tmp_path,
 ):
     cancellation_observed = asyncio.Event()
+    deadline: asyncio.Timeout | None = None
+
+    def controlled_timeout(seconds):
+        nonlocal deadline
+        assert seconds == 0.05
+        deadline = asyncio.timeout(None)
+        return deadline
 
     async def hanging_generation(
         _prompt,
@@ -950,6 +958,10 @@ async def test_live_controller_cloud_deadline_injects_raw_before_failure_broadca
         assert openrouter_max_semantic_attempts == 1
         assert isinstance(routing_diagnostics, dict)
         assert provider_http_transport is controller._provider_http_transport
+        assert deadline is not None
+        # Exercise real asyncio deadline cancellation once generation is
+        # pending, independent of CI scheduling or controller setup latency.
+        deadline.reschedule(asyncio.get_running_loop().time())
         try:
             await asyncio.Event().wait()
         finally:
@@ -961,6 +973,7 @@ async def test_live_controller_cloud_deadline_injects_raw_before_failure_broadca
     monkeypatch.setattr(Config, "POST_PROCESSING_ENGINE", "cloud", raising=False)
     monkeypatch.setattr(Config, "POST_PROCESSING_MODEL", "cerebras/gemma-4-31b", raising=False)
     monkeypatch.setattr("src.post_processing.generate_live_mic_text", hanging_generation)
+    monkeypatch.setattr("src.post_processing.asyncio", SimpleNamespace(timeout=controlled_timeout))
     controller = ScriberWebController(asyncio.get_running_loop())
     actions: list[tuple[str, str]] = []
 
@@ -984,18 +997,16 @@ async def test_live_controller_cloud_deadline_injects_raw_before_failure_broadca
         content="Unveränderter Rohtext",
     )
 
-    started = asyncio.get_running_loop().time()
     await asyncio.wait_for(
         controller._post_process_and_inject_live_transcript(
             record,
             session_id="cloud-deadline",
             provider="soniox",
         ),
-        timeout=0.5,
+        timeout=5.0,
     )
-    elapsed = asyncio.get_running_loop().time() - started
 
-    assert elapsed < 0.5
+    assert deadline is not None and deadline.expired()
     assert cancellation_observed.is_set()
     assert record.content_text() == "Unveränderter Rohtext"
     assert [kind for kind, _value in actions] == ["broadcast", "inject", "broadcast"]
