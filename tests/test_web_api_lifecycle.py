@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import threading
+import time
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -906,6 +907,33 @@ def test_segmented_live_providers_use_async_finalization_timeout(monkeypatch):
         assert web_api._live_pipeline_uses_async_finalization(types.SimpleNamespace(service_name=service_name)) is True
 
     assert web_api._live_pipeline_uses_async_finalization(types.SimpleNamespace(service_name="soniox")) is False
+
+
+@pytest.mark.asyncio
+async def test_long_dictation_stop_budget_grows_for_whole_recording_uploads(monkeypatch):
+    monkeypatch.delenv("SCRIBER_LIVE_MIC_ASYNC_STOP_TIMEOUT_SEC", raising=False)
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    def budget(service_name: str, elapsed_seconds: float) -> float | None:
+        record = _make_record(f"{service_name}-{elapsed_seconds}")
+        record._started_at_monotonic = time.monotonic() - elapsed_seconds
+        return ctl._live_mic_stop_timeout_seconds(
+            current=record,
+            async_finalization=True,
+            quiet_recording=False,
+            service_name=service_name,
+        )
+
+    # Short dictation keeps its proportional budget.
+    assert budget("azure_mai", 30) == pytest.approx(18.5, abs=0.5)
+    # A 20-minute dictation is uploaded and transcribed as a whole after stop;
+    # the former 90-second ceiling cancelled it and discarded the recording.
+    assert budget("azure_mai", 1200) == pytest.approx(428, abs=1)
+    assert budget("gemini_stt", 3600) == 600.0
+    # Realtime streams finalize only their last utterance.
+    assert budget("openai", 1200) == 90.0
+
+    ctl.shutdown()
 
 
 @pytest.mark.asyncio
@@ -3743,6 +3771,39 @@ async def test_emergency_stop_retains_partial_speech_as_failed_record():
     assert ctl._history[0] is rec
     save_mock.assert_awaited_once_with(rec)
     history_mock.assert_awaited_once_with(record=rec, reason="pipeline_failed")
+
+
+class _StopRaisesProviderTextPipeline:
+    async def stop(self):
+        # The pipeline re-raises the provider's terminal error text.
+        raise RuntimeError("provider echoed 'vertrauliche Worte'")
+
+
+@pytest.mark.asyncio
+async def test_emergency_stop_logs_only_the_stop_error_type():
+    from loguru import logger
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    session_id = "emergency-log-session"
+    ctl._current = _make_record(session_id)
+    ctl._session_id = session_id
+    ctl._is_listening = True
+    ctl._pipeline = _StopRaisesProviderTextPipeline()
+    messages: list[str] = []
+    sink = logger.add(lambda message: messages.append(str(message)), level="DEBUG")
+    try:
+        with (
+            patch.object(ctl, "broadcast", new=AsyncMock()),
+            patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+            patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+            patch.object(ctl, "_resume_idle_mic_prewarm_after_capture"),
+        ):
+            await ctl._emergency_stop_pipeline(session_id=session_id)
+    finally:
+        logger.remove(sink)
+
+    assert any("Emergency stop warning: RuntimeError" in message for message in messages)
+    assert not any("vertrauliche" in message for message in messages)
 
 
 @pytest.mark.asyncio

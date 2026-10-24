@@ -533,6 +533,11 @@ _AUDIO_ENGINE_ENV = "SCRIBER_AUDIO_ENGINE"
 _RUST_AUDIO_PROBE_ENV = "SCRIBER_RUST_AUDIO_PROBE"
 _LIVE_MIC_ASYNC_STOP_TIMEOUT_ENV = "SCRIBER_LIVE_MIC_ASYNC_STOP_TIMEOUT_SEC"
 _LIVE_MIC_SILENT_STOP_TIMEOUT_ENV = "SCRIBER_LIVE_MIC_SILENT_STOP_TIMEOUT_SEC"
+# Realtime streams finalize only their last utterance after stop. Every other
+# async-finalization route uploads the whole recording after stop, so its stop
+# budget keeps growing with the recording (provider requests allow 900 s).
+_LIVE_MIC_STREAMING_ASYNC_STOP_SERVICES = frozenset({"elevenlabs", "openai"})
+_LIVE_MIC_ASYNC_STOP_TIMEOUT_MAX_SECONDS = 600.0
 _LIVE_MIC_SILENCE_RMS_THRESHOLD_ENV = "SCRIBER_LIVE_MIC_SILENCE_RMS_THRESHOLD"
 _LIVE_MIC_TOGGLE_START_GRACE_ENV = "SCRIBER_LIVE_MIC_TOGGLE_START_GRACE_SEC"
 _LIVE_MIC_COLD_START_PREBUFFER_MS_ENV = "SCRIBER_LIVE_MIC_COLD_START_PREBUFFER_MS"
@@ -13414,7 +13419,7 @@ class ScriberWebController:
                 except TimeoutError:
                     logger.warning("Emergency stop timeout - forcing cleanup")
                 except Exception as e:
-                    logger.debug(f"Emergency stop warning: {e}")
+                    logger.debug("Emergency stop warning: {}", type(e).__name__)
 
             # Cancel previous pipeline task if still running.
             if pipeline_task and not pipeline_task.done():
@@ -13423,7 +13428,7 @@ class ScriberWebController:
                     await asyncio.wait_for(asyncio.shield(pipeline_task), timeout=1.0)
         except Exception as e:
             pipeline_stop_completed = False
-            logger.error(f"Emergency stop error: {e}")
+            logger.error("Emergency stop error: {}", type(e).__name__)
         finally:
             if owns_stop:
                 native_audio_stop_confirmation = _pipeline_native_audio_stop_confirmation(
@@ -13482,6 +13487,7 @@ class ScriberWebController:
         current: TranscriptRecord | None,
         async_finalization: bool,
         quiet_recording: bool,
+        service_name: str = "",
     ) -> float | None:
         if not async_finalization:
             return None
@@ -13491,12 +13497,17 @@ class ScriberWebController:
         elapsed = 0.0
         if current is not None and current._started_at_monotonic is not None:
             elapsed = max(0.0, time.monotonic() - current._started_at_monotonic)
-        dynamic_default = min(90.0, max(12.0, 8.0 + elapsed * 0.35))
+        ceiling = (
+            90.0
+            if service_name in _LIVE_MIC_STREAMING_ASYNC_STOP_SERVICES
+            else _LIVE_MIC_ASYNC_STOP_TIMEOUT_MAX_SECONDS
+        )
+        dynamic_default = min(ceiling, max(12.0, 8.0 + elapsed * 0.35))
         return env_float(
             _LIVE_MIC_ASYNC_STOP_TIMEOUT_ENV,
             dynamic_default,
             minimum=5.0,
-            maximum=180.0,
+            maximum=_LIVE_MIC_ASYNC_STOP_TIMEOUT_MAX_SECONDS,
         )
 
     def _on_background_stop_done(self, task: asyncio.Task) -> None:
@@ -13508,7 +13519,7 @@ class ScriberWebController:
         except asyncio.CancelledError:
             return
         except Exception as exc:
-            logger.warning(f"Background live mic stop failed: {exc}")
+            logger.warning("Background live mic stop failed: {}", type(exc).__name__)
             return
         # A canceled startup may never create a pipeline. Its no-op stop then
         # has no capture-stopped/finalization callback to admit a newer start
@@ -14034,6 +14045,7 @@ class ScriberWebController:
                 current=current,
                 async_finalization=async_finalization,
                 quiet_recording=quiet_recording,
+                service_name=str(getattr(pipeline, "service_name", "") or ""),
             )
             is_realtime_service = (
                 pipeline

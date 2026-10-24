@@ -1051,6 +1051,12 @@ Packaging and scripts:
   repeated stops, and never arm a deferred toggle. The existing state and
   WebSocket events remain completion authority; `/api/live-mic/stop` is kept
   only for compatibility callers that explicitly need a synchronous result.
+  Routes that upload the whole recording after stop get a finalization budget
+  of 8 s plus 0.35 times the recording length, capped at 600 s (below the
+  900-second provider requests); the ElevenLabs/OpenAI realtime streams keep
+  their 90-second ceiling. A 90-second ceiling for whole-recording uploads
+  cancelled long dictations and discarded them. Stop-path failure logs carry
+  exception types only.
 - Meeting segments treat `startMs`, `endMs`, and `durationMs` as one contract.
   `durationMs` must equal `endMs - startMs` in REST and `meeting_segment`
   events; transcript and citation controls must preserve timestamp seeking.
