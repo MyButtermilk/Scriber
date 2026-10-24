@@ -1497,7 +1497,14 @@ Packaging and scripts:
   must use the Pipecat `Settings` API; do not restore deprecated
   `InputParams`, `LiveOptions`, or pre-1.5 fallback paths. Overrides of
   `push_error` must forward Pipecat 1.14's `category` and
-  `force_treat_as_permanent` keywords. Synthetic VAD turn
+  `force_treat_as_permanent` keywords. Every Scriber `PipelineWorker` passes
+  `idle_timeout_secs=None`: Pipecat otherwise cancels a worker after 300 s
+  without transcription or VAD speech frames, which discards a long
+  whole-recording dictation and truncates a file with a long quiet passage.
+  The Pipecat file path fails on any provider `ErrorFrame`, upstream through
+  `on_pipeline_error` and downstream through `ConnectionErrorHandlerProcessor`,
+  cancels the worker, and never reports a pipeline that ended before its
+  `EndFrame` as a complete transcript. Synthetic VAD turn
   boundaries must use `VADUserStartedSpeakingFrame` and
   `VADUserStoppedSpeakingFrame`, which are the frames consumed by Pipecat
   streaming and segmented STT services. The frozen runtime import gate must

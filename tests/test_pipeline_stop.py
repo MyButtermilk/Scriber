@@ -849,6 +849,114 @@ async def test_gemini_file_pipeline_fences_delayed_last_system_audio_before_endf
         await asyncio.gather(transcription, return_exceptions=True)
 
 
+class _SingleFrameFileInput(FrameProcessor):
+    """File input that feeds one audio block and optionally never finishes."""
+
+    def __init__(self, *_args, finishes: bool = True, **_kwargs):
+        super().__init__()
+        self.done = asyncio.Event()
+        self.error = None
+        self.finishes = finishes
+        self.stopped = False
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        await self.push_frame(frame, direction)
+        if isinstance(frame, StartFrame):
+            await self.push_frame(
+                InputAudioRawFrame(audio=b"\x01\x00" * 256, sample_rate=16_000, num_channels=1),
+                direction,
+            )
+            if self.finishes:
+                self.done.set()
+
+    async def stop(self, _frame):
+        self.stopped = True
+
+
+class _FailingFileProvider(FrameProcessor):
+    def __init__(self, *, permanent: bool = False, downstream: bool = False):
+        super().__init__()
+        self.permanent = permanent
+        self.downstream = downstream
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InputAudioRawFrame):
+            await self.push_frame(TranscriptionFrame("partial", "user", "now"), direction)
+            if self.downstream:
+                await self.push_frame(pipeline_module.ErrorFrame(error="provider rejected the file"), direction)
+            else:
+                await self.push_error("provider rejected the file", force_treat_as_permanent=self.permanent)
+            return
+        await self.push_frame(frame, direction)
+
+
+def _file_pipeline_with(monkeypatch, provider, file_input):
+    monkeypatch.setattr(pipeline_module, "FfmpegAudioFileInput", lambda *_a, **_k: file_input)
+    texts = []
+    pipeline = ScriberPipeline(
+        service_name="deepgram",
+        on_status_change=None,
+        on_transcription=lambda text, *_a, **_k: texts.append(text),
+    )
+    monkeypatch.setattr(pipeline, "_create_stt_service", lambda _session, for_file=False: provider)
+    return pipeline, texts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("permanent", "downstream"), [(False, False), (True, False), (False, True)])
+async def test_file_pipeline_provider_error_fails_instead_of_returning_partial_text(monkeypatch, permanent, downstream):
+    file_input = _SingleFrameFileInput()
+    pipeline, texts = _file_pipeline_with(
+        monkeypatch,
+        _FailingFileProvider(permanent=permanent, downstream=downstream),
+        file_input,
+    )
+
+    with pytest.raises(RuntimeError, match="provider rejected the file"):
+        await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert texts == ["partial"]
+    assert pipeline._provider_request_state != "result_received"
+
+
+@pytest.mark.asyncio
+async def test_file_pipeline_cancelled_by_provider_error_does_not_wait_for_unfinished_input(monkeypatch):
+    # FfmpegAudioFileInput signals `done` only after its queue drains, which a
+    # cancelled pipeline never does; the error must still end the call.
+    file_input = _SingleFrameFileInput(finishes=False)
+    pipeline, _texts = _file_pipeline_with(monkeypatch, _FailingFileProvider(), file_input)
+
+    with pytest.raises(RuntimeError, match="provider rejected the file"):
+        await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert file_input.stopped is True
+    assert pipeline.is_active is False
+
+
+@pytest.mark.asyncio
+async def test_file_pipeline_disables_pipecat_idle_cancellation(monkeypatch):
+    worker_kwargs = []
+
+    def _worker(*args, **kwargs):
+        worker_kwargs.append(kwargs)
+        return PipelineWorker(*args, **kwargs)
+
+    class _PassthroughProvider(FrameProcessor):
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            await self.push_frame(frame, direction)
+
+    monkeypatch.setattr(pipeline_module, "PipelineWorker", _worker)
+    pipeline, _texts = _file_pipeline_with(monkeypatch, _PassthroughProvider(), _SingleFrameFileInput())
+
+    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert worker_kwargs and worker_kwargs[0]["idle_timeout_secs"] is None
+    assert pipeline._provider_request_state == "result_received"
+
+
 @pytest.mark.asyncio
 async def test_provider_ingress_drain_timeout_fails_closed_without_terminal_upload(
     monkeypatch,
@@ -971,12 +1079,16 @@ async def test_pipecat_owned_file_request_state_is_terminal_only_after_success(
     class _Task:
         def __init__(self, *_args, **_kwargs):
             self.finished = False
+            self.stop_requested = asyncio.Event()
+
+        def event_handler(self, _name):
+            return lambda handler: handler
 
         def has_finished(self):
             return self.finished
 
         async def stop_when_done(self):
-            return None
+            self.stop_requested.set()
 
         async def cancel(self, **_kwargs):
             self.finished = True
@@ -989,6 +1101,8 @@ async def test_pipecat_owned_file_request_state_is_terminal_only_after_success(
             self.workers = workers
 
         async def run(self):
+            # A real worker runs until the EndFrame queued by stop_when_done.
+            await self.workers[0].stop_requested.wait()
             self.workers[0].finished = True
             if runner_fails:
                 raise RuntimeError("synthetic provider failure")

@@ -4130,6 +4130,11 @@ class ScriberPipeline:
                     enable_rtvi=False,
                     enable_turn_tracking=False,
                     check_dangling_tasks=False,  # suppress false-positive dangling task warnings (e.g., Soniox keepalive)
+                    # Pipecat cancels a worker after 300 s without transcription
+                    # or VAD speech frames. A whole-recording upload emits its
+                    # first final only after stop, so that would discard long
+                    # dictations; the controller owns the recording lifetime.
+                    idle_timeout_secs=None,
                 )
 
                 # Register error handler to catch non-fatal errors (e.g., Soniox websocket timeout)
@@ -4215,12 +4220,38 @@ class ScriberPipeline:
             except Exception as exc:
                 logger.debug(f"File input abort cleanup warning: {exc}")
 
+    async def _handle_file_pipeline_error(self, task, frame) -> None:
+        error_msg = str(frame.error) if hasattr(frame, "error") else str(frame)
+        error = getattr(frame, "exception", None)
+        self._last_error_diagnostics.update(exception_diagnostics(error if isinstance(error, Exception) else error_msg))
+        self._record_terminal_error(error_msg)
+        logger.bind(meta=self.last_error_diagnostics()).error("File pipeline processing failed")
+        # The provider has dropped or will drop part of the file. Stop feeding
+        # it rather than returning a transcript with a silent gap.
+        if not task.has_finished():
+            await task.cancel(reason="file provider failed")
+
+    async def _wait_for_file_input_or_pipeline_end(
+        self,
+        file_input: FfmpegAudioFileInput,
+        run_task: asyncio.Task,
+    ) -> None:
+        feed_done = asyncio.ensure_future(file_input.done.wait())
+        try:
+            await asyncio.wait({feed_done, run_task}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            if not feed_done.done():
+                feed_done.cancel()
+            await asyncio.gather(feed_done, return_exceptions=True)
+
     async def transcribe_file(self, file_path: str) -> None:
         self._provider_request_started = False
         self._provider_request_state = "not_started"
         self._provider_ingress_drain_processor = None
         if self.is_active:
             return
+        self._terminal_error = None
+        self._last_error_diagnostics = {}
         logger.info("Transcribing audio file (provider={})", self.service_name)
         self._start_done.clear()
         file_input: FfmpegAudioFileInput | None = None
@@ -4249,6 +4280,9 @@ class ScriberPipeline:
                 if self._requires_provider_ingress_audio_drain():
                     self._provider_ingress_drain_processor = _ProviderIngressDrainProcessor()
                     steps.append(self._provider_ingress_drain_processor)
+                # Errors a provider pushes downstream never reach the worker's
+                # on_pipeline_error handler below; record them here instead.
+                steps.append(ConnectionErrorHandlerProcessor(on_provider_error=self._record_terminal_error))
                 if transcript_cb:
                     steps.append(transcript_cb)
 
@@ -4259,7 +4293,16 @@ class ScriberPipeline:
                     enable_rtvi=False,
                     enable_turn_tracking=False,
                     check_dangling_tasks=False,
+                    # A file with a long silent or music passage produces no
+                    # transcription frames; Pipecat would cancel it as idle and
+                    # the truncated transcript would look complete.
+                    idle_timeout_secs=None,
                 )
+
+                @self.task.event_handler("on_pipeline_error")
+                async def handle_file_pipeline_error(task, frame):
+                    await self._handle_file_pipeline_error(task, frame)
+
                 self.runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
                 await self.runner.add_workers(self.task)
                 self.is_active = True
@@ -4275,7 +4318,14 @@ class ScriberPipeline:
 
                 # Wait until the input transport has finished feeding (and its internal audio queue has drained),
                 # then end the pipeline gracefully so providers can flush final transcripts.
-                await file_input.done.wait()
+                await self._wait_for_file_input_or_pipeline_end(file_input, run_task)
+                if run_task.done():
+                    # A provider failure cancelled the pipeline mid-file. The
+                    # aborted-pipeline cleanup below stops the decoder.
+                    await run_task
+                    raise RuntimeError(
+                        self._terminal_error or "File transcription ended before the whole file was processed."
+                    )
                 await self._await_provider_ingress_audio_drain(file_input)
                 await self.task.stop_when_done()
 
@@ -4284,6 +4334,8 @@ class ScriberPipeline:
 
                 if file_input.error:
                     raise RuntimeError(file_input.error)
+                if self._terminal_error:
+                    raise RuntimeError(self._terminal_error)
                 self._provider_request_state = "result_received"
 
         except (ValueError, ImportError) as e:

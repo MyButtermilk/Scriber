@@ -18,7 +18,7 @@ PROVIDER_WRAPPER_MODULES = (
 )
 
 
-def test_pipeline_workers_disable_unused_rtvi_and_turn_tracking() -> None:
+def test_pipeline_workers_disable_unused_rtvi_turn_tracking_and_idle_cancellation() -> None:
     source = (REPO_ROOT / "src" / "pipeline.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     calls = [
@@ -34,6 +34,11 @@ def test_pipeline_workers_disable_unused_rtvi_and_turn_tracking() -> None:
             value = keywords.get(name)
             assert isinstance(value, ast.Constant), name
             assert value.value is False, name
+        # Pipecat's 300 s idle cancellation would discard a long dictation
+        # whose only final arrives after stop.
+        idle = keywords.get("idle_timeout_secs")
+        assert isinstance(idle, ast.Constant)
+        assert idle.value is None
     assert source.count("await self.runner.add_workers(self.task)") == 2
     assert "self.runner.run(self.task)" not in source
 
