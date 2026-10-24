@@ -760,7 +760,7 @@ def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
             "name": "scriber-frozen-python-runtime",
             "revision": RUNTIME_CONTRACT_REVISION,
         },
-        "python": {"version": "3.14.7", "cacheTag": "cpython-314"},
+        "python": {"version": "3.14.9", "cacheTag": "cpython-314"},
     }
     inner_key = hashlib.sha256(_compact(input_manifest).encode()).hexdigest()
     runtime_files = [
@@ -776,7 +776,7 @@ def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
             "name": "scriber-frozen-python-runtime",
             "revision": RUNTIME_CONTRACT_REVISION,
         },
-        "python": {"version": "3.14.7", "cacheTag": "cpython-314"},
+        "python": {"version": "3.14.9", "cacheTag": "cpython-314"},
         "executable": {"sha256": _sha256(executable), "length": executable.stat().st_size},
         "content": {"fileCount": 2, "treeSha256": tree_sha, "files": runtime_files},
     }

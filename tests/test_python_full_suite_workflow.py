@@ -87,7 +87,7 @@ def test_all_python_quality_lanes_run_independently_and_remain_required() -> Non
         assert job["steps"][0]["with"]["ref"] == "${{ github.sha }}"
         setup = job["steps"][1]
         assert setup["uses"] == "./.github/actions/setup-python-quality"
-        assert setup["with"]["python-version"] == "3.14.7"
+        assert setup["with"]["python-version"] == "3.14.9"
         assert setup["with"].get("publish-cache", "false") == ("true" if job_id == "python-full-suite" else "false")
         for step in job["steps"]:
             assert "continue-on-error" not in step

@@ -39,7 +39,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.14.7"
+          python-version: "3.14.9"
       - name: Verify current-run quality evidence through GitHub API
         # GitHub's jobs API identifies PR runs by the head commit; checkout and
         # the actual tests still use github.sha (the synthetic merge commit).
@@ -75,7 +75,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.14.7"
+          python-version: "3.14.9"
 
       - name: Install Python gate dependencies
         shell: pwsh

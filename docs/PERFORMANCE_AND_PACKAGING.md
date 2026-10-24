@@ -4183,20 +4183,21 @@ evidence, dock/USB/default-device transitions, longer Always-On-Mic runs,
 restart diagnostics, and eventually moving more device-listing/mapping helpers
 out of `sounddevice`.
 
-## Python 3.14.7 runtime performance
+## Python 3.14.9 runtime performance
 
-The product runtime is CPython 3.14.7. Its conservative release configuration
+The product runtime is CPython 3.14.9. Its conservative release configuration
 is the official Windows x64 build with JIT disabled; this captures the standard
 3.14 interpreter and library improvements without accepting experimental JIT
 warm-up or a custom compiler/runtime chain without user-latency evidence.
 
 The compiler-variant selection evidence below was collected on CPython 3.14.6.
-The 3.14.7 maintenance update keeps the selected official O0 configuration and
-adds its upstream bug and build fixes; it does not promote JIT, free-threading,
-or a custom runtime without a fresh installed-performance qualification.
+The 3.14.7 and 3.14.9 maintenance updates keep the selected official O0
+configuration and add their upstream bug, security and build fixes (3.14.9
+bundles OpenSSL 3.5.9); they do not promote JIT, free-threading, or a custom
+runtime without a fresh installed-performance qualification.
 
 The isolated `python-runtime-ab-v1` profile can compare the official 3.13.14
-anchor, official 3.14.7 with JIT off/on, ClangCL+ThinLTO+PGO with JIT off/on,
+anchor, official 3.14.9 with JIT off/on, ClangCL+ThinLTO+PGO with JIT off/on,
 and the same custom runtime with the tail-call interpreter. All candidates are
 full frozen/Tauri builds from one dependency/runtime lock. JIT warm-up and
 compile time remain in the user-facing latency score. Promotion requires a
@@ -4243,7 +4244,7 @@ the newer canonical provider metrics, so the legacy FastLocal aggregate reports
 profile compares O0 directly against C0 and T0 instead of rewriting that
 baseline. Both custom runtimes fail the provider, App UX, and minimum-gain
 promotion rules independently of that structural block. O0 is therefore the
-selected production runtime: official CPython 3.14.7 with JIT disabled. The
+selected production runtime: official CPython 3.14 (now 3.14.9) with JIT disabled. The
 AMD evidence is emitted below `build/python-runtime-amd` and remains
 intentionally untracked.
 

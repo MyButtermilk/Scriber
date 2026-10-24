@@ -118,7 +118,7 @@ scripts\project-python.cmd -m mypy src\api src\core src\runtime src\data
 ```
 
 Install the CI test tools from `requirements-test.txt` and resolve the complete
-Windows CPython 3.14.7 graph through `requirements-test-constraints.txt`. The
+Windows CPython 3.14.9 graph through `requirements-test-constraints.txt`. The
 constraints file closes all direct and transitive versions used by the full
 suite without changing the broader application dependency policy. `mypy` runs
 in that complete Windows environment after pytest. The reusable Windows job
@@ -847,7 +847,7 @@ Frontend\src-tauri\target\release\backend\scriber-backend.exe `
 ## Python 3.14 runtime selection
 
 The shipping fallback and current production default are the official Windows
-CPython 3.14.7 runtime with JIT disabled (`Official` / `Disabled`). The default
+CPython 3.14.9 runtime with JIT disabled (`Official` / `Disabled`). The default
 is compiled into the release build; it is not a `.env` or Settings option.
 The Tauri supervisor removes inherited `PYTHON_JIT`, `PYTHON_GIL`, and
 `PYTHON_TLBC`, sets the manifest-bound `PYTHON_JIT=0`, and the frozen backend
@@ -857,7 +857,7 @@ state, or JIT expectation differs from the packaged policy.
 The separate `python-runtime-ab-v1` research profile may compare A13, O0/O1,
 C0/C1, T0/T1, and the non-release K0 calibration. Build inputs are bound by
 `packaging/cpython-windows-runtime-input-lock-v1.json`; custom builds are
-offline after provisioning and use the unchanged CPython `v3.14.7` source,
+offline after provisioning and use the unchanged CPython `v3.14.9` source,
 LLVM 19.1.7, ClangCL, ThinLTO, and the upstream PGO job. Run the evaluator
 through `scripts/perf/python_runtime_ab.py`. Never promote JIT, Clang/PGO, or
 the tail-call interpreter from a microbenchmark. A candidate must pass every
@@ -896,7 +896,7 @@ anchor required to promote an optimized runtime.
 
 For the current PyInstaller 6.20 frozen backend, O1/C1/T1 are expected to fail
 closed: PyInstaller's isolated embedded-interpreter configuration ignores
-`PYTHON_JIT`, while CPython 3.14.7 exposes no supported post-initialization JIT
+`PYTHON_JIT`, while CPython 3.14.9 exposes no supported post-initialization JIT
 setter. Do not weaken isolation by enabling every Python environment variable
 or claim that a source-runtime JIT probe represents the packaged app. The
 JIT-off O0/C0/T0 family remains measurable; use

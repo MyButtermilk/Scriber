@@ -541,10 +541,10 @@ Packaging and scripts:
   independent clean builds must produce identical shipping bytes.
 - `packaging/cpython-windows-runtime-input-lock-v1.json`,
   `scripts/build_cpython_windows_runtime.ps1`, and
-  `scripts/perf/profiles/python-runtime/`: exact CPython 3.14.7/LLVM 19.1.7
+  `scripts/perf/profiles/python-runtime/`: exact CPython 3.14.9/LLVM 19.1.7
   runtime inputs, offline ClangCL/ThinLTO/PGO/tail builders, and the isolated
   `python-runtime-ab-v1` promotion profile. Shipping defaults to official
-  CPython 3.14.7 with JIT disabled unless installed FullLocal evidence promotes
+  CPython 3.14.9 with JIT disabled unless installed FullLocal evidence promotes
   a variant; microbenchmarks cannot select a product runtime. Stock PyInstaller
   6.20 ignores `PYTHON_JIT` in its isolated embedded interpreter, so O1/C1/T1
   currently fail the frozen runtime policy and are not eligible variants.
@@ -702,7 +702,7 @@ Packaging and scripts:
 ### Tauri Runtime
 
 - Tauri is the primary desktop runtime.
-- The packaged backend runtime is exact CPython 3.14.7 (`cpython-314`). Release
+- The packaged backend runtime is exact CPython 3.14.9 (`cpython-314`). Release
   defaults are `PythonRuntimeFlavor=Official` and
   `PythonJitMode=Disabled`; they are build parameters, not `.env` or Settings
   values. Before launching the worker, Rust removes inherited `PYTHON_JIT`,
@@ -1481,7 +1481,7 @@ Packaging and scripts:
   provider StageResult remains the only safe way to continue without a second
   provider call.
 - Standard backend builds pin `pipecat-ai[silero]==1.14.0`. Regenerate both
-  constraint files with a Windows/CPython 3.14.7 resolution and keep them
+  constraint files with a Windows/CPython 3.14.9 resolution and keep them
   identical apart from their headers. Pipecat 1.8+ connects services inside
   `setup()` and holds frames until `StartFrame`; tests that drive a real
   service connection must patch the connector before `setup()` or drive

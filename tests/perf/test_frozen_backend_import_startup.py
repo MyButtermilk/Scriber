@@ -40,7 +40,7 @@ def _candidate(tmp_path: Path, variant_id: str) -> Candidate:
         "schemaVersion": 1,
         "name": "scriber-python-runtime-policy",
         "python": {
-            "version": "3.14.7",
+            "version": "3.14.9",
             "cacheTag": "cpython-314",
             "dll": {
                 "path": "_internal/python314.dll",

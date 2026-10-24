@@ -10,11 +10,11 @@ from scripts import verify_project_python
 @pytest.mark.parametrize(
     ("version", "cache_tag", "installed_pipecat", "expected"),
     [
-        ((3, 14, 7), "cpython-314", "9.8.7", 0),
+        ((3, 14, 9), "cpython-314", "9.8.7", 0),
         ((3, 14, 6), "cpython-314", "9.8.7", 5),
-        ((3, 14, 7), "cpython-313", "9.8.7", 5),
-        ((3, 14, 7), "cpython-314", "9.8.6", 4),
-        ((3, 14, 7), "cpython-314", None, 4),
+        ((3, 14, 9), "cpython-313", "9.8.7", 5),
+        ((3, 14, 9), "cpython-314", "9.8.6", 4),
+        ((3, 14, 9), "cpython-314", None, 4),
     ],
 )
 def test_project_python_verifier_checks_runtime_and_locked_dependency(
@@ -47,6 +47,6 @@ def test_project_python_verifier_checks_runtime_and_locked_dependency(
     if expected == 0:
         assert error == ""
     elif expected == 5:
-        assert "CPython 3.14.7 (cpython-314) is required" in error
+        assert "CPython 3.14.9 (cpython-314) is required" in error
     else:
         assert "pipecat-ai 9.8.7 is required" in error

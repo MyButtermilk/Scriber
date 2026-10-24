@@ -412,7 +412,7 @@ foreach ($path in @(
 )) {
     Add-RawFileEntry -Entries $pythonDependencyEntries -Path $path
 }
-$pythonDependencyEntries.Add("constant`tpython-version`t3.14.7")
+$pythonDependencyEntries.Add("constant`tpython-version`t3.14.9")
 $pythonDependencyEntries.Add("constant`tpython-cache-tag`tcpython-314")
 $pythonDependencyEntries.Add("parameter`tpython-runtime-flavor`t$PythonRuntimeFlavor")
 $pythonDependencyEntries.Add("parameter`tpython-jit-mode`t$PythonJitMode")

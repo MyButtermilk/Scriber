@@ -21,7 +21,7 @@ jobs:
       - name: Prepare validated Python test environment
         uses: ./.github/actions/setup-python-quality
         with:
-          python-version: "3.14.7"
+          python-version: "3.14.9"
           publish-cache: "true"
 
       - name: Restore locked FFmpeg test runtime
@@ -75,7 +75,7 @@ jobs:
       - name: Prepare validated Python test environment
         uses: ./.github/actions/setup-python-quality
         with:
-          python-version: "3.14.7"
+          python-version: "3.14.9"
 
       - name: Set up pinned Node for the real-browser File smoke
         uses: actions/setup-node@v6
@@ -138,7 +138,7 @@ jobs:
       - name: Prepare validated Python test environment
         uses: ./.github/actions/setup-python-quality
         with:
-          python-version: "3.14.7"
+          python-version: "3.14.9"
 
       - name: Typecheck extended Python tranche
         shell: pwsh
