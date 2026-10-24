@@ -101,6 +101,7 @@ _FILE_COMMIT_SILENCE_RMS = 100.0
 _FILE_COMMIT_MIN_TAIL_SECONDS = 0.25
 _FILE_COMMIT_FLUSH_TIMEOUT_SECONDS = 10.0
 _FILE_COMMIT_RESULT_IDLE_TIMEOUT_SECONDS = 20.0
+_FILE_PIPELINE_ABORT_TIMEOUT_SECONDS = 5.0
 
 
 async def _raise_soniox_status(response: Any, operation: str) -> None:
@@ -4571,23 +4572,29 @@ class ScriberPipeline:
         run_task: asyncio.Task | None,
         file_input: FfmpegAudioFileInput | None,
     ) -> None:
-        if self.task and not self.task.has_finished():
-            try:
-                await asyncio.wait_for(
-                    self.task.cancel(reason="file transcription aborted"),
-                    timeout=5.0,
-                )
-            except Exception as exc:
-                logger.debug(f"File pipeline task cancellation warning: {exc}")
+        try:
+            await asyncio.wait_for(
+                self._cancel_worker_past_end_frame(self.task, reason="file transcription aborted"),
+                timeout=5.0,
+            )
+        except Exception as exc:
+            logger.debug(f"File pipeline task cancellation warning: {exc}")
         if self.runner:
             try:
                 await asyncio.wait_for(self.runner.cancel(), timeout=5.0)
             except Exception as exc:
                 logger.debug(f"File pipeline runner cancellation warning: {exc}")
-        if run_task is not None and not run_task.done():
-            run_task.cancel()
         if run_task is not None:
-            await asyncio.gather(run_task, return_exceptions=True)
+            # Let the runner finish its own shutdown first; cancel it only when
+            # it does not, and never wait for it without a bound.
+            _done, pending = await asyncio.wait({run_task}, timeout=_FILE_PIPELINE_ABORT_TIMEOUT_SECONDS)
+            if pending:
+                run_task.cancel()
+                _done, pending = await asyncio.wait({run_task}, timeout=_FILE_PIPELINE_ABORT_TIMEOUT_SECONDS)
+            if pending:
+                logger.warning("File pipeline runner did not finish after cancellation")
+            else:
+                await asyncio.gather(run_task, return_exceptions=True)
         if file_input is not None:
             try:
                 await asyncio.wait_for(file_input.stop(EndFrame()), timeout=7.0)
@@ -4602,8 +4609,27 @@ class ScriberPipeline:
         logger.bind(meta=self.last_error_diagnostics()).error("File pipeline processing failed")
         # The provider has dropped or will drop part of the file. Stop feeding
         # it rather than returning a transcript with a silent gap.
-        if not task.has_finished():
-            await task.cancel(reason="file provider failed")
+        await self._cancel_worker_past_end_frame(task, reason="file provider failed")
+
+    async def _cancel_worker_past_end_frame(self, task: Any, *, reason: str) -> None:
+        """Cancel the worker even while it waits for an EndFrame.
+
+        Pipecat queues a worker cancellation behind the EndFrame it waits for
+        without a bound. A processor that fails on that EndFrame never forwards
+        it, so only a CancelFrame sent into the pipeline itself reaches the sink
+        and lets the worker finish.
+        """
+        if task is None or task.has_finished():
+            return
+        try:
+            await task.cancel(reason=reason)
+        except Exception as exc:
+            logger.debug("Pipeline worker cancel warning: {}", type(exc).__name__)
+        if self.pipeline is not None and not task.has_finished():
+            try:
+                await self.pipeline.queue_frame(CancelFrame(reason=reason))
+            except Exception as exc:
+                logger.debug("Pipeline cancel frame warning: {}", type(exc).__name__)
 
     async def _commit_file_tail_and_wait(
         self,
@@ -4759,6 +4785,10 @@ class ScriberPipeline:
                 await self._await_provider_ingress_audio_drain(file_input)
                 await self.task.stop_when_done()
 
+                # Not awaiting the task itself keeps a cancellation of this call
+                # out of the runner, whose shutdown would then wait for a worker
+                # stuck on its EndFrame; the cleanup below ends that worker.
+                await asyncio.wait({run_task})
                 await run_task
                 pipeline_finished = True
 
@@ -5975,11 +6005,7 @@ class ScriberPipeline:
         except TimeoutError:
             logger.warning(f"Timeout while stopping pipeline (>{wait_timeout}s); forcing cancel")
             self._record_terminal_error(f"Transcription did not finish within {wait_timeout:g} seconds.")
-            if self.task and not self.task.has_finished():
-                try:
-                    await self.task.cancel(reason="stop timeout")
-                except Exception as e:
-                    logger.debug(f"Task cancel error: {e}")
+            await self._cancel_worker_past_end_frame(self.task, reason="stop timeout")
             if self.runner:
                 try:
                     await self.runner.cancel()

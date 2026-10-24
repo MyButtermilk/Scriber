@@ -990,6 +990,79 @@ async def test_file_pipeline_disables_pipecat_idle_cancellation(monkeypatch):
     assert pipeline._provider_request_state == "result_received"
 
 
+class _EndFrameFailingProvider(FrameProcessor):
+    """A provider whose stop fails, so the EndFrame never reaches the sink."""
+
+    def __init__(self, *, blocks: bool = False):
+        super().__init__()
+        self.blocks = blocks
+        self.end_received = asyncio.Event()
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, EndFrame):
+            self.end_received.set()
+            if self.blocks:
+                await asyncio.Event().wait()
+            raise RuntimeError("provider stop failed")
+        await self.push_frame(frame, direction)
+
+
+@pytest.mark.asyncio
+async def test_file_pipeline_fails_instead_of_hanging_when_the_provider_swallows_end_frame(monkeypatch):
+    pipeline, _texts = _file_pipeline_with(
+        monkeypatch, _EndFrameFailingProvider(), _SingleFrameFileInput(), service_name="groq"
+    )
+
+    with pytest.raises(RuntimeError, match="provider stop failed"):
+        await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert pipeline.task.has_finished()
+    assert pipeline.is_active is False
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_file_stuck_on_its_end_frame_finishes(monkeypatch):
+    provider = _EndFrameFailingProvider(blocks=True)
+    pipeline, _texts = _file_pipeline_with(monkeypatch, provider, _SingleFrameFileInput(), service_name="groq")
+    transcription = asyncio.create_task(pipeline.transcribe_file("synthetic.wav"))
+    await asyncio.wait_for(provider.end_received.wait(), timeout=5.0)
+
+    transcription.cancel()
+    await asyncio.wait_for(asyncio.gather(transcription, return_exceptions=True), timeout=5.0)
+
+    assert pipeline.task.has_finished()
+    assert pipeline.is_active is False
+
+
+@pytest.mark.asyncio
+async def test_worker_cancel_reaches_a_worker_waiting_for_a_swallowed_end_frame():
+    provider = _EndFrameFailingProvider()
+    pipeline = ScriberPipeline(service_name="groq", on_status_change=None)
+    pipeline.pipeline = Pipeline([provider])
+    task = PipelineWorker(pipeline.pipeline, params=PipelineParams(), idle_timeout_secs=None)
+    pipeline.task = task
+    runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
+    await runner.add_workers(task)
+    run_task = asyncio.create_task(runner.run())
+    try:
+        await task.stop_when_done()
+        await asyncio.wait_for(provider.end_received.wait(), timeout=5.0)
+        await task.cancel(reason="plain cancel")
+        await asyncio.sleep(0.2)
+        assert not task.has_finished()  # Pipecat holds the cancel behind the EndFrame.
+
+        await pipeline._cancel_worker_past_end_frame(task, reason="stop timeout")
+
+        await asyncio.wait_for(task.wait(), timeout=5.0)
+        await runner.cancel()
+        await asyncio.wait_for(run_task, timeout=5.0)
+    finally:
+        if not run_task.done():
+            run_task.cancel()
+        await asyncio.gather(run_task, return_exceptions=True)
+
+
 _FILE_BLOCK = 1024
 
 

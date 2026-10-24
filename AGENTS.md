@@ -1515,7 +1515,13 @@ Packaging and scripts:
   services that transcribe only committed audio get commit boundaries from
   `_FileCommitSegmenter`: OpenAI and ElevenLabs every 20-30 s at a pause,
   Deepgram one Finalize after the last audio. Before `EndFrame` the file path
-  waits, idle-bounded, for one provider result per commit. Synthetic VAD turn
+  waits, idle-bounded, for one provider result per commit. Pipecat queues a
+  worker cancellation behind the EndFrame it waits for without a bound, and a
+  processor that raises on that EndFrame never forwards it. Error, abort and
+  stop-timeout paths therefore use `_cancel_worker_past_end_frame`, which also
+  sends a CancelFrame into the pipeline itself; never await the runner task
+  where a caller's cancellation could reach it, and bound abort waits.
+  Synthetic VAD turn
   boundaries must use `VADUserStartedSpeakingFrame` and
   `VADUserStoppedSpeakingFrame`, which are the frames consumed by Pipecat
   streaming and segmented STT services. The frozen runtime import gate must
