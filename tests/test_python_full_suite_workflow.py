@@ -33,26 +33,6 @@ def _pwsh_logical_commands(script: str) -> list[str]:
     return commands
 
 
-def test_python_full_suite_has_reproducible_test_dependency_closure() -> None:
-    dev_requirements = (REPO_ROOT / "requirements-dev.txt").read_text(encoding="utf-8").splitlines()
-    test_requirements = (REPO_ROOT / "requirements-test.txt").read_text(encoding="utf-8").splitlines()
-
-    assert dev_requirements == [
-        "pytest==9.0.1",
-        "pytest-asyncio==1.3.0",
-        "pytest-mock==3.15.1",
-        "PyYAML==6.0.3",
-    ]
-    assert test_requirements == [
-        "-r requirements-dev.txt",
-        "",
-        "PyInstaller==6.20.0",
-        "mypy==2.3.0",
-        "pytest-xdist==3.8.0",
-        "tzdata==2025.3",
-    ]
-
-
 def test_python_test_constraints_resolve_every_direct_requirement_exactly() -> None:
     constraints = [
         Requirement(line)
@@ -82,24 +62,9 @@ def test_python_test_constraints_resolve_every_direct_requirement_exactly() -> N
                 direct_requirements.append(Requirement(line))
 
     assert {canonicalize_name(requirement.name) for requirement in direct_requirements}.issubset(constraint_versions)
-    assert {
-        name: constraint_versions[name]
-        for name in (
-            "ast-serialize",
-            "librt",
-            "mypy",
-            "mypy-extensions",
-            "pathspec",
-            "typing-extensions",
-        )
-    } == {
-        "ast-serialize": "0.6.0",
-        "librt": "0.13.0",
-        "mypy": "2.3.0",
-        "mypy-extensions": "1.1.0",
-        "pathspec": "1.1.1",
-        "typing-extensions": "4.16.0",
-    }
+    for requirement in direct_requirements:
+        resolved = constraint_versions[canonicalize_name(requirement.name)]
+        assert resolved in requirement.specifier, f"{requirement} conflicts with constraint {resolved}"
 
 
 def test_all_python_quality_lanes_run_independently_and_remain_required() -> None:

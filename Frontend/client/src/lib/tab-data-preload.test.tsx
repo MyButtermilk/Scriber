@@ -63,6 +63,11 @@ it("history warms before slow settings and Meeting reads finish, one page at a t
   const stop = preloadPrimaryTabData(client);
   startIdle();
   await vi.waitFor(() => expect(frames.length).toBe(1));
+  const meetingRequests = vi
+    .mocked(fetchWithTimeout)
+    .mock.calls.filter(([url]) => new URL(String(url), "http://localhost").pathname === "/api/meetings");
+  expect(meetingRequests).toHaveLength(1);
+  expect(new URL(String(meetingRequests[0][0]), "http://localhost").searchParams.get("limit")).toBe("1");
   expect(vi.mocked(fetchTranscriptHistoryPage).mock.calls.map(([args]) => args.type)).toEqual(["mic"]);
   frames.shift()!(0);
   await vi.waitFor(() => expect(frames.length).toBe(1));

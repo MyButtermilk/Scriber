@@ -1939,12 +1939,14 @@ async def test_diarization_status_and_install_round_trip(harness):
 
 @pytest.mark.asyncio
 async def test_a_failed_diarization_install_is_reported_without_the_raw_error(harness):
-    harness.diarizer.install_error = RuntimeError("connection to 10.0.0.4 refused")
+    harness.diarizer.install_error = RuntimeError("download failed: token=private-diarizer-token")
     client = await _client(harness)
     try:
         response = await client.post("/api/meetings/diarization-component")
         assert response.status == 502
-        assert (await response.json())["message"]
+        body = await response.json()
+        assert body["message"]
+        assert "private-diarizer-token" not in await response.text()
     finally:
         await client.close()
 

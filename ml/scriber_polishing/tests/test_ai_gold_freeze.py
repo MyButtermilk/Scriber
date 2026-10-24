@@ -143,16 +143,6 @@ def _approved_canonical(
     }
 
 
-def test_default_ai_verified_gold_split_targets_are_exact() -> None:
-    assert DEFAULT_AI_GOLD_SPLIT_TARGETS == {
-        Split.TRAIN: 1_500,
-        Split.VALIDATION: 750,
-        Split.TEST: 1_000,
-        Split.CHALLENGE: 750,
-    }
-    assert sum(DEFAULT_AI_GOLD_SPLIT_TARGETS.values()) == 4_000
-
-
 def test_checked_in_ai_gold_config_freezes_the_public_defaults() -> None:
     config_path = Path(__file__).parents[1] / "configs" / "ai_gold.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -204,15 +194,12 @@ def test_checked_in_ai_gold_config_freezes_the_public_defaults() -> None:
     }
 
 
-def test_ai_gold_candidate_requires_complete_deterministic_and_independent_proof() -> None:
-    candidate = _approved_canonical(1)
-
+def test_ai_gold_candidate_accepts_canonical_records_and_training_pairs() -> None:
+    candidate = _approved_canonical(3)
     assert validate_ai_gold_candidate(candidate) == candidate
 
-
-def test_ai_gold_candidate_accepts_schema_valid_ai_only_training_pairs() -> None:
     pairs = build_dataset_pairs(
-        [_approved_canonical(3)],
+        [candidate],
         seed=270_004,
         variants_per_canonical={split: 1 for split in Split},
     )
@@ -322,7 +309,10 @@ def test_freezes_exact_default_counts_deterministically_without_surfacing_holdou
         "isolation": second_manifest["isolation"] | {"sealed_outputs_written": False}
     }
     assert first.manifest["split_counts"] == {
-        split.value: expected for split, expected in DEFAULT_AI_GOLD_SPLIT_TARGETS.items()
+        "train": 1_500,
+        "validation": 750,
+        "test": 1_000,
+        "challenge": 750,
     }
     assert first.manifest["total_count"] == 4_000
     assert first.manifest["isolation"] == {

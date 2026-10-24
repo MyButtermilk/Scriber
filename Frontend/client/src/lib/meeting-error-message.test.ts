@@ -6,19 +6,25 @@ import { localizeMeetingErrorMessage, meetingAnalysisFailurePresentation } from 
 const translate = (source: string, values?: Record<string, unknown>) =>
   source.replace("{{seconds}}", String(values?.seconds ?? ""));
 
-test("localizes runtime meeting analysis timeout values through stable catalog keys", () => {
-  assert.equal(
-    localizeMeetingErrorMessage("Text generation timed out after 240s. Please try again.", translate),
-    "Text generation timed out after 240s. Please try again.",
-  );
-  assert.equal(
-    localizeMeetingErrorMessage("Summarization timed out after 90.5s. Please try again.", translate),
-    "Summarization timed out after 90.5s. Please try again.",
-  );
-});
+test("localizes runtime timeouts through catalog keys and translates ordinary errors", () => {
+  const catalog: Record<string, string> = {
+    "Text generation timed out after {{seconds}}s. Please try again.":
+      "Textgenerierung nach {{seconds}} s abgebrochen.",
+    "Summarization timed out after {{seconds}}s. Please try again.": "Zusammenfassung nach {{seconds}} s abgebrochen.",
+    "The meeting failed.": "Das Meeting ist fehlgeschlagen.",
+  };
+  const localized = (source: string, values?: Record<string, unknown>) =>
+    (catalog[source] ?? source).replace("{{seconds}}", String(values?.seconds ?? ""));
 
-test("preserves normal meeting errors for the regular translation lookup", () => {
-  assert.equal(localizeMeetingErrorMessage("The meeting failed.", translate), "The meeting failed.");
+  assert.equal(
+    localizeMeetingErrorMessage("Text generation timed out after 240s. Please try again.", localized),
+    "Textgenerierung nach 240 s abgebrochen.",
+  );
+  assert.equal(
+    localizeMeetingErrorMessage("Summarization timed out after 90.5s. Please try again.", localized),
+    "Zusammenfassung nach 90.5 s abgebrochen.",
+  );
+  assert.equal(localizeMeetingErrorMessage("The meeting failed.", localized), "Das Meeting ist fehlgeschlagen.");
 });
 
 test("turns an incomplete meeting analysis into safe, actionable guidance", () => {

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
 import tempfile
 import unittest
-
+from pathlib import Path
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "run_matrix.py"
 SPEC = importlib.util.spec_from_file_location("run_codec_matrix", SCRIPT_PATH)
@@ -34,10 +33,6 @@ CHALLENGER_SPEC.loader.exec_module(CHALLENGER)
 
 
 class CodecMatrixTests(unittest.TestCase):
-    def test_matrix_durations_are_exactly_bounded(self) -> None:
-        self.assertEqual(MATRIX.DURATIONS_SECONDS, (5, 15, 30, 60))
-        self.assertEqual(MATRIX.SAMPLE_RATES_HZ, (16_000, 48_000))
-
     def test_fixture_is_deterministic_and_exact_length(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             first = Path(directory) / "first.pcm"

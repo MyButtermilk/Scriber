@@ -1,7 +1,4 @@
-from src.core.hot_path_tracer import (
-    CANONICAL_HOT_PATH_MARKERS,
-    HotPathTracer,
-)
+from src.core.hot_path_tracer import HotPathTracer
 
 
 def test_hot_path_tracer_reports_segments_in_order():
@@ -60,7 +57,15 @@ def test_hot_path_tracer_binds_privacy_safe_tauri_callback_marker():
     }
     tracer = HotPathTracer("s-tauri", clock_ns=lambda: 1_125_000_000)
 
-    tracer.bind_tauri_hotkey_received(marker)
+    tracer.bind_tauri_hotkey_received(
+        {
+            **marker,
+            "token": "private-token-sentinel",
+            "transcript": "private-transcript-sentinel",
+            "path": "private-path-sentinel",
+            "window": "private-window-sentinel",
+        }
+    )
     tracer.mark("mic_ready")
     snapshot = tracer.snapshot()
 
@@ -105,11 +110,9 @@ def test_hot_path_tracer_exposes_canonical_kpis_without_removing_legacy_pairs():
     assert tracer.report()["legacy_marker_to_final_text_observed_ms"] == 50.0
     assert "non_speech_overhead_ms" not in tracer.canonical_kpis(authoritative_fixture_duration_ms=float("inf"))
     assert "hotkey_received" in tracer.missing_canonical_markers()
-    assert set(CANONICAL_HOT_PATH_MARKERS) >= {
-        "activation_received",
-        "paste_requested",
-        "final_text_observed",
-    }
+    assert "paste_requested" in tracer.missing_canonical_markers()
+    assert "activation_received" not in tracer.missing_canonical_markers()
+    assert "final_text_observed" not in tracer.missing_canonical_markers()
 
 
 def test_hot_path_snapshot_uses_activation_reference_for_button_path():

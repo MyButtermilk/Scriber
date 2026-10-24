@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import re
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-from scriber_polishing.hf_v2_final_evaluation import v2_final_evaluation_runner_payload
 from scriber_polishing.v2_local_compact_evaluation import (
     V2LocalCompactEvaluationError,
     canonicalize_packet_json_file,
@@ -35,27 +31,19 @@ def test_local_wrapper_reserves_new_sibling_work_and_result_paths(tmp_path: Path
         reserve_local_evaluation_paths(second_output)
 
 
-def test_local_wrapper_extracts_hash_bound_namespaced_packet_stages(tmp_path: Path) -> None:
-    runner = v2_final_evaluation_runner_payload().decode("utf-8")
+def test_local_wrapper_extracts_one_valid_stage_and_rejects_missing_ambiguous_or_invalid_stages() -> None:
+    selected_source = "result = 'selected stage'"
+    selected = f"python - <<'PY'\n{selected_source}\nPY\n"
+    unrelated = "python - <<'PY'\nresult = 'other stage'\nPY\n"
 
-    combined = extract_runner_python_stage(runner, "combined case coverage differs")
-    final = extract_runner_python_stage(runner, "Terra source count differs")
+    assert extract_runner_python_stage(unrelated + selected, "selected stage") == selected_source
 
-    assert 'suite+"__"+row["case_id"]' in combined
-    assert 'suite+"__"+case_id' in final
-    assert "len({row[\"case_id\"] for row in terra})!=300" in final
-    for index, source in enumerate((combined, final)):
-        path = tmp_path / f"stage-{index}.py"
-        path.write_text(source + "\n", encoding="utf-8", newline="\n")
-        completed = subprocess.run(
-            [sys.executable, "-m", "py_compile", str(path)],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
-        assert completed.returncode == 0, completed.stderr
-        assert re.search(r"case_id", source)
+    for runner in (unrelated, selected + selected):
+        with pytest.raises(V2LocalCompactEvaluationError, match="exactly one Python stage"):
+            extract_runner_python_stage(runner, "selected stage")
+
+    with pytest.raises(V2LocalCompactEvaluationError, match="does not compile"):
+        extract_runner_python_stage("python - <<'PY'\nresult = 'selected stage\nPY\n", "selected stage")
 
 
 def test_local_wrapper_canonicalizes_windows_packet_json_without_changing_values(tmp_path: Path) -> None:

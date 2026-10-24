@@ -16,7 +16,6 @@ import {
   type MeetingsResponse,
 } from "./api-types";
 import {
-  ACTIVE_MEETING_QUERY_PATH,
   applyMeetingActionItem,
   applyMeetingNoteEvent,
   applyMeetingProgressEvent,
@@ -32,10 +31,6 @@ import {
   refreshMeetingCollections,
   refreshMeetingDetail,
 } from "./meeting-cache";
-
-test("global active Meeting bootstrap never downloads the full Meeting library", () => {
-  assert.equal(ACTIVE_MEETING_QUERY_PATH, "/api/meetings?limit=1");
-});
 
 function meeting(id: string, state: MeetingState = "ready"): MeetingSummary {
   return {

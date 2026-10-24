@@ -8,7 +8,6 @@ construct a ScriberWebController, a pipeline, or an audio device.
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 from aiohttp import web
@@ -263,19 +262,5 @@ async def test_support_bundle_encodes_a_non_ascii_filename(monkeypatch, tmp_path
         # The ASCII fallback stays readable; the exact name rides in filename*.
         assert 'filename="Scriber Diagnose _berblick.zip"' in disposition
         assert "filename*=UTF-8''Scriber%20Diagnose%20%C3%9Cberblick.zip" in disposition
-    finally:
-        await client.close()
-
-
-@pytest.mark.asyncio
-async def test_register_runtime_routes_does_not_need_a_real_controller():
-    """The service holds whatever object it is given; no web_api import."""
-    app = web.Application()
-    register_runtime_routes(app, controller=SimpleNamespace(get_health=lambda: {"ok": "stub"}))
-    client = TestClient(TestServer(app))
-    await client.start_server()
-    try:
-        response = await client.get("/api/health")
-        assert await response.json() == {"ok": "stub"}
     finally:
         await client.close()

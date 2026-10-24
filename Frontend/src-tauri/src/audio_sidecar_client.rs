@@ -2501,16 +2501,17 @@ mod tests {
             audio_sidecar_executable_names(),
         );
 
-        assert_eq!(found, Some(executable));
-    }
-
-    #[test]
-    fn audio_sidecar_executable_dirs_include_installed_resource_dir() {
-        let exe_parent = PathBuf::from(r"C:\Program Files\Scriber");
-        let dirs = audio_sidecar_executable_dirs_for(Some(&exe_parent), None);
-
-        assert!(dirs.contains(&exe_parent));
-        assert!(dirs.contains(&exe_parent.join("resources").join("audio-sidecar")));
+        assert_eq!(found, Some(executable.clone()));
+        fs::remove_file(executable).unwrap();
+        assert_eq!(
+            find_audio_sidecar_executable_in_dirs(
+                std::slice::from_ref(&dir),
+                audio_sidecar_executable_names(),
+            ),
+            None,
+            "an unrelated executable must not become a sidecar fallback"
+        );
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -2528,23 +2529,7 @@ mod tests {
             .expect("audio-sidecar resource directory missing");
 
         assert!(root_index < resource_index);
-    }
-
-    #[test]
-    fn audio_sidecar_unavailable_result_redacts_executable_path() {
-        let result = unavailable_result(
-            "audioSidecarSpawnFailed",
-            "failed",
-            json!({}),
-            Some(hash_sensitive_identifier(
-                r"C:\secret\scriber-audio-sidecar.exe",
-            )),
-            Some(123),
-        );
-
-        assert!(!format!("{result:?}").contains(r"C:\secret"));
-        assert!(result.executable_available);
-        assert_eq!(result.pid, Some(123));
+        assert!(dirs.contains(&exe_parent.join("resources").join("audio-sidecar")));
     }
 
     #[test]

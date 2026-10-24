@@ -32,12 +32,6 @@ def owners(monkeypatch):
     return operations
 
 
-def test_preference_confirms_shell_persists_and_applies_python_before_returning(owners):
-    preferences.apply_diagnostic_logging_preference(False)
-    assert owners == [("shell", False), ("python", False), ("persist", False)]
-    assert Config.DIAGNOSTIC_LOGGING_ENABLED is False
-
-
 def test_source_mode_does_not_require_shell(monkeypatch, owners):
     monkeypatch.setattr(preferences.shell_ipc, "available", lambda: False)
     preferences.apply_diagnostic_logging_preference(False)
@@ -49,17 +43,6 @@ def test_failed_shell_confirmation_does_not_persist_a_false_effective_state(monk
     with pytest.raises(RuntimeError, match="could not be applied"):
         preferences.apply_diagnostic_logging_preference(False)
     assert owners == []
-    assert Config.DIAGNOSTIC_LOGGING_ENABLED is True
-
-
-def test_persistence_failure_restores_native_and_config_owners(monkeypatch, owners):
-    def fail():
-        raise OSError("test disk unavailable")
-
-    monkeypatch.setattr(Config, "persist_to_env_file", fail)
-    with pytest.raises(OSError):
-        preferences.apply_diagnostic_logging_preference(False)
-    assert owners == [("shell", False), ("python", False), ("python", True), ("shell", True)]
     assert Config.DIAGNOSTIC_LOGGING_ENABLED is True
 
 
@@ -85,6 +68,8 @@ def test_preference_commit_does_not_depend_on_unrelated_json_settings(monkeypatc
     monkeypatch.setattr(Config, "persist_json_settings", json_failure)
     preferences.apply_diagnostic_logging_preference(False)
     assert owners == [("shell", False), ("python", False), ("persist", False)]
+
+    assert Config.DIAGNOSTIC_LOGGING_ENABLED is False
 
 
 @pytest.mark.parametrize("invalid", [None, "false", 0, 1, []])

@@ -2546,10 +2546,6 @@ async def test_llama_completion_rejects_unpinned_termination_shape(monkeypatch, 
         await runtime.complete("prompt", max_new_tokens=32)
 
 
-def test_legacy_promotion_surface_is_removed() -> None:
-    assert not hasattr(LocalPolishing, "remove_legacy_revision")
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("response", [{"tokens": []}, {}, {"tokens": [1]}])
 async def test_llama_wake_uses_bounded_empty_tokenization(monkeypatch, tmp_path: Path, response: dict) -> None:

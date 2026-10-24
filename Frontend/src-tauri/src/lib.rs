@@ -6610,20 +6610,6 @@ mod tests {
     }
 
     #[test]
-    fn find_backend_executable_in_dirs_finds_sidecar_name() {
-        let dir = unique_test_dir("sidecar");
-        fs::create_dir_all(&dir).unwrap();
-        let sidecar = dir.join(backend_executable_names()[0]);
-        fs::write(&sidecar, b"test").unwrap();
-
-        let found =
-            find_backend_executable_in_dirs(std::slice::from_ref(&dir), backend_executable_names());
-
-        assert_eq!(found, Some(sidecar));
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
     fn find_backend_executable_in_dirs_prefers_earlier_directory() {
         let first = unique_test_dir("sidecar-first");
         let second = unique_test_dir("sidecar-second");

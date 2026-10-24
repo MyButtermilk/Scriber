@@ -52,8 +52,6 @@ def test_rust_audio_sidecar_smoke_plan_only_writes_artifact(tmp_path: Path) -> N
     assert stdout_payload["requested"]["prebufferMs"] == 0
     assert stdout_payload["requested"]["prewarmBeforeCapture"] is False
     assert stdout_payload["requested"]["prewarmDurationSec"] == 0.5
-    assert "--duration-sec 10" in stdout_payload["exampleCommand"]
-    assert any("10-minute" in item for item in stdout_payload["requirements"])
 
 
 def test_rust_audio_sidecar_observed_duration_uses_frame_span_not_absolute_timestamp() -> None:

@@ -135,15 +135,6 @@ describe("File transcription recovery", () => {
     expect(screen.getByRole("button", { name: "Copy transcript A failed uploaded recording.mp4" })).toBeEnabled();
   });
 
-  it.each(["grid", "list"] as const)(
-    "offers retry for a failed upload in %s view without a podcast episode",
-    async (mode) => {
-      view.mode = mode;
-      mount({});
-      await waitFor(() => expect(screen.getByRole("button", { name: "Retry transcription" })).toBeEnabled());
-    },
-  );
-
   it("keeps transcription retry available when a failed record retains a pending summary marker", async () => {
     mount({ summaryStatus: "pending" });
     await waitFor(() => expect(screen.getByRole("button", { name: "Retry transcription" })).toBeEnabled());
@@ -154,7 +145,9 @@ describe("File transcription recovery", () => {
     request.mockResolvedValue({ ok: true, json: async () => ({ resumeAvailable: true }) });
     mount({});
     expect(request).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Retry transcription" }));
+    const retry = screen.getByRole("button", { name: "Retry transcription" });
+    expect(retry).toBeEnabled();
+    fireEvent.click(retry);
     fireEvent.click(await screen.findByRole("button", { name: "Resume transcription" }));
     await waitFor(() =>
       expect(request).toHaveBeenCalledWith(

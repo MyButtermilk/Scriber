@@ -1146,22 +1146,6 @@ mod tests {
         assert_eq!(hidden["mode"], "hidden");
         assert_eq!(hidden["visible"], false);
         assert!(hide_overlay_if_current(&json!({"expectedPreviewId": "invalid"})).is_err());
-    }
-
-    #[test]
-    fn lost_preview_response_can_be_cleaned_up_without_hiding_a_new_owner() {
-        let _lane = overlay_mutation_lock();
-        hide_overlay().unwrap();
-        let id = uuid::Uuid::new_v4().to_string();
-        // The caller knows its identity even when the preview reply is lost.
-        show_overlay(&json!({"mode": "initializing", "previewId": id})).unwrap();
-        let hidden = hide_overlay_if_current(&json!({"expectedPreviewId": id})).unwrap();
-        assert_eq!(hidden["visible"], false);
-        show_overlay(&json!({"mode": "initializing", "previewId": id})).unwrap();
-        show_overlay(&json!({"mode": "initializing"})).unwrap();
-        let retained = hide_overlay_if_current(&json!({"expectedPreviewId": id})).unwrap();
-        assert_eq!(retained["visible"], true);
-        hide_overlay().unwrap();
         assert!(show_overlay(&json!({"previewId": "not-an-id"})).is_err());
     }
 

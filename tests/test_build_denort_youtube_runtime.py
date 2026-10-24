@@ -177,19 +177,6 @@ def test_verify_only_needs_neither_compiler_nor_raw_denort(monkeypatch: pytest.M
     assert verified == [(output, manifest)]
 
 
-def test_release_runtime_key_tracks_every_quickjs_wrapper_build_input() -> None:
-    source = (REPO_ROOT / "scripts" / "ci" / "write_release_cache_keys.ps1").read_text(encoding="utf-8")
-    runtime_key = source.split("$backendRuntimeEntries = New-EntryList", 1)[1].split(
-        'Write-KeyFile -Name "backend-runtime.txt"', 1
-    )[0]
-
-    assert '"packaging/quickjs-youtube-runtime-lock-v1.json"' in runtime_key
-    assert '"scripts/build_quickjs_youtube_runtime.py"' in runtime_key
-    assert '"scripts/perf/profiles/installer-size/quickjs-runtime-lock-v1.json"' in runtime_key
-    assert '"native/scriber-quickjs-wrapper/Cargo.lock"' in runtime_key
-    assert '"native/scriber-quickjs-wrapper/src/lib.rs"' in runtime_key
-
-
 def test_verify_only_power_shell_path_does_not_require_quickjs_overrides() -> None:
     source = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(encoding="utf-8")
     invocation = source.split("function Invoke-QuickJsYoutubeRuntimeBuild", 1)[1].split(

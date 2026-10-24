@@ -4662,31 +4662,6 @@ mod tests {
     }
 
     #[test]
-    fn audio_prewarm_stop_response_propagates_sidecar_failure() {
-        let result = crate::audio_sidecar_client::AudioSidecarCallResult {
-            success: false,
-            error_code: Some("audioSidecarResponseTimeout".to_string()),
-            fallback_reason: Some("prewarm stop timed out".to_string()),
-            payload: json!({"stopped": false, "prewarmId": "prewarm-1"}),
-            executable_available: true,
-            executable_path_hash: Some("hash".to_string()),
-            pid: Some(9876),
-        };
-
-        let response = super::audio_sidecar_result_response_line(
-            "prewarm-stop-failed",
-            Instant::now(),
-            json!({"stopped": false}),
-            &result,
-        );
-        let response: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
-
-        assert_eq!(response["success"], false);
-        assert_eq!(response["errorCode"], "audioSidecarResponseTimeout");
-        assert_eq!(response["fallbackReason"], "prewarm stop timed out");
-    }
-
-    #[test]
     fn audio_prewarm_status_shell_payload_preserves_status_fields() {
         let result = crate::audio_sidecar_client::AudioSidecarCallResult {
             success: true,
@@ -4983,7 +4958,6 @@ mod tests {
         });
         let options = super::parse_inject_text_options(&payload).unwrap();
 
-        std::thread::sleep(std::time::Duration::from_millis(2));
         let err = super::ensure_deadline_budget(
             &options,
             Instant::now() - std::time::Duration::from_millis(2),

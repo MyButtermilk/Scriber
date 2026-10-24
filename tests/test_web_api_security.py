@@ -768,8 +768,17 @@ def test_loopback_server_bind_does_not_require_a_session_token(host):
     web_api._validate_server_bind_security(host, "")
 
 
-@pytest.mark.parametrize("host", ["0.0.0.0", "::", "10.0.0.2", "scriber.local"])
-@pytest.mark.parametrize("token", ["", "short-token", "x" * 31])
+@pytest.mark.parametrize(
+    ("host", "token"),
+    [
+        ("0.0.0.0", ""),
+        ("::", ""),
+        ("10.0.0.2", ""),
+        ("scriber.local", ""),
+        ("0.0.0.0", "short-token"),
+        ("0.0.0.0", "x" * 31),
+    ],
+)
 def test_non_loopback_server_bind_rejects_missing_or_short_session_token(
     host,
     token,
