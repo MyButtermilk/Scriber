@@ -1897,13 +1897,14 @@ class TranscriptRecord:
         self.duration = _format_duration(elapsed)
         self.updated_at = datetime.now().isoformat()
 
-    def append_final_text(self, text: str) -> None:
+    def append_final_text(self, text: str) -> bool:
+        """Append one final segment; return whether it became transcript text."""
         cleaned = (text or "").strip()
         if not cleaned:
-            return
+            return False
         # Avoid repeats from some providers.
         if self._last_segment == cleaned:
-            return
+            return False
         if not self.content and not self._pending_content_segments:
             self.content = cleaned
         else:
@@ -1924,6 +1925,7 @@ class TranscriptRecord:
                 has_more=self._preview_has_more,
             )
         self.updated_at = datetime.now().isoformat()
+        return True
 
     def replace_content(self, text: str) -> None:
         self.content = ""
@@ -9363,14 +9365,17 @@ class ScriberWebController:
         if session_id is not None and session_id != self._session_id and finalizing_record is None:
             return
         logger.debug(f"Transcription received: final={is_final}, len={len(text) if text else 0}")
+        broadcast_text = text
         if is_final and text:
             self._mark_hot_path(session_id or self._session_id, "first_final_token")
             self._mark_hot_path(session_id or self._session_id, "provider_final_received")
             self._mark_hot_path(session_id or self._session_id, "transcript_parsed")
             with self._current_lock:
                 record = finalizing_record or self._current
-                if record and (session_id is None or record.id == session_id):
-                    record.append_final_text(text)
+                # The record and the injector drop a repeated final. An empty
+                # final still clears the live interim text.
+                if record and (session_id is None or record.id == session_id) and not record.append_final_text(text):
+                    broadcast_text = ""
             self._emit_workflow_event(
                 message="Final transcript chunk received",
                 event="pipeline.transcript.final",
@@ -9385,7 +9390,7 @@ class ScriberWebController:
             )
         if session_id is None:
             session_id = self._session_id
-        payload = transcript_event(text, bool(is_final), session_id=session_id)
+        payload = transcript_event(broadcast_text, bool(is_final), session_id=session_id)
         try:
             self._loop.call_soon_threadsafe(
                 self._queue_transcript_broadcast,

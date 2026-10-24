@@ -5463,3 +5463,33 @@ async def test_toggle_hotkey_poll_loop_triggers_only_on_rising_edge():
         await asyncio.gather(task, return_exceptions=True)
 
     dispatch_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_live_view_does_not_show_a_final_repeat_the_transcript_dropped():
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    session_id = "repeat-final-session"
+    record = _make_record(session_id)
+    ctl._session_id = session_id
+    ctl._current = record
+    delivered: list[tuple[str, bool]] = []
+
+    async def capture(payload):
+        delivered.append((payload["text"], payload["isFinal"]))
+
+    with patch.object(ctl, "broadcast", side_effect=capture):
+        ctl._on_transcription("Okay.", True, session_id=session_id)
+        ctl._on_transcription("Okay", False, session_id=session_id)
+        ctl._on_transcription("Okay.", True, session_id=session_id)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        task = ctl._transcript_broadcast_task
+        if task is not None:
+            await task
+
+    assert record.content_text() == "Okay."
+    # The repeated final still reaches the page so its interim text clears,
+    # but carries no text the page would append to the live transcript.
+    assert delivered == [("Okay.", True), ("", True)]
+
+    ctl.shutdown()

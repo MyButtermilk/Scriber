@@ -921,8 +921,11 @@ Packaging and scripts:
   WebSocket delivery and a successor recording. Cancellation withdraws an
   insertion still queued behind another (focus may have moved) and waits for a
   started dispatch. The synchronous `flush()` remains only for the benchmark
-  visible-text contract. Log FFmpeg upload-encoding failures by exit code and
-  error type only; its stderr names temporary paths under the user profile.
+  visible-text contract. Keystroke typing is the last fallback: an interrupted
+  `keyboard.write` is terminal, never retyped through pyautogui, and injector
+  failures log exception types only. Log FFmpeg upload-encoding failures by
+  exit code and error type only; its stderr names temporary paths under the
+  user profile.
 - Shell IPC diagnostics may expose the latest `injectText` attempt only in
   sanitized form: error codes, fallback reason, allowed markers, restore status,
   `preDelayMode`, requested/applied pre-delay numbers, timing numbers, and
@@ -1575,7 +1578,9 @@ Packaging and scripts:
 - Live Mic may broadcast `InterimTranscriptionFrame` text as replaceable UI
   preview, but it must never append, persist, or inject that text. Only provider
   `TranscriptionFrame` finals enter the transcript and text injector; this also
-  applies to ElevenLabs manual-commit realtime transcription.
+  applies to ElevenLabs manual-commit realtime transcription. A repeated final
+  that the record and injector drop is broadcast without text, so the live
+  view clears its interim preview without showing the repeat.
 - Keep Silero/Pipecat VAD opt-in through `SCRIBER_SEGMENT_SPEECH_WITH_VAD` and
   the Settings toggle only for segmented/async Live Mic routes. A
   provider-native realtime route must never construct, attach, or replenish a

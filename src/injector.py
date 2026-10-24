@@ -1279,7 +1279,8 @@ class TextInjector(FrameProcessor):
             self._inject_text(text)
             return True
         except Exception as exc:
-            logger.warning(f"Text injection failed; transcript retained ({type(exc).__name__}: {exc})")
+            # Exception text can echo inserted characters; log the type only.
+            logger.warning("Text injection failed; transcript retained ({})", type(exc).__name__)
             return False
 
     def _inject_text(self, text: str):
@@ -1406,20 +1407,26 @@ class TextInjector(FrameProcessor):
             phase="before_keyboard_dispatch",
         ):
             return
-        try:
-            if not _ensure_gui_modules() or keyboard is None:
-                raise RuntimeError("keyboard.write unavailable")
-            keyboard.write(text, delay=0.01)  # 10ms per char
-            self._notify_injected(text)
-        except Exception:
+        if _ensure_gui_modules() and keyboard is not None:
             try:
-                logger.warning("keyboard.write failed, falling back to pyautogui.")
-                if not _ensure_gui_modules() or pyautogui is None:
-                    raise RuntimeError("pyautogui.write unavailable")
-                pyautogui.write(text, interval=0.01)
-                self._notify_injected(text)
-            except Exception as e:
-                logger.error(f"Text injection failed with all methods: {e}")
+                keyboard.write(text, delay=0.01)  # 10ms per char
+            except Exception as exc:
+                # Earlier characters may already be in the target; typing the
+                # whole text again through pyautogui would duplicate them.
+                logger.warning(
+                    "Keystroke typing interrupted ({}); transcript retained and unsafe retries disabled",
+                    type(exc).__name__,
+                )
+                return
+            self._notify_injected(text)
+            return
+        try:
+            if not _ensure_gui_modules() or pyautogui is None:
+                raise RuntimeError("pyautogui.write unavailable")
+            pyautogui.write(text, interval=0.01)
+            self._notify_injected(text)
+        except Exception as exc:
+            logger.error("Text injection failed with all methods ({})", type(exc).__name__)
 
     def _notify_injected(self, text: str) -> None:
         if not self.on_injected:
