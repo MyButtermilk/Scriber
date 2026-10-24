@@ -990,6 +990,143 @@ async def test_file_pipeline_disables_pipecat_idle_cancellation(monkeypatch):
     assert pipeline._provider_request_state == "result_received"
 
 
+_FILE_BLOCK = 1024
+
+
+class _BlocksFileInput(FrameProcessor):
+    """File input that feeds 1024-sample blocks of the given levels."""
+
+    def __init__(self, levels):
+        super().__init__()
+        self.levels = levels
+        self.done = asyncio.Event()
+        self.error = None
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        await self.push_frame(frame, direction)
+        if isinstance(frame, StartFrame):
+            for level in self.levels:
+                audio = int(level).to_bytes(2, "little", signed=True) * _FILE_BLOCK
+                await self.push_frame(InputAudioRawFrame(audio=audio, sample_rate=16_000, num_channels=1), direction)
+            self.done.set()
+
+    async def stop(self, _frame):
+        return None
+
+
+class _CommittingProvider(FrameProcessor):
+    """Transcribes each committed segment shortly after its VAD stop."""
+
+    reports_file_commit_results = True
+
+    def __init__(self, *, answers: bool = True):
+        super().__init__()
+        self.answers = answers
+        self.samples = 0
+        self.commit_points: list[int] = []
+        self.settled_at_end: int | None = None
+        self._answer_tasks: list[asyncio.Task] = []
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InputAudioRawFrame):
+            self.samples += len(frame.audio) // 2
+        elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            self.commit_points.append(self.samples)
+            if self.answers:
+                self._answer_tasks.append(asyncio.create_task(self._answer(len(self.commit_points))))
+        elif isinstance(frame, EndFrame):
+            self.settled_at_end = pipeline_module._file_commit_results(self).settled
+        await self.push_frame(frame, direction)
+
+    async def _answer(self, number: int) -> None:
+        await asyncio.sleep(0.05)
+        await self.push_frame(TranscriptionFrame(f"segment {number}", "user", "now"))
+        pipeline_module._file_commit_results(self).settle()
+
+
+def _blocks(seconds: float, level: int) -> list[int]:
+    return [level] * round(seconds * 16_000 / _FILE_BLOCK)
+
+
+@pytest.mark.asyncio
+async def test_realtime_file_commits_close_at_pauses_and_wait_for_every_result(monkeypatch):
+    # 25 s speech, 0.5 s pause, 10 s speech: one cut in the pause, one tail.
+    levels = _blocks(25, 8000) + _blocks(0.5, 0) + _blocks(10, 8000)
+    provider = _CommittingProvider()
+    pipeline, texts = _file_pipeline_with(monkeypatch, provider, _BlocksFileInput(levels), service_name="openai")
+
+    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    pause_cut = (len(_blocks(25, 8000)) + 4) * _FILE_BLOCK  # 0.2 s of quiet blocks
+    assert provider.commit_points == [pause_cut, len(levels) * _FILE_BLOCK]
+    assert texts == ["segment 1", "segment 2"]
+    assert provider.settled_at_end == 2
+
+
+@pytest.mark.asyncio
+async def test_realtime_file_commits_cut_continuous_speech_at_the_maximum(monkeypatch):
+    levels = _blocks(35, 8000)
+    provider = _CommittingProvider()
+    pipeline, texts = _file_pipeline_with(monkeypatch, provider, _BlocksFileInput(levels), service_name="elevenlabs")
+
+    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    forced_cut = -(-30 * 16_000 // _FILE_BLOCK) * _FILE_BLOCK
+    assert provider.commit_points == [forced_cut, len(levels) * _FILE_BLOCK]
+    assert texts == ["segment 1", "segment 2"]
+
+
+@pytest.mark.asyncio
+async def test_deepgram_file_finalizes_once_after_the_last_audio(monkeypatch):
+    levels = _blocks(35, 8000) + _blocks(1, 0)
+    provider = _CommittingProvider()
+    pipeline, texts = _file_pipeline_with(monkeypatch, provider, _BlocksFileInput(levels), service_name="deepgram")
+
+    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert provider.commit_points == [len(levels) * _FILE_BLOCK]
+    assert texts == ["segment 1"]
+    assert provider.settled_at_end == 1
+
+
+@pytest.mark.asyncio
+async def test_realtime_services_report_one_result_per_commit(monkeypatch):
+    for attribute in ("OPENAI_API_KEY", "ELEVENLABS_API_KEY", "DEEPGRAM_API_KEY"):
+        monkeypatch.setattr(Config, attribute, "key")
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "")
+    openai = ScriberPipeline(service_name="openai")._create_stt_service(object())
+    elevenlabs = ScriberPipeline(service_name="elevenlabs")._create_stt_service(object())
+    deepgram = ScriberPipeline(service_name="deepgram")._create_stt_service(object())
+
+    # Results without text still answer their commit.
+    await openai._handle_transcription_completed({"transcript": ""})
+    await elevenlabs._on_committed_transcript({"text": ""})
+    await deepgram._on_message(SimpleNamespace(is_final=True, from_finalize=True))
+    await deepgram._on_message(SimpleNamespace(is_final=True, from_finalize=False))
+
+    for service in (openai, elevenlabs, deepgram):
+        assert service.reports_file_commit_results is True
+        assert pipeline_module._file_commit_results(service).settled == 1
+
+
+@pytest.mark.asyncio
+async def test_realtime_file_without_a_commit_result_finishes_after_the_idle_timeout(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "_FILE_COMMIT_RESULT_IDLE_TIMEOUT_SECONDS", 0.1)
+    provider = _CommittingProvider(answers=False)
+    pipeline, texts = _file_pipeline_with(
+        monkeypatch, provider, _BlocksFileInput(_blocks(2, 8000)), service_name="openai"
+    )
+
+    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert provider.commit_points == [len(_blocks(2, 8000)) * _FILE_BLOCK]
+    assert texts == []
+    assert provider.settled_at_end == 0
+
+
 @pytest.mark.asyncio
 async def test_provider_ingress_drain_timeout_fails_closed_without_terminal_upload(
     monkeypatch,
@@ -1804,11 +1941,11 @@ def test_mistral_segmented_live_uses_transcribe_model_when_rt_model_is_realtime_
     (
         ("soniox", "SONIOX_API_KEY", "SonioxSTTService"),
         ("assemblyai_realtime", "ASSEMBLYAI_API_KEY", "AssemblyAISTTService"),
-        ("elevenlabs", "ELEVENLABS_API_KEY", "ElevenLabsRealtimeSTTService"),
+        ("elevenlabs", "ELEVENLABS_API_KEY", "ScriberElevenLabsRealtimeSTTService"),
         ("deepgram", "DEEPGRAM_API_KEY", "ScriberDeepgramSTTService"),
         ("gladia", "GLADIA_API_KEY", "ScriberGladiaSTTService"),
         ("groq", "GROQ_API_KEY", "GroqSTTService"),
-        ("openai", "OPENAI_API_KEY", "OpenAIRealtimeSTTService"),
+        ("openai", "OPENAI_API_KEY", "ScriberOpenAIRealtimeSTTService"),
         ("speechmatics", "SPEECHMATICS_API_KEY", "ScriberSpeechmaticsSTTService"),
     ),
 )

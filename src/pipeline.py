@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, BinaryIO
 
 import aiohttp
+import numpy as np
 from loguru import logger
 from pipecat.frames.frames import (
     CancelFrame,
@@ -86,6 +87,20 @@ _PROVIDER_INGRESS_DRAIN_SERVICES = frozenset(
 )
 _PROVIDER_INGRESS_DRAIN_TIMEOUT_SECONDS = 2.0
 _PROVIDER_INGRESS_ABORT_TIMEOUT_SECONDS = 2.0
+# Realtime services that transcribe only audio a VAD stop commits. A file has
+# no local VAD, so its pipeline closes commit segments itself.
+_FILE_COMMIT_PERIODIC_SERVICES = frozenset({"openai", "elevenlabs"})
+_FILE_COMMIT_SERVICES = _FILE_COMMIT_PERIODIC_SERVICES | {"deepgram"}
+# ElevenLabs commits on its own after about 36 s and recommends 20-30 s.
+_FILE_COMMIT_MIN_SEGMENT_SECONDS = 20.0
+_FILE_COMMIT_MAX_SEGMENT_SECONDS = 30.0
+_FILE_COMMIT_PAUSE_SECONDS = 0.2
+_FILE_COMMIT_PAUSE_RATIO = 0.1
+_FILE_COMMIT_SILENCE_RMS = 100.0
+# OpenAI rejects commits of less than 100 ms of audio.
+_FILE_COMMIT_MIN_TAIL_SECONDS = 0.25
+_FILE_COMMIT_FLUSH_TIMEOUT_SECONDS = 10.0
+_FILE_COMMIT_RESULT_IDLE_TIMEOUT_SECONDS = 20.0
 
 
 async def _raise_soniox_status(response: Any, operation: str) -> None:
@@ -2030,6 +2045,128 @@ class _ProviderIngressDrainProcessor(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class _ProviderCommitResults:
+    """Counts the results a realtime service returned for committed audio."""
+
+    def __init__(self) -> None:
+        self.settled = 0
+        self._changed = asyncio.Event()
+
+    def settle(self) -> None:
+        self.settled += 1
+        self._changed.set()
+
+    async def wait_for(self, expected: int, *, idle_timeout: float) -> bool:
+        """Wait for ``expected`` results while each one arrives within the timeout."""
+        while self.settled < expected:
+            self._changed.clear()
+            try:
+                await asyncio.wait_for(self._changed.wait(), timeout=idle_timeout)
+            except TimeoutError:
+                return False
+        return True
+
+
+def _file_commit_results(service: Any) -> _ProviderCommitResults:
+    results = getattr(service, "_scriber_file_commit_results", None)
+    if results is None:
+        results = _ProviderCommitResults()
+        service._scriber_file_commit_results = results
+    return results
+
+
+def _pcm16_rms(audio: bytes) -> float:
+    samples = np.frombuffer(audio[: len(audio) - len(audio) % 2], dtype="<i2")
+    if not samples.size:
+        return 0.0
+    return float(np.sqrt(np.mean(np.square(samples, dtype=np.float64))))
+
+
+class _FileCommitFlushFrame(SystemFrame):
+    """Private same-lane fence that closes a file's last commit segment."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._acknowledged = asyncio.Event()
+
+    def acknowledge(self) -> None:
+        self._acknowledged.set()
+
+    @property
+    def acknowledged(self) -> bool:
+        return self._acknowledged.is_set()
+
+    async def wait(self) -> None:
+        await self._acknowledged.wait()
+
+
+class _FileCommitSegmenter(FrameProcessor):
+    """Close commit segments for realtime services that transcribe on a VAD stop.
+
+    The file pipeline has no local VAD, so OpenAI never transcribed a file,
+    ElevenLabs only what it committed on its own, and Deepgram lost the results
+    EndFrame cut off. With ``periodic`` a segment closes at the first pause
+    after the minimum length, or at the maximum; the flush fence closes the
+    last segment behind every audio frame.
+    """
+
+    def __init__(self, *, periodic: bool):
+        super().__init__()
+        self._periodic = periodic
+        self.commits = 0
+        self._sample_rate = 0
+        self._segment_samples = 0
+        self._segment_peak = 0.0
+        self._quiet_samples = 0
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+
+        if direction != FrameDirection.DOWNSTREAM:
+            await self.push_frame(frame, direction)
+            return
+
+        if isinstance(frame, _FileCommitFlushFrame):
+            if self._sample_rate and self._segment_samples >= _FILE_COMMIT_MIN_TAIL_SECONDS * self._sample_rate:
+                await self._close_segment(direction)
+            frame.acknowledge()
+            return
+
+        await self.push_frame(frame, direction)
+        if isinstance(frame, StartFrame):
+            await self.push_frame(VADUserStartedSpeakingFrame(), direction)
+        elif isinstance(frame, InputAudioRawFrame) and frame.audio and self._segment_ends_after(frame):
+            await self._close_segment(direction)
+            await self.push_frame(VADUserStartedSpeakingFrame(), direction)
+
+    def _segment_ends_after(self, frame: InputAudioRawFrame) -> bool:
+        samples = len(frame.audio) // (2 * max(1, int(frame.num_channels or 1)))
+        self._sample_rate = int(frame.sample_rate or self._sample_rate or Config.SAMPLE_RATE)
+        self._segment_samples += samples
+        if not self._periodic:
+            return False
+        level = _pcm16_rms(frame.audio)
+        self._segment_peak = max(self._segment_peak, level)
+        if level <= max(_FILE_COMMIT_SILENCE_RMS, self._segment_peak * _FILE_COMMIT_PAUSE_RATIO):
+            self._quiet_samples += samples
+        else:
+            self._quiet_samples = 0
+        seconds = self._segment_samples / self._sample_rate
+        if seconds >= _FILE_COMMIT_MAX_SEGMENT_SECONDS:
+            return True
+        return (
+            seconds >= _FILE_COMMIT_MIN_SEGMENT_SECONDS
+            and self._quiet_samples >= _FILE_COMMIT_PAUSE_SECONDS * self._sample_rate
+        )
+
+    async def _close_segment(self, direction: FrameDirection) -> None:
+        await self.push_frame(VADUserStoppedSpeakingFrame(), direction)
+        self.commits += 1
+        self._segment_samples = 0
+        self._segment_peak = 0.0
+        self._quiet_samples = 0
+
+
 class TranscriptionCallbackProcessor(FrameProcessor):
     """Emits interim/final transcription updates via a lightweight callback."""
 
@@ -3584,7 +3721,17 @@ class ScriberPipeline:
                 self._execution_selected_language() or "auto-detect",
             )
 
-            return realtime_cls(
+            class ScriberElevenLabsRealtimeSTTService(realtime_cls):
+                # The server answers every commit with one committed_transcript.
+                reports_file_commit_results = True
+
+                async def _on_committed_transcript(self, data):
+                    try:
+                        await super()._on_committed_transcript(data)
+                    finally:
+                        _file_commit_results(self).settle()
+
+            return ScriberElevenLabsRealtimeSTTService(
                 **_filter_supported_kwargs(
                     realtime_cls,
                     {
@@ -3635,6 +3782,8 @@ class ScriberPipeline:
             pipeline_ref = self
 
             class ScriberDeepgramSTTService(DeepgramSTTService):
+                reports_file_commit_results = True
+
                 async def push_error(self, error_msg: str, exception=None, fatal: bool = False, **kwargs):
                     safe_error = _redact_provider_error_text(error_msg)
                     pipeline_ref._record_terminal_error(f"Deepgram streaming error: {safe_error}")
@@ -3645,6 +3794,12 @@ class ScriberPipeline:
                         fatal=fatal,
                         **kwargs,
                     )
+
+                async def _on_message(self, message):
+                    await super()._on_message(message)
+                    # Deepgram answers each Finalize with one from_finalize result.
+                    if getattr(message, "is_final", False) and getattr(message, "from_finalize", False):
+                        _file_commit_results(self).settle()
 
             return ScriberDeepgramSTTService(
                 api_key=_get_api_key("deepgram"),
@@ -3689,7 +3844,24 @@ class ScriberPipeline:
                 model=bound_model,
                 language=self._execution_pipecat_language(),
             )
-            return OpenAIRealtimeSTTService(
+
+            class ScriberOpenAIRealtimeSTTService(OpenAIRealtimeSTTService):
+                # Every commit ends in exactly one completed or failed event.
+                reports_file_commit_results = True
+
+                async def _handle_transcription_completed(self, evt):
+                    try:
+                        await super()._handle_transcription_completed(evt)
+                    finally:
+                        _file_commit_results(self).settle()
+
+                async def _handle_transcription_failed(self, evt):
+                    try:
+                        await super()._handle_transcription_failed(evt)
+                    finally:
+                        _file_commit_results(self).settle()
+
+            return ScriberOpenAIRealtimeSTTService(
                 api_key=_get_api_key("openai"),
                 settings=settings,
                 turn_detection=False,
@@ -4433,6 +4605,54 @@ class ScriberPipeline:
         if not task.has_finished():
             await task.cancel(reason="file provider failed")
 
+    async def _commit_file_tail_and_wait(
+        self,
+        file_input: Any,
+        segmenter: _FileCommitSegmenter,
+        stt_service: Any,
+        run_task: asyncio.Task,
+    ) -> None:
+        """Commit the file's last segment and wait for every committed result.
+
+        EndFrame disconnects these services at once, so results still on the
+        way, including the one for the tail, would be dropped.
+        """
+        flush = _FileCommitFlushFrame()
+        await file_input.push_frame(flush, FrameDirection.DOWNSTREAM)
+        flushed = asyncio.ensure_future(flush.wait())
+        try:
+            await asyncio.wait(
+                {flushed, run_task},
+                timeout=_FILE_COMMIT_FLUSH_TIMEOUT_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            flushed.cancel()
+        if run_task.done():
+            return
+        if not flush.acknowledged:
+            logger.warning("File commit segmenter did not close the last segment")
+            return
+        if not getattr(stt_service, "reports_file_commit_results", False):
+            return
+
+        results = _file_commit_results(stt_service)
+        settled = asyncio.ensure_future(
+            results.wait_for(segmenter.commits, idle_timeout=_FILE_COMMIT_RESULT_IDLE_TIMEOUT_SECONDS)
+        )
+        try:
+            await asyncio.wait({settled, run_task}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            if not settled.done():
+                settled.cancel()
+            await asyncio.gather(settled, return_exceptions=True)
+        if not settled.cancelled() and settled.result() is False:
+            logger.warning(
+                "Realtime provider returned {} of {} committed file segments",
+                results.settled,
+                segmenter.commits,
+            )
+
     async def _wait_for_file_input_or_pipeline_end(
         self,
         file_input: FfmpegAudioFileInput,
@@ -4478,7 +4698,15 @@ class ScriberPipeline:
                     if self.on_transcription
                     else None
                 )
-                steps = [file_input, stt_service]
+                commit_segmenter = (
+                    _FileCommitSegmenter(periodic=self.service_name in _FILE_COMMIT_PERIODIC_SERVICES)
+                    if self.service_name in _FILE_COMMIT_SERVICES
+                    else None
+                )
+                steps = [file_input]
+                if commit_segmenter is not None:
+                    steps.append(commit_segmenter)
+                steps.append(stt_service)
                 if self._requires_provider_ingress_audio_drain():
                     self._provider_ingress_drain_processor = _ProviderIngressDrainProcessor()
                     steps.append(self._provider_ingress_drain_processor)
@@ -4519,6 +4747,8 @@ class ScriberPipeline:
                 # Wait until the input transport has finished feeding (and its internal audio queue has drained),
                 # then end the pipeline gracefully so providers can flush final transcripts.
                 await self._wait_for_file_input_or_pipeline_end(file_input, run_task)
+                if commit_segmenter is not None and not run_task.done():
+                    await self._commit_file_tail_and_wait(file_input, commit_segmenter, stt_service, run_task)
                 if run_task.done():
                     # A provider failure cancelled the pipeline mid-file. The
                     # aborted-pipeline cleanup below stops the decoder.

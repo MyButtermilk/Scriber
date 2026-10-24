@@ -1511,7 +1511,11 @@ Packaging and scripts:
   `on_pipeline_error` handler, including downstream errors through
   `_FileProviderErrorProcessor`. Cancel unfinished input immediately rather
   than waiting for EOF, and never report a pipeline that ended before its
-  `EndFrame` as a complete transcript. Synthetic VAD turn
+  `EndFrame` as a complete transcript. A file has no local VAD, so realtime
+  services that transcribe only committed audio get commit boundaries from
+  `_FileCommitSegmenter`: OpenAI and ElevenLabs every 20-30 s at a pause,
+  Deepgram one Finalize after the last audio. Before `EndFrame` the file path
+  waits, idle-bounded, for one provider result per commit. Synthetic VAD turn
   boundaries must use `VADUserStartedSpeakingFrame` and
   `VADUserStoppedSpeakingFrame`, which are the frames consumed by Pipecat
   streaming and segmented STT services. The frozen runtime import gate must
