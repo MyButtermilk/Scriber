@@ -21,15 +21,15 @@ def read_script(path: str) -> str:
 
 
 def test_overlay_client_deadline_exceeds_native_ui_dispatch_deadline() -> None:
-    from src import native_overlay
-
     native_source = read_script("Frontend/src-tauri/src/native_overlay.rs")
     native_timeout = re.search(
         r"OVERLAY_UI_COMMAND_TIMEOUT: Duration = Duration::from_secs\((\d+)\)",
         native_source,
     )
+    client_timeout = re.search(r"_OVERLAY_TRANSITION_TIMEOUT_SECONDS = ([0-9.]+)", read_script("src/native_overlay.py"))
     assert native_timeout is not None
-    assert float(native_timeout.group(1)) < native_overlay._OVERLAY_TRANSITION_TIMEOUT_SECONDS
+    assert client_timeout is not None
+    assert float(native_timeout.group(1)) < float(client_timeout.group(1))
 
 
 def test_hotkey_refresh_is_serialized_and_partial_registration_is_settled() -> None:
