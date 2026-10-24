@@ -9475,6 +9475,14 @@ class ScriberWebController:
         info = self._provider_user_error(error, provider=provider)
         return self._provider_error_event_from_info(info, session_id=session_id)
 
+    async def _persist_failed_live_mic_record(self, record: TranscriptRecord, *, step: str, reason: str) -> None:
+        """Retain a failed session's recognized speech; the failure belongs in ``step``."""
+        record.finish("failed")
+        record.step = step
+        self._add_to_history(record)
+        await self._save_transcript_to_db_async(record)
+        await self._broadcast_history_updated(record=record, reason=reason)
+
     def _on_pipeline_done(self, task: asyncio.Task, *, session_id: str | None = None) -> None:
         # Ignore completions from tasks that are no longer the active live pipeline.
         # This prevents stale callbacks from clobbering a newer session's state.
@@ -9485,9 +9493,21 @@ class ScriberWebController:
         async def _safe_cleanup():
             """Cleanup state with proper lock protection."""
             replay_execution: ProviderReplayExecution | None = None
+            ended_record: TranscriptRecord | None = None
+            failure_reported = False
+            provider_used: str | None = None
             async with self._listening_lock:
                 if task is not self._pipeline_task:
                     return
+                provider_used = self._active_provider
+                # The error path below already finalized a failed record. A
+                # runner that ended without a stop request or exception leaves
+                # the session open; retain its partial speech as a failure.
+                with self._current_lock:
+                    if self._current and (session_id is None or self._current.id == session_id):
+                        ended_record = self._current
+                        self._current = None
+                failure_reported = self._recording_state_machine.state is RecordingState.FAILED
                 if self._provider_replay_execution is not None and (
                     self._provider_replay_execution.session_id is None
                     or self._provider_replay_execution.session_id == session_id
@@ -9534,6 +9554,11 @@ class ScriberWebController:
                 self._active_provider = None
                 if session_id is None or session_id == self._session_id:
                     self._session_id = None
+                # INITIALIZING and RECORDING have no direct IDLE transition.
+                # Ignoring that invalid edge left the machine in RECORDING, so
+                # the next start could never accept its on_mic_ready callback.
+                if self._recording_state_machine.state in {RecordingState.INITIALIZING, RecordingState.RECORDING}:
+                    self._set_recording_state(RecordingState.FAILED, context="_on_pipeline_done_cleanup")
                 self._set_recording_state(RecordingState.IDLE, context="_on_pipeline_done_cleanup")
                 self._clear_hot_path_tracer(session_id)
                 if session_id is not None:
@@ -9547,6 +9572,14 @@ class ScriberWebController:
             self._hide_recording_overlay_async(session_id=session_id)
             if _audio_admission_owner(self).current is None:
                 self._resume_idle_mic_prewarm_after_capture()
+            if ended_record is not None:
+                info = self._provider_user_error(
+                    RuntimeError("Live microphone session ended unexpectedly."),
+                    provider=provider_used,
+                )
+                if not failure_reported:
+                    await self.broadcast(self._provider_error_event_from_info(info, session_id=session_id))
+                await self._persist_failed_live_mic_record(ended_record, step=info.message, reason="pipeline_ended")
 
         async def _broadcast_error(payload: dict[str, Any]):
             """Broadcast error to frontend."""
@@ -12746,7 +12779,7 @@ class ScriberWebController:
                     )
                     # Schedule pipeline stop to clean up properly
                     self._spawn_detached(
-                        self._emergency_stop_pipeline(session_id=session_id),
+                        self._emergency_stop_pipeline(session_id=session_id, failure_message=user_msg),
                         name="provider_error_emergency_stop",
                     )
 
@@ -13298,8 +13331,9 @@ class ScriberWebController:
         *,
         session_id: str | None = None,
         release_audio_claim: bool = True,
+        failure_message: str | None = None,
     ) -> bool:
-        """Emergency stop for connection errors - doesn't save transcript."""
+        """Emergency stop for connection errors; the session is retained as failed."""
         if self._pending_live_mic_native_cleanup is not None:
             return await self._retry_live_mic_native_cleanup(
                 session_id=session_id, release_audio_claim=release_audio_claim
@@ -13319,6 +13353,8 @@ class ScriberWebController:
         pipeline = None
         pipeline_task = None
         audio_claim: AudioAdmissionClaim | None = None
+        failed_record: TranscriptRecord | None = None
+        provider_used: str | None = None
         stop_owner = object()
         owns_stop = False
         pipeline_stop_completed = True
@@ -13341,12 +13377,16 @@ class ScriberWebController:
                 if isinstance(candidate_claim, AudioAdmissionClaim):
                     audio_claim = candidate_claim
 
-                # Cancel the current recording session without saving.
+                # End the session now; its recognized speech is retained as a
+                # failed record once native ownership has settled below.
                 with self._current_lock:
+                    if self._current and (session_id is None or self._current.id == session_id):
+                        failed_record = self._current
                     self._current = None
 
                 pipeline = self._pipeline
                 pipeline_task = self._pipeline_task
+                provider_used = self._active_provider
                 self._is_listening = False
                 self._pipeline = None
                 self._pipeline_task = None
@@ -13415,6 +13455,20 @@ class ScriberWebController:
                         # leaving the next hotkey on a cold WASAPI route and
                         # prone to a first-live-frame timeout.
                         self._resume_idle_mic_prewarm_after_capture()
+        if failed_record is not None:
+            if failure_message is None:
+                failure_message = self._provider_user_error(
+                    RuntimeError("Live microphone session stopped unexpectedly."),
+                    provider=provider_used,
+                ).message
+            try:
+                await self._persist_failed_live_mic_record(
+                    failed_record, step=failure_message, reason="pipeline_failed"
+                )
+            except Exception as exc:
+                # Persistence must not turn a confirmed native stop into a
+                # retained audio lease for the loss handler.
+                logger.warning("Failed Live Mic record persistence after emergency stop: {}", type(exc).__name__)
         return bool(owns_stop and native_audio_stop_confirmation is True)
 
     def _live_mic_stop_timeout_seconds(

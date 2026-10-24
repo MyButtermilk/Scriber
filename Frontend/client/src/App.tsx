@@ -10,7 +10,11 @@ import { BackendStatusProvider, useBackendOnline } from "@/hooks/use-backend-sta
 import { useDeviceChangeRefresh } from "@/hooks/use-device-change-refresh";
 import { BackendOfflineBanner } from "@/components/BackendOfflineBanner";
 import { useSharedWebSocket, WebSocketProvider, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
-import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "@/lib/recording-error-toast";
+import {
+  failedSessionToastMessage,
+  rememberReportedErrorSession,
+  showRecordingErrorToast,
+} from "@/lib/recording-error-toast";
 import { showPostProcessingFallbackToast, type CredentialSettingsRequest } from "@/lib/post-processing-fallback-toast";
 import { useToast } from "@/hooks/use-toast";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
@@ -97,24 +101,19 @@ function Router() {
 function RecordingErrorToastBridge() {
   const { toast } = useToast();
   const { t } = useI18n();
+  const reportedErrorSessionsRef = useRef<Set<string>>(new Set());
 
   const handleWsMessage = useCallback(
     (msg: ScriberWebSocketMessage) => {
       if (msg.type === "error") {
+        rememberReportedErrorSession(reportedErrorSessionsRef.current, msg.sessionId);
         showRecordingErrorToast(toast, msg);
         return;
       }
-      if (msg.type === "session_finished" && String(msg.session?.status || "").toLowerCase() === "failed") {
-        const content = String(msg.session?.content || "");
-        const match = content.match(/\[Error\]\s*([^\n]+)/i);
-        const message =
-          match?.[1]?.trim() || t("Live mic transcription failed. Check the selected provider and try again.");
-        const recordingError = recordingErrorToastMessageFromPayload({
-          type: "error",
-          apiVersion: msg.apiVersion,
-          message,
+      if (msg.type === "session_finished") {
+        const recordingError = failedSessionToastMessage(msg, reportedErrorSessionsRef.current, {
           title: t("Recording Error"),
-          sessionId: msg.sessionId || (msg.session?.id != null ? String(msg.session.id) : undefined),
+          message: t("Live mic transcription failed. Check the selected provider and try again."),
         });
         if (recordingError) {
           showRecordingErrorToast(toast, recordingError);
