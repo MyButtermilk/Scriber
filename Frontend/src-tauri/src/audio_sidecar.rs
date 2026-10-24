@@ -7003,7 +7003,7 @@ mod tests {
                 "sampleRate": 999_999,
                 "channels": 99,
                 "blockSize": 999_999,
-                "devicePreference": "default",
+                "devicePreference": "default-capture-device-with-a-longer-than-needed-label",
                 "prebufferMs": 999_999,
             }
         });
@@ -7017,6 +7017,11 @@ mod tests {
             192_000
         );
         assert_eq!(response["payload"]["requestedFormat"]["channels"], 16);
+        assert_eq!(response["payload"]["requestedFormat"]["blockSize"], 16_384);
+        assert!(response["payload"]["requestedFormat"]["devicePreference"]
+            .as_str()
+            .unwrap()
+            .starts_with("default-capture-device"));
         assert_eq!(response["payload"]["requestedFormat"]["prebufferMs"], 6_000);
         assert_eq!(
             response["payload"]["audioFrameProtocol"]["version"],
@@ -7190,28 +7195,6 @@ mod tests {
 
         assert_eq!(response["success"], false);
         assert_eq!(response["errorCode"], "protocolVersionMismatch");
-    }
-
-    #[test]
-    fn capture_request_clamps_to_frame_pipe_contract_bounds() {
-        let payload = json!({
-            "sampleRate": 999_999,
-            "channels": 99,
-            "blockSize": 999_999,
-            "devicePreference": "default-capture-device-with-a-longer-than-needed-label",
-            "prebufferMs": 999_999,
-        });
-
-        let request = CaptureRequest::from_payload(&payload);
-
-        assert_eq!(request.sample_rate, 192_000);
-        assert_eq!(request.channels, 16);
-        assert_eq!(request.block_size, 16_384);
-        assert_eq!(request.prebuffer_ms, 6_000);
-        assert_eq!(request.native_endpoint_id_hash, "");
-        assert!(request
-            .device_preference
-            .starts_with("default-capture-device"));
     }
 
     #[test]

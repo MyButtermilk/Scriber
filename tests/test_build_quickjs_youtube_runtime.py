@@ -231,6 +231,9 @@ def test_verify_only_never_builds_or_downloads(monkeypatch: pytest.MonkeyPatch, 
 def test_sidecar_and_release_cache_keys_track_every_quickjs_build_input() -> None:
     sidecar = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(encoding="utf-8")
     release_keys = (REPO_ROOT / "scripts" / "ci" / "write_release_cache_keys.ps1").read_text(encoding="utf-8")
+    runtime_key = release_keys.split("$backendRuntimeEntries = New-EntryList", 1)[1].split(
+        'Write-KeyFile -Name "backend-runtime.txt"', 1
+    )[0]
     required = (
         "packaging/quickjs-youtube-runtime-lock-v1.json",
         "scripts/build_quickjs_youtube_runtime.py",
@@ -244,7 +247,7 @@ def test_sidecar_and_release_cache_keys_track_every_quickjs_build_input() -> Non
     normalized_sidecar = sidecar.replace("\\", "/")
     for relative in required:
         assert f'"{relative}"' in normalized_sidecar
-        assert f'"{relative}"' in release_keys
+        assert f'"{relative}"' in runtime_key
     assert "Invoke-QuickJsYoutubeRuntimeBuild" in sidecar
     assert "Invoke-DenortYoutubeRuntimeBuild" not in sidecar
 

@@ -194,29 +194,6 @@ def test_release_quality_suite_blocks_signing_after_parallel_packaging_preparati
     assert "--expected-state-report build\\release-asset-api-roundtrip.json" in publish["run"]
 
 
-@pytest.mark.parametrize(
-    ("plan_result", "use_cold_path", "suite_result", "expected"),
-    [
-        ("success", True, "pending", True),
-        ("success", True, "failure", True),
-        ("success", True, "success", True),
-        ("success", False, "success", False),
-        ("failure", True, "success", False),
-    ],
-)
-def test_release_cold_producer_gate_truth_table(
-    plan_result: str,
-    use_cold_path: bool,
-    suite_result: str,
-    expected: bool,
-) -> None:
-    # The quality suite intentionally does not participate in cold producer
-    # scheduling. The packaging job remains the fail-closed quality boundary.
-    assert suite_result in {"pending", "success", "failure"}
-    actual = plan_result == "success" and use_cold_path
-    assert actual is expected
-
-
 def test_release_planner_probes_exact_restore_and_asset_hashfiles_identities() -> None:
     workflow = yaml.safe_load(_read(".github/workflows/release-windows.yml"))
     jobs = workflow["jobs"]
@@ -435,53 +412,6 @@ def test_cold_backend_parallelizes_only_independent_diarization_build() -> None:
     assert "-ParallelizeRustDiarizationBuild" in build_script
     assert "-ParallelizeIndependentBuilds" not in build_script
     assert "-RustAudioIsolatedTarget" not in build_script
-
-
-@pytest.mark.parametrize(
-    (
-        "plan_result",
-        "suite_result",
-        "backend_cold_result",
-        "tauri_cold_result",
-        "cancelled",
-        "expected",
-    ),
-    [
-        ("success", "success", "skipped", "skipped", False, True),
-        ("success", "success", "failure", "success", False, True),
-        ("success", "success", "success", "failure", False, True),
-        ("success", "failure", "skipped", "skipped", False, True),
-        ("failure", "success", "skipped", "skipped", False, False),
-        ("success", "success", "success", "success", True, False),
-    ],
-)
-def test_release_preparation_gate_truth_table(
-    plan_result: str,
-    suite_result: str,
-    backend_cold_result: str,
-    tauri_cold_result: str,
-    cancelled: bool,
-    expected: bool,
-) -> None:
-    # Cold producer results are intentionally absent: any failure or skip must
-    # enter the established single-runner fallback instead of blocking build.
-    assert backend_cold_result in {"success", "failure", "skipped"}
-    assert tauri_cold_result in {"success", "failure", "skipped"}
-    assert suite_result in {"success", "failure"}
-    # Quality still gates the signing/build step through the tested waiter;
-    # it no longer postpones tool and dependency preparation.
-    actual = not cancelled and plan_result == "success"
-    assert actual is expected
-
-
-def test_distinct_release_tags_share_one_fifo_build_and_publish_queue() -> None:
-    def build_queue(ref: str) -> str:
-        if ref.startswith("refs/tags/v"):
-            return "release-windows-tags"
-        return f"release-windows-build-{ref}"
-
-    assert build_queue("refs/tags/v0.5.44") == build_queue("refs/tags/v0.5.45")
-    assert build_queue("refs/heads/main") != build_queue("refs/tags/v0.5.45")
 
 
 def test_runtime_tree_identity_is_compatible_with_windows_powershell() -> None:

@@ -776,22 +776,6 @@ def test_multipart_content_length_allows_framing_overhead_at_file_limit():
 
 
 @pytest.mark.asyncio
-async def test_write_upload_stream_to_disk_writes_chunks_off_hot_path(tmp_path):
-    target = tmp_path / "upload.bin"
-    field = _ChunkUploadField([b"abc", b"def"])
-
-    bytes_read, too_large = await file_transcription_routes.write_upload_stream_to_disk(
-        field,
-        target,
-        max_bytes=16,
-    )
-
-    assert bytes_read == 6
-    assert too_large is False
-    assert target.read_bytes() == b"abcdef"
-
-
-@pytest.mark.asyncio
 async def test_write_upload_stream_to_disk_stops_before_oversized_chunk(tmp_path):
     target = tmp_path / "upload.bin"
     field = _ChunkUploadField([b"abc", b"def"])
@@ -810,7 +794,8 @@ async def test_write_upload_stream_to_disk_stops_before_oversized_chunk(tmp_path
 @pytest.mark.asyncio
 async def test_write_upload_stream_batches_disk_dispatches(monkeypatch, tmp_path):
     target = tmp_path / "upload.bin"
-    field = _ChunkUploadField([b"ab"] * 10)
+    chunks = [bytes((index, index + 1)) for index in range(0, 20, 2)]
+    field = _ChunkUploadField(chunks)
     real_to_thread = asyncio.to_thread
     write_calls = 0
 
@@ -831,7 +816,7 @@ async def test_write_upload_stream_batches_disk_dispatches(monkeypatch, tmp_path
 
     assert bytes_read == 20
     assert too_large is False
-    assert target.read_bytes() == b"ab" * 10
+    assert target.read_bytes() == b"".join(chunks)
     assert write_calls == 4
 
 

@@ -51,19 +51,6 @@ async def test_autostart_is_reported_unavailable_and_rejects_mutation():
 
 
 @pytest.mark.asyncio
-async def test_the_autostart_contract_cannot_be_mutated_between_requests():
-    """The handler answers from a copy, so one response cannot poison the next."""
-    client = await _client(_StubController())
-    try:
-        first = await (await client.get("/api/autostart")).json()
-        first["enabled"] = True
-        second = await (await client.get("/api/autostart")).json()
-        assert second["enabled"] is False
-    finally:
-        await client.close()
-
-
-@pytest.mark.asyncio
 async def test_microphones_are_listed_from_the_controller():
     client = await _client(_StubController())
     try:

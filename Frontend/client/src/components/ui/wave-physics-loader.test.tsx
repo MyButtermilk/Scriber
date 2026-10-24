@@ -1,25 +1,17 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WavePhysicsLoader } from "./wave-physics-loader";
 
-function mockReducedMotion(reduce: boolean) {
-  vi.stubGlobal(
-    "matchMedia",
-    vi.fn().mockImplementation((query: string) => ({
-      addEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-      matches: query === "(prefers-reduced-motion: reduce)" && reduce,
-      media: query,
-      onchange: null,
-      removeEventListener: vi.fn(),
-    })),
-  );
-}
+const reducedMotion = vi.hoisted(() => ({ enabled: false }));
+vi.mock("motion/react", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("motion/react")>()),
+  useReducedMotion: () => reducedMotion.enabled,
+}));
 
 describe("WavePhysicsLoader", () => {
   beforeEach(() => {
-    mockReducedMotion(false);
+    reducedMotion.enabled = false;
   });
 
   it("renders a compact accessible loading status", () => {
@@ -36,10 +28,20 @@ describe("WavePhysicsLoader", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
-  it("supports the static reduced-motion fallback", () => {
-    mockReducedMotion(true);
+  it("settles every animated bar and the ball when reduced motion is requested", async () => {
+    reducedMotion.enabled = true;
     render(<WavePhysicsLoader size="panel" label="Loading" />);
 
-    expect(screen.getByRole("status", { name: "Loading" })).toHaveAttribute("data-size", "panel");
+    const loader = screen.getByRole("status", { name: "Loading" });
+    const bars = loader.querySelectorAll<HTMLElement>(".origin-bottom");
+    expect(bars.length).toBeGreaterThan(0);
+    await waitFor(() => {
+      const transforms = Array.from(bars, (bar) => bar.style.transform);
+      expect(transforms[0]).toMatch(/^scaleY\([\d.]+\)$/);
+      expect(new Set(transforms).size).toBe(1);
+    });
+    const ball = loader.querySelector<HTMLElement>(".absolute")!;
+    expect(ball.style.transform).toMatch(/translateX\([\d.]+px\) translateY\(-[\d.]+px\)/);
+    expect(ball.style.transform).not.toMatch(/scale/);
   });
 });

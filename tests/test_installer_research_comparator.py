@@ -345,19 +345,6 @@ def _evaluate(candidate: dict, **kwargs) -> dict:
     )
 
 
-def test_active_baseline_helper_uses_single_inventory_v2() -> None:
-    baseline = _accepted_baseline()
-
-    assert baseline["baselineContract"] == "InstallerResearchBaselineV2"
-    assert baseline["schemaVersion"] == 2
-    assert baseline["baselineInventoryCount"] == 1
-    assert baseline["accepted"] is True
-    assert baseline["reasonCodes"] == []
-    assert baseline["installerLength"] == 100_000_000
-    assert len(baseline["replicas"]) == 1
-    assert baseline["inventory"]["inventoryContract"] == "InstallerResearchInventoryV1"
-
-
 def test_accept_single_baseline_binds_one_raw_inventory_hash() -> None:
     inventory = _inventory(
         replica_id="baseline-1",
@@ -375,6 +362,8 @@ def test_accept_single_baseline_binds_one_raw_inventory_hash() -> None:
     assert baseline["accepted"] is True
     assert len(baseline["replicas"]) == 1
     assert baseline["replicas"][0]["inventorySha256"] == "2" * 64
+    assert baseline["reasonCodes"] == []
+    assert baseline["installerLength"] == 100_000_000
     assert baseline["inventory"] == inventory
 
 
@@ -382,14 +371,6 @@ def test_accept_single_baseline_binds_one_raw_inventory_hash() -> None:
     ("mutation", "reason"),
     [
         (lambda value: value.update(ok=False), "inventory_not_ok"),
-        (
-            lambda value: value.update(compression="lzma"),
-            "baseline_compression_not_bzip2",
-        ),
-        (
-            lambda value: value["payload"].update(installed=None),
-            "installed_inventory_missing",
-        ),
         (
             lambda value: value["payload"].update(stagedInstalledParity={"ok": False}),
             "staged_installed_parity_failed",

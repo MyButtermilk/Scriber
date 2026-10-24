@@ -12,17 +12,23 @@ from scripts import smoke_frontend_browser
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) -> None:
-    output_path = tmp_path / "frontend-browser-smoke.json"
+@pytest.mark.parametrize("fast_tab_switch", [False, True])
+def test_frontend_browser_smoke_validate_only_writes_requested_plan(tmp_path: Path, fast_tab_switch: bool) -> None:
+    output_path = tmp_path / "nested" / "frontend-browser-smoke.json"
+    command = [
+        sys.executable,
+        "scripts/smoke_frontend_browser.py",
+        "--validate-only",
+        "--routes",
+        "/,/settings",
+        "--output",
+        str(output_path),
+    ]
+    if fast_tab_switch:
+        command.append("--fast-tab-switch")
 
     result = subprocess.run(
-        [
-            sys.executable,
-            "scripts/smoke_frontend_browser.py",
-            "--validate-only",
-            "--output",
-            str(output_path),
-        ],
+        command,
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
@@ -31,137 +37,18 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert json.loads(result.stdout) == payload
     assert payload["ok"] is True
-    assert payload["summary"]["routeCount"] == 11
-    assert "/meetings" in payload["summary"]["routes"]
-    assert payload["summary"]["criticalConsoleErrorCount"] == 0
-    assert payload["summary"]["interactionCheckCount"] == 22
-    assert set(payload["summary"]["interactionChecks"]) == {
-        "history-search-copy-navigation",
-        "youtube-history-actions",
-        "youtube-thumbnails",
-        "youtube-start-transcription",
-        "file-history-actions",
-        "parallel-file-imports",
-        "file-upload-error",
-        "file-drag-drop",
-        "meeting-end-to-end",
-        "debug-console-actions",
-        "settings-persistence",
-        "settings-desktop-controls",
-        "transcript-processing-refresh",
-        "summary-reading-track",
-        "command-palette",
-        "transcript-detail-actions",
-        "transcript-cancel-action",
-        "rapid-theme-change",
-        "desktop-page-shell-layouts",
-        "mobile-navigation",
-        "mobile-route-layouts",
-        "token-required-browser-state",
-    }
-    assert "/settings" in payload["summary"]["routes"]
-    assert "/debug" in payload["summary"]["routes"]
-    assert "/transcript/youtube-processing-smoke" in payload["summary"]["routes"]
-    assert "/transcript/file-00001" in payload["summary"]["routes"]
-    assert "/transcript/mic-no-summary-smoke" in payload["summary"]["routes"]
-    assert "/transcript/mic-summary-failed-smoke" in payload["summary"]["routes"]
-    assert set(payload["summary"]["virtualizedHistoryRoutes"]) == {"/", "/youtube", "/file"}
-    live_mic = next(item for item in payload["scenarios"] if item["route"] == "/")
-    assert live_mic["interactionChecks"] == [{"name": "history-search-copy-navigation", "ok": True}]
-    youtube = next(item for item in payload["scenarios"] if item["route"] == "/youtube")
-    assert youtube["interactionChecks"] == [
-        {"name": "youtube-history-actions", "ok": True},
-        {"name": "youtube-thumbnails", "ok": True},
-        {"name": "youtube-start-transcription", "ok": True},
-    ]
-    debug = next(item for item in payload["scenarios"] if item["route"] == "/debug")
-    assert "Clear logs" in debug["expectedText"]
-    assert debug["interactionChecks"] == [{"name": "debug-console-actions", "ok": True}]
-    settings = next(item for item in payload["scenarios"] if item["route"] == "/settings")
-    assert settings["expectedText"] == ["Settings", "Speech-to-text provider", "API keys"]
-    assert settings["interactionChecks"] == [
-        {"name": "settings-persistence", "ok": True},
-        {"name": "settings-desktop-controls", "ok": True},
-    ]
-    file = next(item for item in payload["scenarios"] if item["route"] == "/file")
-    assert file["interactionChecks"] == [
-        {"name": "parallel-file-imports", "ok": True},
-        {"name": "file-history-actions", "ok": True},
-        {"name": "file-upload-error", "ok": True},
-        {"name": "file-drag-drop", "ok": True},
-    ]
-    meetings = next(item for item in payload["scenarios"] if item["route"] == "/meetings")
-    assert meetings["interactionChecks"] == [{"name": "meeting-end-to-end", "ok": True}]
-    transcript_detail = next(item for item in payload["scenarios"] if item["route"] == "/transcript/file-00001")
-    summary_reading_track = transcript_detail["interactionChecks"][0]
-    assert summary_reading_track["name"] == "summary-reading-track"
-    assert summary_reading_track["ok"] is True
-    assert summary_reading_track["viewport"] == {"width": 2048, "height": 1252, "deviceScaleFactor": 1}
-    assert summary_reading_track["state"]["viewportWidth"] == 2048
-    assert summary_reading_track["viewportRestored"] is True
-    assert payload["commandPaletteCheck"]["name"] == "command-palette"
-    assert payload["transcriptDetailActionsCheck"]["name"] == "transcript-detail-actions"
-    assert payload["transcriptCancelCheck"]["name"] == "transcript-cancel-action"
-    assert payload["rapidThemeChangeCheck"]["name"] == "rapid-theme-change"
-    desktop_layout = payload["desktopPageShellLayoutsCheck"]
-    assert desktop_layout["name"] == "desktop-page-shell-layouts"
-    assert desktop_layout["viewport"] == {"width": 2048, "height": 1252, "deviceScaleFactor": 1}
-    assert desktop_layout["routeCount"] == 6
-    assert desktop_layout["routes"] == ["/", "/meetings", "/youtube", "/file", "/debug", "/settings"]
-    assert desktop_layout["maxWidthSpread"] <= 2
-    assert desktop_layout["maxContentWidthSpread"] <= 2
-    assert desktop_layout["maxPaddingSpread"] <= 2
-    assert desktop_layout["maxGutterImbalance"] <= 2
-    assert desktop_layout["maxCenterDelta"] <= 2
-    assert desktop_layout["maxIntroLeftDelta"] <= 2
-    assert desktop_layout["maxIntroWidthDelta"] <= 2
-    assert desktop_layout["pageIntrosAligned"] is True
-    assert desktop_layout["meetingAtMostLive"] is True
-    assert desktop_layout["maxWidthReached"] is True
-    assert all(item["maxWidthReached"] for item in desktop_layout["results"])
-    assert payload["mobileNavigationCheck"]["name"] == "mobile-navigation"
-    assert payload["mobileRouteLayoutsCheck"]["name"] == "mobile-route-layouts"
-    assert payload["mobileRouteLayoutsCheck"]["routeCount"] == 11
-    assert payload["tokenRequiredCheck"]["name"] == "token-required-browser-state"
-
-
-def test_frontend_browser_smoke_validate_only_can_include_fast_tab_switch(tmp_path: Path) -> None:
-    output_path = tmp_path / "frontend-browser-smoke-fast-tabs.json"
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "scripts/smoke_frontend_browser.py",
-            "--validate-only",
-            "--fast-tab-switch",
-            "--output",
-            str(output_path),
-        ],
-        cwd=REPO_ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    payload = json.loads(output_path.read_text(encoding="utf-8"))
-    assert payload["ok"] is True
-    assert payload["summary"]["interactionCheckCount"] == 23
-    assert "fast-tab-switch" in payload["summary"]["interactionChecks"]
-    assert payload["fastTabSwitchCheck"]["name"] == "fast-tab-switch"
-    assert payload["fastTabSwitchCheck"]["ok"] is True
-    assert payload["fastTabSwitchCheck"]["routes"] == [
-        "/youtube",
-        "/file",
-        "/meetings",
-        "/settings",
-        "/",
-        "/youtube",
-        "/meetings",
-        "/file",
-        "/",
-    ]
+    assert payload["summary"]["validateOnly"] is True
+    assert payload["summary"]["routes"] == ["/", "/settings"]
+    assert [item["route"] for item in payload["scenarios"]] == ["/", "/settings"]
+    assert payload["summary"]["routeCount"] == len(payload["scenarios"])
+    assert payload["summary"]["interactionCheckCount"] == len(payload["summary"]["interactionChecks"])
+    assert ("fast-tab-switch" in payload["summary"]["interactionChecks"]) is fast_tab_switch
+    if fast_tab_switch:
+        assert payload["fastTabSwitchCheck"]["validateOnly"] is True
+    else:
+        assert payload["fastTabSwitchCheck"] is None
 
 
 class _SummaryReadingTrackCdp:

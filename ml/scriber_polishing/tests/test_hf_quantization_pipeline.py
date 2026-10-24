@@ -685,7 +685,11 @@ def test_quantization_inventory_and_bootstrap_reject_directory_symlinks(
     packet = tmp_path / "packet"
     packet.mkdir()
     runner = packet / "run-hf-quantization.sh"
-    runner.write_text("raise SystemExit('must not execute')\n", encoding="utf-8")
+    marker = tmp_path / "runner-executed"
+    runner.write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n",
+        encoding="utf-8",
+    )
     records, tree = quantization._packet_inventory(packet)
     runner_hash = quantization._sha256(runner.read_bytes())
     manifest = {
@@ -733,7 +737,8 @@ def test_quantization_inventory_and_bootstrap_reject_directory_symlinks(
         text=True,
     )
     assert completed.returncode != 0
-    assert "symlink" in completed.stderr.lower()
+    assert "linked-directory" in completed.stderr
+    assert not marker.exists()
 
 
 def _offload_evidence(
@@ -1490,25 +1495,6 @@ def test_cost_anchor_binds_real_a10g_recovery_and_cpu_finalization() -> None:
             "packet_tree_sha256": ("sha256:2db2a308dcfe5807209100fd823453619428435dbeff5b4679d5dc25dabd80a5"),
         },
     ]
-
-
-def test_known_cost_before_primary_evaluation_is_exactly_0_933668() -> None:
-    evidence = _cost_evidence()
-    known_cost = Decimal(str(evidence["cost_anchor"]["actual_before_first_final_evaluation_usd"]))
-    known_cost += sum(
-        (Decimal(str(attempt["actual_cost_usd"])) for attempt in evidence["final_evaluation_attempts"][:2]),
-        Decimal("0"),
-    )
-    known_cost += sum(
-        (
-            Decimal(str(job["actual_cost_usd"]))
-            for job in evidence["auxiliary_jobs"]
-            if job["role"] != "toolchain_materialization"
-        ),
-        Decimal("0"),
-    )
-
-    assert format(known_cost, ".6f") == "0.933668"
 
 
 def test_cost_evidence_schema_accepts_arbitrary_terminal_attempt_sequence() -> None:

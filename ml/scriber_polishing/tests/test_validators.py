@@ -45,9 +45,13 @@ def test_canonical_record_is_accepted_only_when_it_satisfies_the_sst_v1_schema()
     assert validate_canonical_record(_canonical_record()) == _canonical_record()
 
 
-def test_canonical_record_rejects_unknown_fields_and_missing_required_fields() -> None:
-    malformed = _canonical_record() | {"unexpected": "not allowed"}
-    malformed.pop("target_sst")
+@pytest.mark.parametrize("invalid_field", ["unexpected", "missing_target_sst"])
+def test_canonical_record_rejects_unknown_fields_and_missing_required_fields(invalid_field: str) -> None:
+    malformed = _canonical_record()
+    if invalid_field == "unexpected":
+        malformed["unexpected"] = "not allowed"
+    else:
+        malformed.pop("target_sst")
 
     with pytest.raises(ValueError, match="canonical record"):
         validate_canonical_record(malformed)

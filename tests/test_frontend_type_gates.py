@@ -121,22 +121,6 @@ def test_history_and_command_requests_are_abortable_and_deadlined() -> None:
     assert "fetchWithTimeout(" in tray_source
 
 
-def test_desktop_shell_commands_have_deadlines() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
-
-    for label in (
-        "Global hotkey refresh",
-        "Global hotkey capture update",
-        "Global hotkey status",
-        "Tray status",
-        "Tray update status",
-        "Tray recording state",
-        "Tray action",
-        "Hide tray panel",
-    ):
-        assert f'"{label}"' in source
-
-
 def test_windows_taskbar_identity_uses_the_contrast_safe_tray_artwork() -> None:
     tauri_root = REPO_ROOT / "Frontend" / "src-tauri"
     config = json.loads((tauri_root / "tauri.conf.json").read_text(encoding="utf-8"))

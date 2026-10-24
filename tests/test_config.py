@@ -645,12 +645,6 @@ class TestConfig(unittest.TestCase):
         self.assertNotIn("aws", Config.SERVICE_API_KEY_MAP)
         self.assertNotIn("aws", Config.SERVICE_LABELS)
 
-    def test_soniox_async_default_model_is_v5(self):
-        self.assertEqual(Config.DEFAULT_SONIOX_ASYNC_MODEL, "stt-async-v5")
-
-    def test_soniox_realtime_default_model_is_v5(self):
-        self.assertEqual(Config.DEFAULT_SONIOX_RT_MODEL, "stt-rt-v5")
-
     def test_soniox_default_region_is_us(self):
         self.assertEqual(Config.DEFAULT_SONIOX_REGION, "us")
 

@@ -126,7 +126,10 @@ def test_condition_integration_consumes_repeated_declared_conditions_in_order() 
         ("wenn die Freigabe vorliegt", "wenn die Freigabe vorliegt"),
     )
 
-    assert "Die Regelung gilt" not in render_plain_text(repaired)
+    assert render_plain_text(repaired) == (
+        "Der Betrag bleibt gesperrt, wenn die Freigabe vorliegt.\n\n"
+        "Die Zahlung bleibt offen, wenn die Freigabe vorliegt."
+    )
 
 
 def test_condition_integration_ignores_fictionality_provenance_adjective() -> None:

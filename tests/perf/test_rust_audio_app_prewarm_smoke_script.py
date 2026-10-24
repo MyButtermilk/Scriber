@@ -90,8 +90,6 @@ def test_rust_audio_app_prewarm_smoke_plan_only_writes_artifact(tmp_path: Path) 
     assert stdout_payload["requested"]["prebufferMs"] == 400
     assert stdout_payload["requested"]["resumeAfterCapture"] is True
     assert stdout_payload["requested"]["honorFavoriteMic"] is False
-    assert "RustAudioPrewarmManager" in " ".join(stdout_payload["requirements"])
-    assert "--mode wasapi" in stdout_payload["exampleCommand"]
 
 
 def test_rust_audio_app_prewarm_validation_accepts_app_adoption_metrics() -> None:

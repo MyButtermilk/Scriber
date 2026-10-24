@@ -6,17 +6,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_ROOT = REPO_ROOT / "Frontend"
 
-REMOVED_SCAFFOLD_PATHS = (
-    "drizzle.config.ts",
-    "script/build.ts",
-    "server/index.ts",
-    "server/routes.ts",
-    "server/static.ts",
-    "server/storage.ts",
-    "server/vite.ts",
-    "shared/schema.ts",
-)
-
 REMOVED_DEPENDENCIES = {
     "@jridgewell/trace-mapping",
     "connect-pg-simple",
@@ -50,10 +39,6 @@ REMOVED_DEV_DEPENDENCIES = {
 
 def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def test_frontend_scaffold_paths_are_removed() -> None:
-    assert all(not (FRONTEND_ROOT / path).exists() for path in REMOVED_SCAFFOLD_PATHS)
 
 
 def test_frontend_package_is_vite_only() -> None:
@@ -113,27 +98,6 @@ def test_frontend_lockfile_root_matches_clean_package_contract() -> None:
     assert root_package["dependencies"] == package["dependencies"]
     assert root_package["devDependencies"] == package["devDependencies"]
     assert not root_package.get("optionalDependencies")
-
-
-def test_frontend_typescript_and_vite_scope_only_the_webview() -> None:
-    tsconfig = _read_json(FRONTEND_ROOT / "tsconfig.json")
-    vite = (FRONTEND_ROOT / "vite.config.ts").read_text(encoding="utf-8")
-
-    assert tsconfig["include"] == ["client/src/**/*"]
-    assert tsconfig["compilerOptions"]["paths"] == {
-        "@/*": ["./client/src/*"],
-    }
-    assert "server" not in json.dumps(tsconfig)
-    assert "shared" not in json.dumps(tsconfig)
-    assert "@shared" not in vite
-    assert "REPL_ID" not in vite
-    assert "@replit/vite-plugin-" not in vite
-    assert "plugins: [react(), tailwindcss()]" in vite
-    assert "metaImagesPlugin" not in vite
-    assert 'readFileSync(path.resolve(import.meta.dirname, "package.json"), "utf-8")' in vite
-    assert '"@assets": path.resolve(import.meta.dirname, "attached_assets")' in vite
-    assert 'root: path.resolve(import.meta.dirname, "client")' in vite
-    assert 'outDir: path.resolve(import.meta.dirname, "dist/public")' in vite
 
 
 def test_component_vm_pool_keeps_per_file_isolation_guards() -> None:

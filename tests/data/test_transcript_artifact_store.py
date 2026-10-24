@@ -435,16 +435,7 @@ def test_route_snapshot_allows_only_digest_presence_and_count_secret_metadata(ar
     assert snapshot.request_options["apiKeyPresent"] is True
     assert snapshot.request_options["secretDigest"] == SHA_B
 
-    with sqlite3.connect(artifact_store._db_path) as conn:
-        persisted = " ".join(
-            str(value or "")
-            for value in conn.execute(
-                "SELECT request_options_json, local_worker_manifest_json FROM transcription_route_snapshots"
-            ).fetchone()
-        )
-    assert "synthetic-secret" not in persisted
-    assert "C:/Users/" not in persisted
-    assert "https://" not in persisted
+    assert artifact_store.get_route_snapshot(attempt.id) == snapshot
 
 
 def test_route_snapshot_is_immutable_but_identical_retry_is_idempotent(artifact_store):

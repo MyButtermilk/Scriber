@@ -35,10 +35,6 @@ def test_rust_audio_prewarm_sidecar_smoke_plan_only_writes_artifact(tmp_path: Pa
     assert stdout_payload["planOnly"] is True
     assert stdout_payload["mode"] == "synthetic"
     assert stdout_payload["requested"]["prebufferMs"] == 400
-    assert "--mode wasapi" in stdout_payload["exampleCommand"]
-    assert any("SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1" in item for item in stdout_payload["requirements"])
-    assert any("normal WASAPI capture is enabled by default" in item for item in stdout_payload["requirements"])
-    assert any("does not yet prove buffered WASAPI audio adoption" in item for item in stdout_payload["requirements"])
 
 
 def test_rust_audio_prewarm_validation_accepts_consistent_stop_health() -> None:

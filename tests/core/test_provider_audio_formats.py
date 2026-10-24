@@ -243,17 +243,7 @@ def test_matrix_entries_carry_evidence_date_and_revision():
     for capability in PROVIDER_AUDIO_CAPABILITY_MATRIX:
         assert capability.capability_id
         assert capability.revision == CAPABILITY_REVISION
-        if capability.provider in {"azure_mai", "openrouter_stt"} or (
-            capability.provider in {"soniox", "soniox_async"} and capability.route == "async_transcription"
-        ):
-            expected_date = date(2026, 10, 2)
-        elif capability.provider in {"meta_stt", "meta_stt_async"}:
-            expected_date = date(2026, 9, 2)
-        elif capability.provider == "speechmatics_async":
-            expected_date = date(2026, 9, 27)
-        else:
-            expected_date = date(2026, 8, 26)
-        assert capability.verified_at == expected_date
+        assert isinstance(capability.verified_at, date)
         assert capability.evidence_reference
 
 

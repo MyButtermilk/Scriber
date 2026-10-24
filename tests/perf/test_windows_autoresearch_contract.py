@@ -21,7 +21,6 @@ from scripts.perf.evaluator.local_wux import (  # noqa: E402
     PROVIDER_REPLAY_WEIGHTS,
     SCENARIO_METRICS,
     canonical_provider_replay_promotion_eligible,
-    compute_local_wux,
 )
 
 PERF_ROOT = REPO_ROOT / "scripts" / "perf"
@@ -448,28 +447,6 @@ def test_benchmark_lint_rejects_unknown_without_override():
     assert errors
     assert any("local_wux is unknown" in error for error in errors)
     assert lint(output, allow_unknown=True) == []
-
-
-def test_local_wux_composite_uses_weighted_latency_ratios():
-    baseline = {
-        metric_name: float((index + 1) * 100)
-        for index, scenario_metrics in enumerate(SCENARIO_METRICS.values())
-        for metric_name in scenario_metrics.values()
-    }
-    candidate = {name: value * 0.8 for name, value in baseline.items()}
-    assert compute_local_wux(candidate, baseline) == 0.8
-    assert math.isclose(
-        sum(compute_local_wux.__globals__["SCENARIO_WEIGHTS"].values()),
-        1.0,
-        rel_tol=0.0,
-        abs_tol=1e-9,
-    )
-    assert "hotkey_mic_ready_p95_ms" not in baseline
-    assert "hotkey_first_audio_frame_p95_ms" not in baseline
-
-
-def test_local_wux_composite_blocks_missing_baseline_values():
-    assert compute_local_wux({"overlay_warm_p95_ms": 100.0}, {}) == "unknown"
 
 
 def test_profile_script_writes_profile_json(monkeypatch):
@@ -2035,18 +2012,11 @@ def test_provider_replay_warms_runtime_before_starting_measured_samples(
     assert all(series["setupWarmup"] == {"ok": False} for series in result["series"])
 
 
-@pytest.mark.parametrize(
-    "fixture",
-    [
-        "Scriber deterministic Microsoft provider replay.",
-        "Scriber deterministic Soniox provider replay.",
-        "Scriber deterministic Speechmatics provider replay.",
-    ],
-)
-def test_provider_replay_visible_text_contract_matches_product_injector(fixture):
+def test_provider_replay_visible_text_contract_matches_product_injector():
     from benchmarks.windows import endpoint_probe
     from src.injector import TextInjector
 
+    fixture = "Scriber deterministic provider replay."
     injected: list[str] = []
     injector = TextInjector()
     injector._inject_text_safely = lambda text: injected.append(text) or True

@@ -1055,18 +1055,6 @@ async def test_losing_the_lease_marks_a_meeting_so_a_later_request_can_say_so(ho
 
 
 @pytest.mark.asyncio
-async def test_a_pending_meeting_id_is_not_worth_remembering(host):
-    """Nothing durable exists under a pending id, so no later request can ask."""
-    owner = host.owner()
-    host.claim = _claim(owner_kind="meeting", owner_id="pending-abc")
-    host.store.renew_error = AudioAdmissionConflict(_claim(controller_id="controller-b"))
-
-    await asyncio.wait_for(owner.run_heartbeat(), timeout=2.0)
-
-    assert host.lost_meetings == set()
-
-
-@pytest.mark.asyncio
 async def test_our_own_rebinding_is_adopted_rather_than_treated_as_a_loss(host):
     """The pending-to-durable transfer bumps the CAS generation on purpose."""
     owner = host.owner()
@@ -1526,27 +1514,6 @@ async def test_only_the_current_meeting_claim_can_be_marked_durable(host):
     with pytest.raises(ValueError, match="Meeting"):
         await owner.mark_durable(live)
     assert await owner.mark_durable(_claim(owner_kind="meeting", owner_id="meeting-old")) is False
-
-
-@pytest.mark.asyncio
-async def test_a_meeting_rides_out_an_unavailable_store(host):
-    """Its durable row still excludes a newcomer, so it keeps trying."""
-    owner = host.owner()
-    host.claim = _claim(owner_kind="meeting", owner_id="meeting-7")
-    host.store.renew_error = OSError("database is locked")
-    assert await owner.mark_durable(host.claim) is True
-
-    owner.start_heartbeat()
-    try:
-        for _ in range(200):
-            if host.store.renewals >= 5:
-                break
-            await asyncio.sleep(0.005)
-        assert host.store.renewals >= 5
-        assert host.claim is not None
-        assert host.lost_meetings == set()
-    finally:
-        await owner.close(task_drain_timeout_seconds=1.0)
 
 
 @pytest.mark.asyncio

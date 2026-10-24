@@ -82,6 +82,7 @@ describe("LocalPolishingSettings", () => {
   it("identifies the single QAD model without retired model choices or Gemma terms", () => {
     renderSettings();
 
+    expect(screen.getAllByTestId(/^local-polishing-model-/)).toHaveLength(1);
     expect(screen.getByText("LFM2.5 350M · QAD Q4_0")).toBeInTheDocument();
     expect(screen.getByText(/only one local model: LFM2.5 350M quantized with QAD to Q4_0/i)).toBeInTheDocument();
     expect(screen.getByText(/Praxist by Sapient Intelligence/i)).toBeInTheDocument();
@@ -89,13 +90,6 @@ describe("LocalPolishingSettings", () => {
     expect(screen.queryByTestId("local-polishing-model-bf16")).not.toBeInTheDocument();
     expect(screen.queryByText(/Gemma/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-  });
-
-  it("shows exactly one installable model card", () => {
-    renderSettings();
-
-    expect(screen.getAllByTestId(/^local-polishing-model-/)).toHaveLength(1);
-    expect(screen.getByTestId("local-polishing-model-qad_q4_0")).toBeInTheDocument();
   });
 
   it("shows an unavailable message and no model card when the catalog is not materialized", () => {

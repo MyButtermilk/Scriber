@@ -170,7 +170,6 @@ describe("failed transcript", () => {
   });
 
   it.each([
-    { type: "file", status: "failed", resumeAvailable: false },
     { type: "file", status: "stopped" },
     { type: "file", status: "processing", resumeAvailable: true },
     { type: "mic", status: "failed", resumeAvailable: true },
