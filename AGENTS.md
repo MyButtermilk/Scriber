@@ -1824,7 +1824,11 @@ Packaging and scripts:
   Pipecat's Agent STT service (`/v2/agent`, model `linden-1`) with
   server-side turn detection, because Scriber attaches no local VAD to native
   streams; the Pipecat 1.14 speaker template applies to every final, so only
-  diarized files use speaker labels. Gladia live
+  diarized files use speaker labels. Pipecat's `stop()` discards its message
+  queue before the SDK disconnect flushes the open turn, so Scriber's
+  Speechmatics subclass disconnects first while the consumer still runs and
+  waits for an in-order marker; keep that flush or the last utterance of a
+  dictation or file is lost. Gladia live
   transcription uses
   Pipecat's Gladia service; Gladia file and YouTube transcription use the
   direct pre-recorded HTTP upload/polling API and should not be routed through

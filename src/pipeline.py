@@ -647,6 +647,62 @@ def _redact_provider_error_text(message: str) -> str:
     return text
 
 
+_SPEECHMATICS_FLUSH_MARKER = "ScriberSpeechmaticsFlushComplete"
+_SPEECHMATICS_FLUSH_DRAIN_TIMEOUT_SECONDS = 2.0
+_SPEECHMATICS_FLUSHING_SERVICE_CLASSES: dict[type, type] = {}
+
+
+def _speechmatics_stop_flushing_service_class(base: type) -> type:
+    """Return a Speechmatics service that delivers the open turn on EndFrame.
+
+    Pipecat 1.14 cancels its message consumer and discards the queue before the
+    SDK's ``disconnect()`` flushes the session, so the final segments of the
+    turn still open at stop never become transcripts. A dictation stopped right
+    after the last word, or a file ending in speech, lost that utterance.
+    """
+    cached = _SPEECHMATICS_FLUSHING_SERVICE_CLASSES.get(base)
+    if cached is not None:
+        return cached
+
+    class ScriberSpeechmaticsSTTService(base):
+        async def stop(self, frame):
+            await self._flush_open_turn()
+            await super().stop(frame)
+
+        async def _handle_message(self, message):
+            if message.get("message") == _SPEECHMATICS_FLUSH_MARKER:
+                message["done"].set()
+                return
+            await super()._handle_message(message)
+
+        async def _flush_open_turn(self) -> None:
+            client = self._client
+            consumer = self._stt_msg_task
+            if client is None or consumer is None or consumer.done():
+                return
+            # A flushed session must not reconnect when its audio gate closes.
+            self._closed = True
+            await self._cancel_reconnect_task()
+            # The SDK sends EndOfStream and waits (bounded) for EndOfTranscript;
+            # the open turn's final segments arrive on the queue meanwhile.
+            try:
+                await client.disconnect()
+            except Exception as exc:
+                logger.warning("Speechmatics stop flush failed (error_type={})", type(exc).__name__)
+                return
+            # The consumer handles messages strictly in order, so reaching the
+            # marker means every flushed segment has been pushed downstream.
+            done = asyncio.Event()
+            self._stt_msg_queue.put_nowait({"message": _SPEECHMATICS_FLUSH_MARKER, "done": done})
+            try:
+                await asyncio.wait_for(done.wait(), timeout=_SPEECHMATICS_FLUSH_DRAIN_TIMEOUT_SECONDS)
+            except TimeoutError:
+                logger.warning("Speechmatics final segments did not drain before stop")
+
+    _SPEECHMATICS_FLUSHING_SERVICE_CLASSES[base] = ScriberSpeechmaticsSTTService
+    return ScriberSpeechmaticsSTTService
+
+
 SonioxSTTService = None
 SonioxContextObject = None
 
@@ -3803,7 +3859,7 @@ class ScriberPipeline:
             )
             if service_kwargs.get("base_url") != speechmatics_base_url:
                 raise RuntimeError("Speechmatics Pipecat service cannot bind the frozen endpoint.")
-            return SpeechmaticsSTTService(**service_kwargs)
+            return _speechmatics_stop_flushing_service_class(SpeechmaticsSTTService)(**service_kwargs)
 
         elif self.service_name == "speechmatics_async":
             from src.cloud_async_stt import SpeechmaticsAsyncProcessor

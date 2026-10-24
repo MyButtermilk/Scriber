@@ -1809,7 +1809,7 @@ def test_mistral_segmented_live_uses_transcribe_model_when_rt_model_is_realtime_
         ("gladia", "GLADIA_API_KEY", "ScriberGladiaSTTService"),
         ("groq", "GROQ_API_KEY", "GroqSTTService"),
         ("openai", "OPENAI_API_KEY", "OpenAIRealtimeSTTService"),
-        ("speechmatics", "SPEECHMATICS_API_KEY", "SpeechmaticsSTTService"),
+        ("speechmatics", "SPEECHMATICS_API_KEY", "ScriberSpeechmaticsSTTService"),
     ),
 )
 @pytest.mark.asyncio
@@ -1845,6 +1845,55 @@ async def test_pipecat_live_factories_match_runtime_signatures(
         cleanup = getattr(service, "cleanup", None)
         if callable(cleanup):
             await cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flushing", [True, False])
+async def test_speechmatics_stop_delivers_the_open_turn_before_teardown(monkeypatch, flushing):
+    from pipecat.utils.asyncio.task_manager import TaskManager
+
+    monkeypatch.setattr(Config, "SPEECHMATICS_API_KEY", "key")
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "")
+    if not flushing:
+        # Pipecat's own stop path, kept as the control for the regression.
+        monkeypatch.setattr(pipeline_module, "_speechmatics_stop_flushing_service_class", lambda base: base)
+    service = ScriberPipeline(service_name="speechmatics")._create_stt_service(object())
+    service._task_manager = TaskManager()
+
+    class _Client:
+        def __init__(self):
+            self.disconnects = 0
+
+        async def disconnect(self):
+            self.disconnects += 1
+            if self.disconnects == 1:
+                # The SDK flushes the open turn before EndOfTranscript arrives.
+                service._stt_msg_queue.put_nowait(
+                    {
+                        "message": "AddSegment",
+                        "segment": {"transcript": "der letzte Satz"},
+                        "metadata": {"start_time": 1.0, "end_time": 2.0},
+                    }
+                )
+                await asyncio.sleep(0)
+
+    pushed = []
+
+    async def _push_frame(frame, direction=FrameDirection.DOWNSTREAM):
+        pushed.append(frame)
+
+    monkeypatch.setattr(service, "push_frame", _push_frame)
+    client = _Client()
+    service._client = client
+    service._stt_msg_task = service.create_task(service._process_stt_messages())
+
+    await asyncio.wait_for(service.stop(EndFrame()), timeout=5.0)
+
+    finals = [frame.text for frame in pushed if isinstance(frame, TranscriptionFrame)]
+    assert finals == (["der letzte Satz"] if flushing else [])
+    assert service._client is None
+    assert service._stt_msg_task is None
 
 
 @pytest.mark.asyncio
