@@ -4953,10 +4953,6 @@ fn normalize_global_shortcut(hotkey: &str) -> String {
         .join("+")
 }
 
-fn post_backend_path(access: &BackendAccess, path: &str) -> Result<Value, String> {
-    post_backend_path_with_body(access, path, None)
-}
-
 fn post_backend_path_with_body(
     access: &BackendAccess,
     path: &str,
