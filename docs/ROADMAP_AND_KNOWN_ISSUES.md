@@ -65,6 +65,28 @@ Gemini tests cover late finals and blocked persistence, but the ambiguous
 15-second provider drain above remains deliberately unchanged. This is not a
 claim that Reaper's entire provider-tail delay is solved.
 
+## Dependency advisories without a compatible fix (2026-10-24)
+
+The 2026-10-24 audit (OSV, `npm audit`) updated every package with a
+compatible fix: aiohttp/yarl/multidict, brotli, certifi, cryptography,
+filelock, nltk, urllib3, pip, pytest and setuptools; dompurify, vite, vitest
+and transitive build tools; rustls, rustls-webpki, webpki-root-certs, anyhow,
+event-listener, serde_with and tokio; Node.js 26.12.1. Remaining:
+
+- Pillow 12.3.0 has advisories fixed only in 13.0.0, which `pipecat-ai` 1.5.0
+  rejects (`pillow<13`). Scriber decodes no untrusted images; lift this with
+  the next deliberate Pipecat upgrade. The Pipecat 1.5.0 advisory concerns its
+  development runner, which Scriber does not use.
+- CPython 3.14.9 is available. The shipped 3.14.7 runtime lock binds installed
+  `python.exe`/`python3.dll`/`python314.dll` hashes that must come from a real
+  Windows installation; update the lock, CI `python-version` pins and frozen
+  policy together.
+- Tauri's `zip` 4.6.1 (Unix permission/symlink extraction) and build-time
+  `quick-xml` 0.39.4 need newer Tauri crates; update `@tauri-apps/*` and the
+  Rust crates together. The diarization worker's build-only `rustls` (Sherpa
+  archive download, checksum-verified) needs a worker cache rebuild.
+- Rust 1.97.0 remains pinned; change it only together with the release cache.
+
 ## Recently Completed
 
 Remote Desktop dictation (#47): an experimental, default-off setting keeps the

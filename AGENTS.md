@@ -64,7 +64,7 @@ the user explicitly asks for a temporary investigation note.
   events, SQLite, Pipecat pipeline code, and provider adapters.
 - Frontend default in dev: `localhost:5000`, implemented with Vite 8, React 19,
   TypeScript, Tailwind v4, Wouter, and TanStack Query. The Vite-only frontend
-  toolchain is pinned to Node.js 26.5.0 through `.node-version` and
+  toolchain is pinned to Node.js 26.12.1 through `.node-version` and
   `Frontend/package.json`; the removed Express/Replit scaffold is not part of
   the desktop runtime or build. `npm ci` consumes the canonical npm lock and
   installs Bun 1.4.3 locally for the app/test type checks and isolated logic
@@ -1485,7 +1485,12 @@ Packaging and scripts:
   job retry is disabled so billable work is not replayed. A durable recovered
   provider StageResult remains the only safe way to continue without a second
   provider call.
-- Standard backend builds pin `pipecat-ai[silero]==1.5.0`. Provider factories
+- Standard backend builds pin `pipecat-ai[silero]==1.5.0`. It caps Pillow
+  below 13, so Pillow's 13.0.0-only advisory fixes wait for a deliberate
+  Pipecat upgrade (Scriber decodes no untrusted images); see
+  `docs/ROADMAP_AND_KNOWN_ISSUES.md`. Regenerate both constraint files with a
+  Windows/CPython 3.14.7 resolution and keep them identical apart from their
+  headers. Provider factories
   must use the Pipecat 1.5 `Settings` API; do not restore deprecated
   `InputParams`, `LiveOptions`, or pre-1.5 fallback paths. Synthetic VAD turn
   boundaries must use `VADUserStartedSpeakingFrame` and

@@ -80,7 +80,7 @@ jobs:
       - name: Install Python gate dependencies
         shell: pwsh
         run: |
-          python -m pip install pip==26.1.2
+          python -m pip install pip==26.2.2
           python -m pip install `
             -c requirements-test-constraints.txt `
             -r requirements-dev.txt `

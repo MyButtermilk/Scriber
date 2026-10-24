@@ -78,7 +78,7 @@ def test_hybrid_pr_checks_pin_workflow_lint_and_python_gate_dependencies() -> No
     python_install = next(
         step["run"] for step in jobs["python-gates"]["steps"] if step["name"] == "Install Python gate dependencies"
     )
-    assert "python -m pip install pip==26.1.2" in python_install
+    assert "python -m pip install pip==26.2.2" in python_install
     assert "-c requirements-test-constraints.txt" in python_install
     assert "python -m pip check" in python_install
 

@@ -1220,8 +1220,8 @@ def test_python_release_environment_is_exact_and_reproducible() -> None:
     assert "pyinstaller==6.20.0" in requirements
     assert "pyinstaller-hooks-contrib==2026.6" in requirements
     assert "pytest-asyncio==1.3.0" in requirements
-    assert "pytest==9.0.1" in requirements
-    assert "setuptools==83.0.0" in requirements
+    assert "pytest==9.0.3" in requirements
+    assert "setuptools==84.2.1" in requirements
     assert ">=" not in requirements
 
 

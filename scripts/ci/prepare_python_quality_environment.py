@@ -134,7 +134,7 @@ def prepare_environment(root: Path, identity: dict[str, Any]) -> str:
     _remove_environment(root)
     _run([sys.executable, "-m", "venv", "venv"], root)
     executable = str(root / "venv" / "Scripts" / "python.exe")
-    _run([executable, "-m", "pip", "install", "pip==26.1.2"], root)
+    _run([executable, "-m", "pip", "install", "pip==26.2.2"], root)
     _run(
         [
             executable,
