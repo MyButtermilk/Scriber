@@ -1896,6 +1896,117 @@ async def test_speechmatics_stop_delivers_the_open_turn_before_teardown(monkeypa
     assert service._stt_msg_task is None
 
 
+class _FakeGoogleStreams:
+    """Google streaming: the open utterance is finalized once requests end."""
+
+    def __init__(self):
+        self.streams: list[list[bytes]] = []
+        self.audio_received = asyncio.Event()
+
+    async def streaming_recognize(self, *, requests):
+        received: list[bytes] = []
+        self.streams.append(received)
+        half_closed = asyncio.Event()
+
+        async def _consume():
+            async for request in requests:
+                if request.audio:
+                    received.append(request.audio)
+                    self.audio_received.set()
+            half_closed.set()
+
+        consumer = asyncio.create_task(_consume())
+
+        async def _responses():
+            try:
+                await half_closed.wait()
+                result = SimpleNamespace(
+                    alternatives=[SimpleNamespace(transcript=b" ".join(received).decode())],
+                    is_final=True,
+                )
+                yield SimpleNamespace(results=[result])
+            finally:
+                consumer.cancel()
+
+        return _responses()
+
+
+def _google_service_with_fake_streams(monkeypatch, tmp_path, *, finalizing=True):
+    import pipecat.services.google.stt as google_stt
+    from pipecat.utils.asyncio.task_manager import TaskManager
+
+    credentials = tmp_path / "google.json"
+    credentials.write_text('{"project_id": "scriber-test"}', encoding="utf-8")
+    client = _FakeGoogleStreams()
+    monkeypatch.setattr(
+        google_stt.service_account.Credentials,
+        "from_service_account_file",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(google_stt.speech_v2, "SpeechAsyncClient", lambda **_kwargs: client)
+    monkeypatch.setattr(Config, "GOOGLE_APPLICATION_CREDENTIALS", str(credentials))
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    if not finalizing:
+        # Pipecat's own stop path, kept as the control for the regression.
+        monkeypatch.setattr(pipeline_module, "_google_finalizing_service_class", lambda base, _request: base)
+    service = ScriberPipeline(service_name="google")._create_stt_service(object())
+    service._task_manager = TaskManager()
+    pushed = []
+
+    async def _push_frame(frame, direction=FrameDirection.DOWNSTREAM):
+        pushed.append(frame)
+
+    monkeypatch.setattr(service, "push_frame", _push_frame)
+    return service, client, pushed
+
+
+async def _send_google_audio(service, *chunks: bytes) -> None:
+    for chunk in chunks:
+        async for _frame in service.run_stt(chunk):
+            pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finalizing", (True, False))
+async def test_google_stop_finalizes_the_open_utterance(monkeypatch, tmp_path, finalizing):
+    service, client, pushed = _google_service_with_fake_streams(monkeypatch, tmp_path, finalizing=finalizing)
+    await service._connect()
+    await _send_google_audio(service, b"der", b"letzte", b"Satz")
+    await asyncio.wait_for(client.audio_received.wait(), timeout=5.0)
+
+    await asyncio.wait_for(service.stop(EndFrame()), timeout=15.0)
+
+    finals = [frame.text for frame in pushed if isinstance(frame, TranscriptionFrame)]
+    assert finals == (["der letzte Satz"] if finalizing else [])
+    assert service._streaming_task is None
+
+
+@pytest.mark.asyncio
+async def test_google_rotation_finalizes_each_stream_in_audio_order(monkeypatch, tmp_path):
+    # Rotate before every later chunk so each stream carries exactly one.
+    monkeypatch.setattr(pipeline_module, "_GOOGLE_STREAM_ROTATION_SECONDS", -1.0)
+    service, client, pushed = _google_service_with_fake_streams(monkeypatch, tmp_path)
+    await service._connect()
+    await _send_google_audio(service, b"eins", b"zwei", b"drei")
+
+    await asyncio.wait_for(service.stop(EndFrame()), timeout=15.0)
+
+    assert client.streams == [[b"eins"], [b"zwei"], [b"drei"]]
+    finals = [frame.text for frame in pushed if isinstance(frame, TranscriptionFrame)]
+    assert finals == ["eins", "zwei", "drei"]
+
+
+@pytest.mark.asyncio
+async def test_google_stop_without_audio_opens_no_stream(monkeypatch, tmp_path):
+    service, client, pushed = _google_service_with_fake_streams(monkeypatch, tmp_path)
+    await service._connect()
+
+    await asyncio.wait_for(service.stop(EndFrame()), timeout=5.0)
+
+    assert client.streams == []
+    assert not [frame for frame in pushed if isinstance(frame, TranscriptionFrame)]
+
+
 @pytest.mark.asyncio
 async def test_soniox_realtime_factory_uses_selected_eu_region(monkeypatch):
     monkeypatch.setattr(Config, "SONIOX_API_KEY", "key")
@@ -1981,6 +2092,7 @@ def test_google_cloud_factory_uses_pipecat_1_5_settings(monkeypatch):
     module = SimpleNamespace(
         GoogleSTTService=_GoogleSTTService,
         speech_v2=SimpleNamespace(__name__="google.cloud.speech_v2"),
+        cloud_speech=SimpleNamespace(StreamingRecognizeRequest=dict),
     )
     monkeypatch.setattr(Config, "GOOGLE_APPLICATION_CREDENTIALS", "C:\\keys\\google.json")
     monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
@@ -1988,6 +2100,8 @@ def test_google_cloud_factory_uses_pipecat_1_5_settings(monkeypatch):
 
     service = ScriberPipeline(service_name="google")._create_stt_service(object())
 
+    assert isinstance(service, _GoogleSTTService)
+    assert type(service).__name__ == "ScriberGoogleSTTService"
     assert service.credentials_path == "C:\\keys\\google.json"
     assert service.sample_rate == Config.SAMPLE_RATE
     assert service.settings.kwargs == {
@@ -2013,6 +2127,7 @@ def test_google_cloud_factory_omits_languages_for_auto_detection(monkeypatch):
     module = SimpleNamespace(
         GoogleSTTService=_GoogleSTTService,
         speech_v2=SimpleNamespace(__name__="google.cloud.speech_v2"),
+        cloud_speech=SimpleNamespace(StreamingRecognizeRequest=dict),
     )
     monkeypatch.setattr(Config, "GOOGLE_APPLICATION_CREDENTIALS", "C:\\keys\\google.json")
     monkeypatch.setattr(Config, "LANGUAGE", "auto")
@@ -2038,6 +2153,7 @@ def test_google_cloud_factory_requires_frozen_v2_route_and_model(monkeypatch):
     module = SimpleNamespace(
         GoogleSTTService=_GoogleSTTService,
         speech_v2=SimpleNamespace(__name__="google.cloud.speech_v2"),
+        cloud_speech=SimpleNamespace(StreamingRecognizeRequest=dict),
     )
     monkeypatch.setattr(Config, "GOOGLE_APPLICATION_CREDENTIALS", "C:\\keys\\google.json")
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)

@@ -1812,7 +1812,11 @@ Packaging and scripts:
   payloads remain in local scope; log only a bounded provider/stage and exception
   type. Google Cloud STT uses
   `google-cloud-speech` plus Pipecat's required `google-genai` namespace
-  dependency, OpenAI live STT uses Pipecat's OpenAI Realtime STT service with
+  dependency. Pipecat cancels its Google stream on stop and abandons it at the
+  four-minute rotation while the open utterance is still interim; Scriber's
+  Google subclass instead ends the request stream (gRPC half-close), drains the
+  finals with a bounded wait, and carries the rotation chunk to the next
+  stream in order. OpenAI live STT uses Pipecat's OpenAI Realtime STT service with
   `gpt-realtime-whisper`, while `openai_async` uses the direct OpenAI Audio
   Transcriptions HTTP adapter with `gpt-4o-mini-transcribe-2025-12-15`. Keep
   the explicit `openai` SDK and `websockets` dependencies for these paths.

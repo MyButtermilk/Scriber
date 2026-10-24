@@ -703,6 +703,135 @@ def _speechmatics_stop_flushing_service_class(base: type) -> type:
     return ScriberSpeechmaticsSTTService
 
 
+_GOOGLE_END_OF_AUDIO = object()
+# Google ends a streaming request after about five minutes of audio.
+_GOOGLE_STREAM_ROTATION_SECONDS = 240.0
+_GOOGLE_FINAL_RESULTS_TIMEOUT_SECONDS = 5.0
+_GOOGLE_STOP_TIMEOUT_SECONDS = 10.0
+_GOOGLE_FINALIZING_SERVICE_CLASSES: dict[type, type] = {}
+
+
+def _google_finalizing_service_class(base: type, request_type: type) -> type:
+    """Return a Google service that half-closes streams instead of dropping them.
+
+    Pipecat 1.14 cancels its streaming task on EndFrame and abandons a stream at
+    the four-minute rotation as soon as the next response arrives. Google still
+    holds the open utterance as an interim result at both points, so the last
+    words of a dictation or file, and those spoken across each rotation, were
+    never finalized. Ending the request stream makes Google finalize the audio
+    it received and then close the response stream.
+    """
+    cached = _GOOGLE_FINALIZING_SERVICE_CLASSES.get(base)
+    if cached is not None:
+        return cached
+
+    class ScriberGoogleSTTService(base):
+        # The request stream below decides rotation. Pipecat's response-side
+        # cutoff would discard the finals of the stream being rotated.
+        STREAMING_LIMIT = math.inf
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._audio_finished = False
+            self._carried_audio: bytes | None = None
+            self._open_request_stream: asyncio.Event | None = None
+
+        async def _connect(self):
+            self._audio_finished = False
+            self._carried_audio = None
+            await super()._connect()
+
+        async def stop(self, frame):
+            await self._finish_audio()
+            await super().stop(frame)
+
+        async def _finish_audio(self) -> None:
+            task = self._streaming_task
+            if task is None or task.done():
+                return
+            self._audio_finished = True
+            # An idle stream loop has nothing to finalize and exits by itself.
+            if (
+                self._open_request_stream is not None
+                or self._carried_audio is not None
+                or not self._request_queue.empty()
+            ):
+                self._request_queue.put_nowait(_GOOGLE_END_OF_AUDIO)
+            _done, pending = await asyncio.wait({task}, timeout=_GOOGLE_STOP_TIMEOUT_SECONDS)
+            if pending:
+                logger.warning("Google final results did not arrive before stop")
+
+        async def _stream_audio(self):
+            while True:
+                if self._carried_audio is None and self._request_queue.empty():
+                    if self._audio_finished:
+                        return
+                    await asyncio.sleep(0.01)
+                    continue
+                stream_closed = asyncio.Event()
+                try:
+                    responses = await self._client.streaming_recognize(requests=self._audio_requests(stream_closed))
+                    await self._receive_results(responses, stream_closed)
+                except Exception as exc:
+                    await self.push_error(error_msg=f"Unknown error occurred: {exc}", exception=exc)
+                    if self._audio_finished:
+                        return
+                    await asyncio.sleep(1)
+
+        async def _audio_requests(self, stream_closed: asyncio.Event):
+            opened_at = time.monotonic()
+            sent_audio = False
+            self._open_request_stream = stream_closed
+            try:
+                yield request_type(
+                    recognizer=f"projects/{self._project_id}/locations/{self._location}/recognizers/_",
+                    streaming_config=self._config,
+                )
+                while True:
+                    if self._carried_audio is not None:
+                        audio, self._carried_audio = self._carried_audio, None
+                    else:
+                        audio = await self._request_queue.get()
+                        self._request_queue.task_done()
+                    if audio is _GOOGLE_END_OF_AUDIO:
+                        return
+                    if sent_audio and time.monotonic() - opened_at > _GOOGLE_STREAM_ROTATION_SECONDS:
+                        # The next stream starts with this chunk, keeping order.
+                        self._carried_audio = audio
+                        return
+                    sent_audio = True
+                    yield request_type(audio=audio)
+            finally:
+                if self._open_request_stream is stream_closed:
+                    self._open_request_stream = None
+                stream_closed.set()
+
+        async def _receive_results(self, responses, stream_closed: asyncio.Event) -> None:
+            receiving = asyncio.ensure_future(self._process_responses(responses))
+            closing = asyncio.ensure_future(stream_closed.wait())
+            try:
+                await asyncio.wait({receiving, closing}, return_when=asyncio.FIRST_COMPLETED)
+                if not receiving.done():
+                    # The request stream ended; Google now finalizes the audio
+                    # it received and closes the response stream.
+                    await asyncio.wait({receiving}, timeout=_GOOGLE_FINAL_RESULTS_TIMEOUT_SECONDS)
+            finally:
+                closing.cancel()
+                if not receiving.done():
+                    receiving.cancel()
+                    cancel_call = getattr(responses, "cancel", None)
+                    if callable(cancel_call):
+                        cancel_call()
+                await asyncio.gather(closing, receiving, return_exceptions=True)
+            if receiving.cancelled():
+                logger.warning("Google final results did not arrive before the stream closed")
+                return
+            receiving.result()
+
+    _GOOGLE_FINALIZING_SERVICE_CLASSES[base] = ScriberGoogleSTTService
+    return ScriberGoogleSTTService
+
+
 SonioxSTTService = None
 SonioxContextObject = None
 
@@ -3369,7 +3498,10 @@ class ScriberPipeline:
             if selected_language and settings_kwargs.get("languages") != [selected_language]:
                 raise RuntimeError("Google Cloud Pipecat settings cannot bind the frozen language.")
             settings = settings_cls(**settings_kwargs)
-            return GoogleSTTService(
+            request_type = getattr(getattr(module, "cloud_speech", None), "StreamingRecognizeRequest", None)
+            if request_type is None:
+                raise RuntimeError("Google Cloud streaming transcription requires Pipecat 1.14.0.")
+            return _google_finalizing_service_class(GoogleSTTService, request_type)(
                 credentials_path=credentials_path,
                 sample_rate=Config.SAMPLE_RATE,
                 settings=settings,
