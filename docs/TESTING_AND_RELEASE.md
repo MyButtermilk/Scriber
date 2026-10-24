@@ -973,7 +973,7 @@ contains an older version, the signed release build fails instead of silently
 publishing an installer with the wrong version.
 
 The checked-in `Frontend/src-tauri/windows/installer-template.nsi` is the
-reviewed Tauri CLI 2.11.3 template with one product-specific behavior change:
+reviewed Tauri CLI 2.12.4 template with one product-specific behavior change:
 an NSIS-to-NSIS manual version upgrade skips the destructive maintenance prompt
 and proceeds as an overlay instead of first uninstalling the existing app. This
 preserves existing Start-menu and taskbar pins plus the HKCU autostart entry,

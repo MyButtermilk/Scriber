@@ -522,7 +522,7 @@ Frontend and shell:
 - `Frontend/src-tauri/tauri.conf.json`: Tauri build, CSP, NSIS bundle, backend
   resource mapping, before-bundle sidecar command.
 - `Frontend/src-tauri/windows/installer-template.nsi`: reviewed Tauri CLI
-  2.11.3 NSIS template with manual NSIS version upgrades routed directly to the
+  2.12.4 NSIS template with manual NSIS version upgrades routed directly to the
   non-destructive overlay path. Do not restore Tauri's destructive maintenance
   prompt for this case: its uninstall path intentionally removes taskbar pins,
   Start-menu shortcuts, and the HKCU autostart value. Same-version maintenance,

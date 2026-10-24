@@ -65,26 +65,32 @@ Gemini tests cover late finals and blocked persistence, but the ambiguous
 15-second provider drain above remains deliberately unchanged. This is not a
 claim that Reaper's entire provider-tail delay is solved.
 
-## Dependency advisories without a compatible fix (2026-10-24)
+## Dependency status (2026-10-24)
 
 The 2026-10-24 audit (OSV, `npm audit`) updated every package with a
 compatible fix: aiohttp/yarl/multidict, brotli, certifi, cryptography,
-filelock, nltk, urllib3, pip, pytest and setuptools; dompurify, vite, vitest
-and transitive build tools; rustls, rustls-webpki, webpki-root-certs, anyhow,
-event-listener, serde_with and tokio; Node.js 26.12.1. Remaining:
+filelock, urllib3, pip, pytest and setuptools; dompurify, vite, vitest and
+transitive build tools; rustls, rustls-webpki, webpki-root-certs, anyhow,
+event-listener, serde_with and tokio; Node.js 26.12.1. The follow-up moved
+Pipecat to 1.14.0 (which admits Pillow 13.0.0 and drops NLTK), the packaged
+runtime to CPython 3.14.9, Tauri to 2.12.5 with the matching `@tauri-apps/*`
+2.12 packages, Scriber's `windows` crates to 0.62.2, and refreshed the audio and
+diarization worker lockfiles. The updater plugin no longer compiles its legacy
+`.nsis.zip` extraction, so the `zip` 4.6.1 advisories are gone from the shell.
+OSV and `npm audit` now report nothing for the Windows product. Remaining:
 
-- Pillow 12.3.0 has advisories fixed only in 13.0.0, which `pipecat-ai` 1.5.0
-  rejects (`pillow<13`). Scriber decodes no untrusted images; lift this with
-  the next deliberate Pipecat upgrade. The Pipecat 1.5.0 advisory concerns its
-  development runner, which Scriber does not use.
-- CPython 3.14.9 is available. The shipped 3.14.7 runtime lock binds installed
-  `python.exe`/`python3.dll`/`python314.dll` hashes that must come from a real
-  Windows installation; update the lock, CI `python-version` pins and frozen
-  policy together.
-- Tauri's `zip` 4.6.1 (Unix permission/symlink extraction) and build-time
-  `quick-xml` 0.39.4 need newer Tauri crates; update `@tauri-apps/*` and the
-  Rust crates together. The diarization worker's build-only `rustls` (Sherpa
-  archive download, checksum-verified) needs a worker cache rebuild.
+- `glib`, `zbus_names`, `zvariant` and `proc-macro-error` advisories exist
+  only in Tauri's Linux GTK/DBus graph, which the Windows build never compiles.
+- `onnx-asr` stays on 0.10.x: newer releases change the model loader and the
+  NumPy/ONNX surface that the no-BLAS frozen NumPy overlay and the Primeline
+  archive flow were validated against. Upgrade it as its own reviewed change.
+- `websockets` stays below 16, matching the range the OpenAI SDK's realtime
+  extra still declares; lift it with an OpenAI SDK release that admits 16+ and
+  a re-run of the Soniox/OpenAI realtime transport tests.
+- Speechmatics live now uses Pipecat's Agent STT (`/v2/agent`, `linden-1`,
+  server VAD turn detection). Run one real-key dictation before release.
+- The QuickJS wrapper lockfile is byte-locked with its prebuilt cache asset and
+  was deliberately left unchanged.
 - Rust 1.97.0 remains pinned; change it only together with the release cache.
 
 ## Recently Completed
