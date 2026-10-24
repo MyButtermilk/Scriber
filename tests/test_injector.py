@@ -1,13 +1,17 @@
 import asyncio
+import threading
+import time
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from pipecat.frames.frames import (
     EndFrame,
     InterimTranscriptionFrame,
     TranscriptionFrame,
 )
 
+from src import injector as injector_module
 from src.injector import TextInjector
 
 
@@ -96,3 +100,93 @@ class TestInjector(unittest.TestCase):
             asyncio.run(run())
 
         self.assertEqual(injected_texts, ["committed final "])
+
+
+def _final(text: str) -> TranscriptionFrame:
+    return TranscriptionFrame(text=text, user_id="user", timestamp="now")
+
+
+def test_immediate_injection_keeps_the_event_loop_responsive_and_ordered():
+    injector = TextInjector(inject_immediately=True)
+    injected: list[tuple[str, str]] = []
+
+    def slow_injection(text: str) -> None:
+        # Clipboard leases, Office COM, and app pre-delays block like this.
+        time.sleep(0.15)
+        injected.append((text, threading.current_thread().name))
+
+    async def run() -> int:
+        ticks = 0
+        done = asyncio.Event()
+
+        async def heartbeat() -> None:
+            nonlocal ticks
+            while not done.is_set():
+                ticks += 1
+                await asyncio.sleep(0.01)
+
+        beat = asyncio.create_task(heartbeat())
+        for text in ("first", "second", "third"):
+            await injector.process_frame(_final(text), MagicMock())
+        done.set()
+        await beat
+        return ticks
+
+    with (
+        patch.object(injector, "_inject_text", side_effect=slow_injection),
+        patch.object(injector, "push_frame", new=AsyncMock()),
+    ):
+        ticks = asyncio.run(run())
+
+    assert [text for text, _thread in injected] == ["first ", "second ", "third "]
+    assert all(thread.startswith("scriber-text-injection") for _text, thread in injected)
+    # Three 150 ms insertions on the loop would have allowed no heartbeat.
+    assert ticks >= 10
+
+
+def test_cancelled_flush_still_finishes_the_started_insertion():
+    injector = TextInjector(inject_immediately=False)
+    started = threading.Event()
+    release = threading.Event()
+    injected: list[str] = []
+
+    def blocking_injection(text: str) -> None:
+        started.set()
+        release.wait(5)
+        injected.append(text)
+
+    async def run() -> bool:
+        await injector.process_frame(_final("dictated text"), MagicMock())
+        flush = asyncio.create_task(injector.process_frame(EndFrame(), MagicMock()))
+        await asyncio.to_thread(started.wait, 5)
+        flush.cancel()
+        await asyncio.sleep(0.05)
+        still_waiting = not flush.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await flush
+        return still_waiting
+
+    with (
+        patch.object(injector, "_inject_text", side_effect=blocking_injection),
+        patch.object(injector, "push_frame", new=AsyncMock()),
+    ):
+        still_waiting = asyncio.run(run())
+
+    # A started paste cannot be withdrawn; cancellation surfaces only after it.
+    assert still_waiting is True
+    assert injected == ["dictated text "]
+
+
+def test_inject_text_once_async_uses_the_injection_worker(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    def inject_once(text: str, **kwargs) -> bool:
+        calls.append((text, threading.current_thread().name))
+        return True
+
+    monkeypatch.setattr(injector_module, "inject_text_once", inject_once)
+
+    assert asyncio.run(injector_module.inject_text_once_async("hello ", injection_method="paste")) is True
+    assert calls[0][0] == "hello "
+    assert calls[0][1].startswith("scriber-text-injection")
