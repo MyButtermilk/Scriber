@@ -558,6 +558,13 @@ Packaging and scripts:
   `RMDir` statements. Final acceptance compares a real v0.5.47 overlay
   byte-for-byte with a clean CP314 install and preserves user data through
   strict uninstall.
+- `packaging/overlay-upgrade-from-v0.5.138.json`: public v0.5.138 installer
+  identity plus the 48 files and 17 directories an overlay would otherwise
+  keep after Pipecat 1.14 dropped NLTK/Punkt/regex and the dependency
+  updates renamed versioned package metadata. Derive such tombstones from a
+  diff of the published and candidate installer inventories, never from
+  guesses; `tests/test_overlay_upgrade_tombstones.py` binds each entry to one
+  exact hook line and rejects tombstones for currently pinned metadata.
 - `packaging/quickjs-youtube-runtime-lock-v1.json`,
   `native/scriber-quickjs-wrapper/`, and
   `scripts/build_quickjs_youtube_runtime.py`: byte-locked QuickJS-ng engine,

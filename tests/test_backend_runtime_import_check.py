@@ -28,8 +28,9 @@ from scripts.check_backend_runtime_imports import (
     check_sentence_segmentation,
 )
 
-# Earlier frozen backends retained these two NLTK Punkt models; the NSIS hook
-# first removed every other language, which it still does for old installs.
+# Frozen backends up to v0.5.138 retained these two NLTK Punkt models; the NSIS
+# hook first removed every other language. Pipecat 1.14 drops NLTK, so the
+# v0.5.138 overlay manifest removes these two as well.
 PUNKT_TAB_RETAINED_LANGUAGES = ("english", "german")
 PUNKT_TAB_PRUNED_LANGUAGES = (
     "czech",
@@ -411,6 +412,11 @@ def test_nsis_upgrade_hook_removes_only_obsolete_frozen_runtime_files_and_direct
     obsolete_installed_paths.update(
         f"backend/{path}" for path in python314_upgrade_manifest["obsoletePython313RuntimeFiles"]
     )
+    overlay_upgrade_manifest = json.loads(
+        (repo_root / "packaging" / "overlay-upgrade-from-v0.5.138.json").read_text(encoding="utf-8")
+    )
+    overlay_upgrade_paths = {f"backend/{path}" for path in overlay_upgrade_manifest["obsoleteFiles"]}
+    obsolete_installed_paths.update(overlay_upgrade_paths)
     delete_prefix = '  Delete "$INSTDIR\\'
     deleted_installed_paths = {
         line.removeprefix(delete_prefix).removesuffix('"').replace("\\", "/")
@@ -447,6 +453,7 @@ def test_nsis_upgrade_hook_removes_only_obsolete_frozen_runtime_files_and_direct
         "backend/_internal/setuptools/_vendor",
         "backend/_internal/setuptools",
         "backend/_internal/websockets",
+        *(f"backend/{path}" for path in overlay_upgrade_manifest["obsoleteDirectories"]),
         "backend/_internal",
         "backend",
     )
@@ -467,8 +474,9 @@ def test_nsis_upgrade_hook_removes_only_obsolete_frozen_runtime_files_and_direct
     assert hook.count("  RMDir ") == len(obsolete_directories)
     for retained_language in PUNKT_TAB_RETAINED_LANGUAGES:
         retained_prefix = f"backend/_internal/nltk_data/tokenizers/punkt_tab/{retained_language}/"
-        assert not any(path.startswith(retained_prefix) for path in deleted_installed_paths)
-        assert f"backend/_internal/nltk_data/tokenizers/punkt_tab/{retained_language}" not in removed_directories
+        retained_deletes = {path for path in deleted_installed_paths if path.startswith(retained_prefix)}
+        assert retained_deletes == {retained_prefix + filename for filename in punkt_tab_files}
+        assert retained_deletes <= overlay_upgrade_paths
     first_rmdir_path = obsolete_directories[0].replace("/", "\\")
     first_rmdir = f'  RMDir "$INSTDIR\\{first_rmdir_path}"'
     assert hook.index(first_rmdir) > hook.rindex("  Delete ")

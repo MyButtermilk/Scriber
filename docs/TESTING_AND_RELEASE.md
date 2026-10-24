@@ -922,6 +922,16 @@ installation, and proves that strict uninstall preserves user data. Wildcard
 or recursive installer deletion is forbidden; directory cleanup is exact and
 non-recursive.
 
+NSIS overlays never remove files on their own, so every release whose frozen
+payload drops or renames files needs exact tombstones for the last published
+installer. `packaging/overlay-upgrade-from-v0.5.138.json` covers the Pipecat
+1.14 and dependency updates: NLTK, its Punkt data and `regex` are gone, and
+the cryptography, pipecat-ai, pydantic, speechmatics-rt and tqdm metadata
+directories carry new versions. List both installers with `7z l -slt`,
+take the backend files present only in the published one, and add one
+`Delete` per file plus child-first non-recursive `RMDir` lines for the
+directories the candidate no longer ships.
+
 The probe must report the exact custom NumPy version, `blas` and `lapack` as
 `none`, successful numerical probes, and no OpenBLAS file. Also inventory the
 tree directly; `backend\_internal\numpy.libs`, public
