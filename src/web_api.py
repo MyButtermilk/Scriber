@@ -9683,7 +9683,7 @@ class ScriberWebController:
         if not cleaned:
             return False
 
-        from src.injector import inject_text_once
+        from src.injector import inject_text_once_async
 
         def on_text_injected(_text: str) -> None:
             if provider_replay_execution is not None:
@@ -9720,7 +9720,7 @@ class ScriberWebController:
             elif provider_replay_execution is not None and marker == "target_changed_after_paste":
                 provider_replay_execution.fail("target_mismatch")
 
-        return inject_text_once(
+        return await inject_text_once_async(
             f"{cleaned} ",
             on_injected=on_text_injected,
             on_injection_marker=on_injection_marker,

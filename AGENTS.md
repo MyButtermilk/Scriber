@@ -914,6 +914,15 @@ Packaging and scripts:
   `CF_BITMAP` or `CF_ENHMETAFILE` must never reach `GlobalSize`/`GlobalLock`.
   Restore the snapshot only if the clipboard sequence is unchanged; do not
   regress this to text-only clipboard preservation.
+  Live Mic insertion (the pipeline `TextInjector` and deferred or
+  post-processed output via `inject_text_once_async`) runs on one dedicated,
+  ordered `scriber-text-injection` worker, never on the asyncio loop: lease
+  waits, pre-delays, Office COM, and typing fallbacks otherwise stall
+  WebSocket delivery and a successor recording. Cancellation withdraws an
+  insertion still queued behind another (focus may have moved) and waits for a
+  started dispatch. The synchronous `flush()` remains only for the benchmark
+  visible-text contract. Log FFmpeg upload-encoding failures by exit code and
+  error type only; its stderr names temporary paths under the user profile.
 - Shell IPC diagnostics may expose the latest `injectText` attempt only in
   sanitized form: error codes, fallback reason, allowed markers, restore status,
   `preDelayMode`, requested/applied pre-delay numbers, timing numbers, and

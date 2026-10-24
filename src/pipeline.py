@@ -1203,6 +1203,7 @@ class SonioxAsyncProcessor(FrameProcessor):
             # WebM/Matroska containers need seekable output to write duration to header
             tmp_input_path = None
             tmp_output_path = None
+            proc = None
             try:
                 # Write PCM to temp input file
                 with tempfile.NamedTemporaryFile(suffix=".pcm", delete=False) as tmp_input:
@@ -1245,14 +1246,16 @@ class SonioxAsyncProcessor(FrameProcessor):
                     **hidden_subprocess_kwargs(),
                 )
 
-                _, stderr = await communicate_or_kill_on_cancel(
+                # FFmpeg's stderr and OS errors name temporary paths under the
+                # user's profile; only the exit status and error type are logged.
+                await communicate_or_kill_on_cancel(
                     proc,
                     max_stdout_bytes=64 * 1024,
                     max_stderr_bytes=1024 * 1024,
                 )
 
                 if proc.returncode != 0:
-                    raise RuntimeError(f"FFmpeg encoding failed: {stderr.decode()}")
+                    raise RuntimeError(f"FFmpeg encoding failed (exit code {proc.returncode})")
 
                 # Read the WebM file with proper duration metadata
                 with open(tmp_output_path, "rb") as f:
@@ -1264,7 +1267,11 @@ class SonioxAsyncProcessor(FrameProcessor):
                 return webm_bytes, "audio/webm", "audio.webm"
 
             except Exception as e:
-                logger.warning(f"WebM encode failed ({e}); falling back to WAV")
+                logger.warning(
+                    "WebM encode failed ({}{}); falling back to WAV",
+                    type(e).__name__,
+                    f", exit code {proc.returncode}" if proc is not None and proc.returncode else "",
+                )
             finally:
                 # Clean up temp files
                 try:
@@ -5513,7 +5520,7 @@ class ScriberPipeline:
         # Flush any buffered transcription as a last resort.
         try:
             if hasattr(self, "text_injector") and self.text_injector:
-                self.text_injector.flush()
+                await self.text_injector.flush_async()
         except Exception as e:
             logger.debug(f"TextInjector flush warning: {e}")
 

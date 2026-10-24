@@ -3463,3 +3463,36 @@ async def test_cancel_silent_recording_marks_buffered_provider_skip():
     assert pipeline.task.cancel_called is True
     assert pipeline.runner.cancel_called is True
     assert events == ["audio_stop"]
+
+
+@pytest.mark.asyncio
+async def test_soniox_webm_encode_failure_logs_no_ffmpeg_stderr_paths(monkeypatch):
+    from loguru import logger
+
+    secret_path = "C:\\Users\\Private Person\\AppData\\Local\\Temp\\tmpabc.pcm"
+
+    class FailedProcess:
+        returncode = 1
+
+    async def fake_exec(*_args, **_kwargs):
+        return FailedProcess()
+
+    async def fake_communicate(_proc, **_kwargs):
+        return b"", f"{secret_path}: Invalid data found when processing input".encode()
+
+    monkeypatch.setattr(pipeline_module, "find_media_tool", lambda _name: "ffmpeg")
+    monkeypatch.setattr(pipeline_module.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(pipeline_module, "communicate_or_kill_on_cancel", fake_communicate)
+    messages: list[str] = []
+    sink = logger.add(lambda message: messages.append(str(message)), level="WARNING")
+    try:
+        processor = SonioxAsyncProcessor(api_key="test-key", session=object())
+        encoded, content_type, filename = await processor._encode_audio(b"\0\0" * 320)
+    finally:
+        logger.remove(sink)
+
+    assert (content_type, filename) == ("audio/wav", "audio.wav")
+    assert encoded[:4] == b"RIFF"
+    warnings = [message for message in messages if "WebM encode failed" in message]
+    assert warnings and "exit code 1" in warnings[0]
+    assert all("Private Person" not in message and "Invalid data" not in message for message in messages)

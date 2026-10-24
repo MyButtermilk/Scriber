@@ -125,6 +125,18 @@ describe("Live Mic consecutive recordings", () => {
     expect(stop).not.toHaveBeenCalled();
   });
 
+  it("keeps the previous transcript processing visible when a next start is rejected", async () => {
+    mount();
+    state();
+    // Backend start rejections carry no session: no capture was admitted.
+    send({ type: "error", message: "Another recording is still using the microphone." });
+    expect(toast).toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("Transcribing recording.");
+    expect(screen.getByRole("button", { name: "Start next recording" })).toBeEnabled();
+    send({ type: "session_finished", sessionId: "old-session", session: { content: "Finished words" } });
+    expect(screen.getByTestId("live-mic-transcript-output")).toHaveTextContent("Finished words");
+  });
+
   it("announces a queued start and allows it to be canceled", async () => {
     mount();
     state({ micStartPending: true });

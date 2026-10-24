@@ -849,6 +849,11 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
             break;
           }
           showRecordingErrorToast(toast, msg);
+          if (!msgSessionId && activeSessionId) {
+            // Sessionless errors are rejected starts; the displayed session,
+            // for example a transcript still finalizing, is unaffected.
+            break;
+          }
           audioLevelRef.current = 0;
           setRecordingState("idle");
           setIsRecording(false);
