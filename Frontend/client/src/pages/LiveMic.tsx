@@ -37,6 +37,7 @@ import {
   requestLiveMicStop,
 } from "@/lib/live-mic-control";
 import { useBackendActions } from "@/hooks/use-backend-status";
+import { createLiveMicSnapshotFence } from "@/lib/runtime-message-state";
 
 const MIC_VISUAL_NOISE_FLOOR = 0.00003;
 const MIC_VISUAL_DISPLAY_SCALE = 90;
@@ -596,7 +597,7 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
   const isPreparing = recordingState === "initializing";
   const isTranscribing = recordingState === "finalizing";
   const activeSessionIdRef = useRef<string | null>(null);
-  const stateRevisionRef = useRef(0);
+  const pendingSnapshotRef = useRef<ReturnType<typeof createLiveMicSnapshotFence> | null>(null);
   const finalTextRevisionRef = useRef({ revision: 0, sessionId: null as string | null });
   const interimTextRevisionRef = useRef({ revision: 0, sessionId: null as string | null });
 
@@ -729,16 +730,8 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
       const msgSessionId = typeof msg.sessionId === "string" ? msg.sessionId : null;
       const activeSessionId = activeSessionIdRef.current;
       const ownsSession = !msgSessionId || !activeSessionId || msgSessionId === activeSessionId;
-      if (
-        msg.type === "state" ||
-        msg.type === "session_started" ||
-        (activeSessionId !== null &&
-          ownsSession &&
-          ["status", "transcribing", "session_finished", "error"].includes(msg.type))
-      ) {
-        // Until hydration establishes the owner, an older finalizer's events
-        // cannot invalidate the current-capture snapshot.
-        stateRevisionRef.current += 1;
+      if (msg.type === "state" || msg.type === "session_started" || ownsSession) {
+        pendingSnapshotRef.current?.observe(msg);
       }
 
       switch (msg.type) {
@@ -879,7 +872,8 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
     // Route navigation does not reconnect the shared socket or replay its
     // initial state. Hydrate once; later WebSocket events stay authoritative.
     const controller = new AbortController();
-    const stateRevision = stateRevisionRef.current;
+    const snapshotFence = createLiveMicSnapshotFence();
+    pendingSnapshotRef.current = snapshotFence;
     const finalTextRevision = finalTextRevisionRef.current.revision;
     const interimTextRevision = interimTextRevisionRef.current.revision;
     void (async () => {
@@ -891,7 +885,7 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
         );
         if (!res.ok) return;
         const state = (await res.json()) as BackendStateResponse;
-        if (controller.signal.aborted || stateRevision !== stateRevisionRef.current) return;
+        if (controller.signal.aborted || !snapshotFence.acceptsSnapshot(state)) return;
         applyBackendStateSnapshot(state, {
           preserveFinalText:
             finalTextRevision !== finalTextRevisionRef.current.revision &&
@@ -902,9 +896,14 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
         });
       } catch {
         // The shared socket and disconnected-session reconciliation can recover.
+      } finally {
+        if (pendingSnapshotRef.current === snapshotFence) pendingSnapshotRef.current = null;
       }
     })();
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      if (pendingSnapshotRef.current === snapshotFence) pendingSnapshotRef.current = null;
+    };
   }, [applyBackendStateSnapshot]);
 
   useEffect(() => {

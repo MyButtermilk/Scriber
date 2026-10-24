@@ -243,6 +243,35 @@ describe("Live Mic consecutive recordings", () => {
     expect(screen.getByTestId("live-mic-transcript-output")).not.toHaveTextContent("Old dictation");
   });
 
+  it.each([
+    { type: "transcribing", sessionId: "running" },
+    { type: "session_finished", sessionId: "running", session: { content: "Finished words" } },
+    { type: "error", sessionId: "running", message: "Capture failed" },
+  ] as const)("does not revive capture after $type arrives before initial hydration", async (event) => {
+    let resolveSnapshot!: (response: Response) => void;
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise<Response>((resolve) => (resolveSnapshot = resolve)));
+    mount();
+    send(event);
+    await act(async () => {
+      resolveSnapshot(
+        Response.json({
+          sessionId: "running",
+          listening: true,
+          recordingState: "recording",
+          current: { content: "Stale words" },
+        }),
+      );
+    });
+    expect(screen.queryByRole("button", { name: "Stop recording" })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: event.type === "transcribing" ? "Start next recording" : "Start recording" }),
+    ).toBeEnabled();
+    expect(screen.getByTestId("live-mic-transcript-output")).not.toHaveTextContent("Stale words");
+    if (event.type === "session_finished") {
+      expect(screen.getByTestId("live-mic-transcript-output")).toHaveTextContent("Finished words");
+    }
+  });
+
   it.each(["running", "old-finalizer"])(
     "hydrates capture state while %s transcript events arrive during the read",
     async (transcriptSession) => {

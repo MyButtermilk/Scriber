@@ -611,6 +611,49 @@ async def test_temporary_prewarm_stop_timeout_retains_claim_after_pipeline_exit(
 
 
 @pytest.mark.asyncio
+async def test_constructor_failure_keeps_failed_lease_release_available_for_stop_retry(continuation, monkeypatch):
+    ctl = continuation.controller
+    owner = web_api._audio_admission_owner(ctl)
+    store = owner.store
+    cleanup_visible = asyncio.Event()
+
+    async def observe_state(payload):
+        if payload.get("type") == "state" and payload.get("nativeCleanupPending") is True:
+            cleanup_visible.set()
+
+    monkeypatch.setattr(ctl, "broadcast", observe_state)
+
+    def fail_constructor(**_kwargs):
+        raise RuntimeError("synthetic pipeline construction failure")
+
+    def fail_release(_claim):
+        raise OSError("temporary admission storage failure")
+
+    with monkeypatch.context() as faults:
+        faults.setattr(web_api, "ScriberPipeline", fail_constructor)
+        faults.setattr(store, "release", fail_release)
+        with pytest.raises(RuntimeError, match="synthetic pipeline construction failure"):
+            await ctl.start_listening()
+
+    claim = owner.current
+    assert claim is not None
+    assert ctl.get_state()["nativeCleanupPending"] is True
+    await asyncio.wait_for(cleanup_visible.wait(), 2)
+    assert not continuation.pipelines
+    error = await ctl.start_listening()
+    assert error is not None and error.code == "recording_cleanup_pending"
+
+    stop = ctl.request_async_stop_listening()
+    assert stop["stopScheduled"] is True
+    await asyncio.wait_for(ctl._background_stop_task, 2)
+    assert owner.current is None
+    assert ctl.get_state()["nativeCleanupPending"] is False
+    _pipeline, record = await continuation.start("Nachtrag.")
+    assert record.id != claim.owner_id
+    assert owner.current.owner_id == record.id
+
+
+@pytest.mark.asyncio
 async def test_stop_cancels_start_queued_during_native_stop(continuation):
     ctl = continuation.controller
     first, _record = await continuation.start("Eins.")

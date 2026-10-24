@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -17,8 +17,8 @@ import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { useToast } from "@/hooks/use-toast";
 import { presentLiveMicControlFailure, requestLiveMicStart, requestLiveMicStop } from "@/lib/live-mic-control";
-import { createLiveMicSessionMessageGate } from "@/lib/runtime-message-state";
-import type { SettingsResponse } from "@/lib/api-types";
+import { createLiveMicSessionMessageGate, createLiveMicSnapshotFence } from "@/lib/runtime-message-state";
+import type { BackendStateResponse, SettingsResponse } from "@/lib/api-types";
 import { useBackendActions } from "@/hooks/use-backend-status";
 import { useI18n } from "@/i18n";
 
@@ -39,6 +39,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const [, setLocation] = useLocation();
   const [isRecording, setIsRecording] = useState(false);
   const nativeCleanupPendingRef = useRef(false);
+  const pendingSnapshotRef = useRef<ReturnType<typeof createLiveMicSnapshotFence> | null>(null);
   const [acceptSessionMessage] = useState(createLiveMicSessionMessageGate);
   const { toast } = useToast();
   const { checkNow: checkBackendStatus } = useBackendActions();
@@ -49,6 +50,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     (msg: ScriberWebSocketMessage) => {
       if (!msg || typeof msg !== "object") return;
       if (!acceptSessionMessage(msg)) return;
+      pendingSnapshotRef.current?.observe(msg);
 
       switch (msg.type) {
         case "state":
@@ -67,6 +69,8 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
           setIsRecording(true);
           break;
         case "session_finished":
+        case "transcribing":
+        case "error":
           setIsRecording(nativeCleanupPendingRef.current);
           break;
       }
@@ -75,6 +79,34 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   );
 
   useSharedWebSocket(handleWsMessage);
+
+  useEffect(() => {
+    // The palette mounts lazily while the shared socket may already be open.
+    const controller = new AbortController();
+    const snapshotFence = createLiveMicSnapshotFence();
+    pendingSnapshotRef.current = snapshotFence;
+    void (async () => {
+      try {
+        const response = await fetchWithTimeout(
+          apiUrl("/api/state"),
+          { credentials: "include", signal: controller.signal },
+          5_000,
+        );
+        if (!response.ok) return;
+        const state = (await response.json()) as BackendStateResponse;
+        if (controller.signal.aborted || !snapshotFence.acceptsSnapshot(state)) return;
+        handleWsMessage({ ...state, type: "state", apiVersion: "1" });
+      } catch {
+        // Future socket snapshots remain authoritative after a failed read.
+      } finally {
+        if (pendingSnapshotRef.current === snapshotFence) pendingSnapshotRef.current = null;
+      }
+    })();
+    return () => {
+      controller.abort();
+      if (pendingSnapshotRef.current === snapshotFence) pendingSnapshotRef.current = null;
+    };
+  }, [handleWsMessage]);
 
   // Load settings to get the configured hotkey
   const { data: settings } = useQuery<SettingsResponse>({

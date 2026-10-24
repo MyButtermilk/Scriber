@@ -13141,6 +13141,10 @@ class ScriberWebController:
                     try:
                         await _release_persistent_audio(self)
                     except BaseException as release_exc:
+                        claim = _audio_admission_owner(self).current
+                        if claim is not None and claim.owner_kind == "live_mic" and claim.owner_id == session_id:
+                            self._pending_live_mic_native_cleanup = (session_id, None)
+                            self._schedule_state_snapshot_broadcast()
                         logger.warning(
                             "Native-audio claim cleanup after pipeline construction failed: {}",
                             type(release_exc).__name__,
