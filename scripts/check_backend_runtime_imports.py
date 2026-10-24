@@ -22,7 +22,8 @@ from src.runtime.provider_dependencies import STANDARD_PROVIDER_RUNTIME_IMPORTS 
 
 CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("audioop", "PCM16 RMS runtime supplied by audioop-lts"),
-    ("pyloudnorm", "local Pipecat loudness compatibility dependency"),
+    ("loudness", "Pipecat ITU-R BS.1770 loudness dependency"),
+    ("sentencex", "Pipecat sentence segmentation dependency"),
     ("onnxruntime", "Silero VAD native runtime dependency"),
     ("onnx_asr", "bundled local ONNX speech-to-text runtime dependency"),
     ("yt_dlp", "YouTube media extraction dependency"),
@@ -39,6 +40,7 @@ CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("pipecat.transports.base_input", "Pipecat audio input transport dependency"),
     ("pipecat.transports.base_transport", "Pipecat transport dependency"),
     ("pipecat.utils.time", "Pipecat timestamp dependency"),
+    ("pipecat.utils.types", "Pipecat settings sentinel dependency"),
     ("pipecat.audio.vad.vad_analyzer", "Pipecat VAD startup dependency"),
     ("pipecat.audio.vad.silero", "Silero VAD startup dependency"),
     ("pipecat.processors.audio.vad_processor", "Pipecat VAD processor dependency"),
@@ -48,7 +50,7 @@ CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("pipecat.turns.user_turn_strategies", "Pipecat user-turn strategy dependency"),
     (
         "pipecat.audio.turn.smart_turn.local_smart_turn_v3",
-        "Pipecat 1.5 local Smart Turn startup dependency",
+        "Pipecat local Smart Turn startup dependency",
     ),
     ("src.microphone", "live microphone application runtime"),
     ("src.audio_file_input", "file audio application runtime"),
@@ -64,7 +66,7 @@ REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
     *STANDARD_PROVIDER_RUNTIME_IMPORTS,
 )
 REQUIRED_PACKAGE_VERSIONS: tuple[tuple[str, str], ...] = (
-    ("pipecat-ai", "1.5.0"),
+    ("pipecat-ai", "1.14.0"),
     ("yt-dlp", "2026.8.19"),
     ("yt-dlp-ejs", "0.8.0"),
 )
@@ -206,30 +208,6 @@ BLOCKED_FROZEN_BUILD_ONLY_IMPORTS: tuple[str, ...] = (
     "yt_dlp.__pyinstaller",
 )
 
-PUNKT_TAB_RETAINED_LANGUAGES: tuple[str, ...] = ("english", "german")
-PUNKT_TAB_REQUIRED_FILES: frozenset[str] = frozenset(
-    {
-        "abbrev_types.txt",
-        "collocations.tab",
-        "ortho_context.tab",
-        "sent_starters.txt",
-    }
-)
-PUNKT_TAB_LANGUAGE_PROBES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
-    (
-        "english-punkt-tab",
-        "english",
-        "Dr. Smith arrived. The meeting started.",
-        ("Dr. Smith arrived.", "The meeting started."),
-    ),
-    (
-        "german-punkt-tab",
-        "german",
-        "Dr. Müller kommt. Danach geht es weiter.",
-        ("Dr. Müller kommt.", "Danach geht es weiter."),
-    ),
-)
-
 SENTENCE_SEGMENTATION_PROBES: tuple[tuple[str, str, str], ...] = (
     (
         "english_abbreviation",
@@ -251,74 +229,14 @@ SENTENCE_SEGMENTATION_PROBES: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def _validate_frozen_punkt_tab_data(bundled_nltk_data: Path) -> None:
-    punkt_tab_root = bundled_nltk_data / "tokenizers" / "punkt_tab"
-    if not punkt_tab_root.is_dir():
-        raise RuntimeError("bundled punkt_tab directory is missing")
-    actual_languages = tuple(sorted(path.name for path in punkt_tab_root.iterdir() if path.is_dir()))
-    if actual_languages != tuple(sorted(PUNKT_TAB_RETAINED_LANGUAGES)):
-        raise RuntimeError("bundled punkt_tab language set is not exactly English/German")
-    for language in PUNKT_TAB_RETAINED_LANGUAGES:
-        language_root = punkt_tab_root / language
-        actual_files = {path.name for path in language_root.iterdir() if path.is_file()}
-        if actual_files != PUNKT_TAB_REQUIRED_FILES:
-            raise RuntimeError(f"bundled {language} punkt_tab model is incomplete")
-
-
 def check_sentence_segmentation(
     *,
     import_module: Callable[[str], object] = importlib.import_module,
-    frozen: bool | None = None,
-    frozen_root: Path | None = None,
+    loaded_modules: Iterable[str] | None = None,
 ) -> list[dict[str, str]]:
-    """Exercise the bundled NLTK data through Pipecat without network fallback."""
+    """Exercise Pipecat's self-contained sentencex segmentation without NLTK."""
 
-    nltk_module: object | None = None
-    original_download: object | None = None
     try:
-        nltk_module = import_module("nltk")
-        nltk_data = nltk_module.data
-        nltk_data_path = nltk_data.path
-        is_frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
-        if is_frozen:
-            root = frozen_root
-            if root is None:
-                raw_root = getattr(sys, "_MEIPASS", None)
-                if not isinstance(raw_root, (str, bytes)):
-                    raise RuntimeError("frozen runtime has no bundled data root")
-                root = Path(raw_root)
-            bundled_nltk_data = root / "nltk_data"
-            if not bundled_nltk_data.is_dir():
-                raise RuntimeError("bundled nltk_data directory is missing")
-            _validate_frozen_punkt_tab_data(bundled_nltk_data)
-            # Replace, rather than prepend to, the search list so a developer or
-            # user cache can never make an incomplete frozen bundle look valid.
-            nltk_data_path[:] = [str(bundled_nltk_data)]
-
-        original_download = nltk_module.download
-        if not callable(original_download):
-            raise RuntimeError("NLTK downloader boundary is unavailable")
-
-        def reject_download(*_args: object, **_kwargs: object) -> None:
-            raise RuntimeError("NLTK download fallback was attempted")
-
-        nltk_module.download = reject_download
-        nltk_tokenize = import_module("nltk.tokenize")
-        sent_tokenize = nltk_tokenize.sent_tokenize
-        tokenizer_factory = getattr(nltk_tokenize, "_get_punkt_tokenizer", None)
-        cache_clear = getattr(tokenizer_factory, "cache_clear", None)
-        if not callable(sent_tokenize) or not callable(cache_clear):
-            raise RuntimeError("NLTK Punkt tokenizer boundary is unavailable")
-        # Never let a tokenizer cached before the frozen search-path lock make a
-        # missing bundled language look valid.
-        cache_clear()
-        for label, language, text, expected_sentences in PUNKT_TAB_LANGUAGE_PROBES:
-            actual_sentences = tuple(sent_tokenize(text, language=language))
-            if actual_sentences != expected_sentences:
-                raise RuntimeError(
-                    f"sentence tokenizer probe {label} returned {actual_sentences!r}; expected {expected_sentences!r}"
-                )
-
         pipecat_string = import_module("pipecat.utils.string")
         match_endofsentence = pipecat_string.match_endofsentence
         if not callable(match_endofsentence):
@@ -331,18 +249,22 @@ def check_sentence_segmentation(
                 raise RuntimeError(
                     f"sentence segmentation probe {label} returned {actual_end!r}; expected {expected_end}"
                 )
+        # Pipecat 1.12+ embeds its language rules; NLTK and its Punkt data must
+        # not come back through a stale bundle or a transitive dependency.
+        modules = set(sys.modules if loaded_modules is None else loaded_modules)
+        if "sentencex" not in modules:
+            raise RuntimeError("Pipecat did not use the sentencex segmenter")
+        if "nltk" in modules:
+            raise RuntimeError("sentence segmentation loaded NLTK")
     except Exception as exc:
         return [
             {
                 "module": "pipecat.utils.string.match_endofsentence",
-                "reason": "bundled NLTK/Pipecat sentence segmentation runtime",
+                "reason": "bundled sentencex/Pipecat sentence segmentation runtime",
                 # Keep frozen diagnostics independent of install paths and user data.
                 "error": f"{type(exc).__name__}: sentence segmentation probe failed",
             }
         ]
-    finally:
-        if nltk_module is not None and callable(original_download):
-            nltk_module.download = original_download
 
     return []
 
@@ -951,16 +873,10 @@ def check_podcast_feed_runtime() -> list[dict[str, str]]:
 
 
 def check_runtime_requirements() -> list[dict[str, str]]:
-    segmentation_failures = check_sentence_segmentation()
-    version_failures = check_package_versions()
-    if segmentation_failures:
-        # Pipecat's module import attempts an NLTK download when punkt data is
-        # absent. Do not run the broader imports after the no-network gate has
-        # failed, or that fallback could mask a broken frozen bundle.
-        return [*segmentation_failures, *version_failures]
     return [
+        *check_sentence_segmentation(),
         *check_imports(),
-        *version_failures,
+        *check_package_versions(),
         *check_frozen_youtube_only_yt_dlp(),
         *check_frozen_text_export_graph(),
         *check_python314_native_runtime(),

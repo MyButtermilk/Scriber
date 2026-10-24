@@ -13,9 +13,6 @@ from scripts.check_backend_runtime_imports import (
     BLOCKED_FROZEN_BUILD_ONLY_IMPORTS,
     BLOCKED_FROZEN_YT_DLP_IMPORTS,
     FROZEN_NUMPY_VERSION,
-    PUNKT_TAB_LANGUAGE_PROBES,
-    PUNKT_TAB_REQUIRED_FILES,
-    PUNKT_TAB_RETAINED_LANGUAGES,
     REQUIRED_FROZEN_BUILD_PRUNE_IMPORTS,
     REQUIRED_IMPORTS,
     REQUIRED_PACKAGE_VERSIONS,
@@ -31,6 +28,9 @@ from scripts.check_backend_runtime_imports import (
     check_sentence_segmentation,
 )
 
+# Earlier frozen backends retained these two NLTK Punkt models; the NSIS hook
+# first removed every other language, which it still does for old installs.
+PUNKT_TAB_RETAINED_LANGUAGES = ("english", "german")
 PUNKT_TAB_PRUNED_LANGUAGES = (
     "czech",
     "danish",
@@ -113,21 +113,6 @@ def test_numpy_noblas_gate_does_not_constrain_source_environment():
     )
 
 
-def _write_complete_punkt_tab(
-    root: Path,
-    *,
-    languages: tuple[str, ...] = PUNKT_TAB_RETAINED_LANGUAGES,
-) -> Path:
-    nltk_data = root / "nltk_data"
-    punkt_tab = nltk_data / "tokenizers" / "punkt_tab"
-    for language in languages:
-        language_root = punkt_tab / language
-        language_root.mkdir(parents=True, exist_ok=True)
-        for filename in PUNKT_TAB_REQUIRED_FILES:
-            (language_root / filename).write_text("runtime-probe", encoding="utf-8")
-    return nltk_data
-
-
 def test_backend_worker_startup_timeout_simulation_is_once(monkeypatch, tmp_path):
     from src import backend_worker
 
@@ -144,7 +129,9 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     required_modules = {module for module, _reason in REQUIRED_IMPORTS}
 
     assert "audioop" in required_modules
-    assert "pyloudnorm" in required_modules
+    assert "loudness" in required_modules
+    assert "sentencex" in required_modules
+    assert "pyloudnorm" not in required_modules
     assert "onnxruntime" in required_modules
     assert "onnx_asr" in required_modules
     assert "yt_dlp" in required_modules
@@ -173,7 +160,7 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     assert "src.microphone" in required_modules
     assert "src.audio_file_input" in required_modules
     assert "src.pipeline" in required_modules
-    assert ("pipecat-ai", "1.5.0") in REQUIRED_PACKAGE_VERSIONS
+    assert ("pipecat-ai", "1.14.0") in REQUIRED_PACKAGE_VERSIONS
     assert ("yt-dlp", "2026.8.19") in REQUIRED_PACKAGE_VERSIONS
     assert ("yt-dlp-ejs", "0.8.0") in REQUIRED_PACKAGE_VERSIONS
 
@@ -181,7 +168,7 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
 def test_frozen_runtime_contract_covers_direct_pipecat_pipeline_imports():
     frozen_modules = {module for module, _reason in RUNTIME_REQUIRED_IMPORTS}
 
-    assert RUNTIME_CONTRACT_REVISION == 8
+    assert RUNTIME_CONTRACT_REVISION == 9
     assert {
         "pipecat.pipeline.pipeline",
         "pipecat.pipeline.worker",
@@ -326,28 +313,13 @@ def test_runtime_build_and_cache_validators_read_the_contract_revision_from_sour
         assert "runtimeContract.revision -ne 1" not in content
 
 
-def test_backend_spec_keeps_only_english_and_german_punkt_tab_models():
+def test_backend_spec_bundles_no_nltk_data():
     spec = (Path(__file__).resolve().parents[1] / "packaging" / "scriber-backend.spec").read_text(encoding="utf-8")
-    exact_filter = """a.datas = [
-    entry
-    for entry in a.datas
-    if str(entry[0]).replace("\\\\", "/")
-    != "nltk_data/tokenizers/punkt_tab.zip"
-]"""
 
-    assert spec.count(exact_filter) == 1
-    assert spec.count('"nltk_data/tokenizers/punkt_tab.zip"') == 1
-    assert "def retain_punkt_tab_languages(" in spec
-    assert 'prefix = "nltk_data/tokenizers/punkt_tab/"' in spec
-    assert 'path_parts = relative.split("/", 1)' in spec
-    exact_language_filter = 'a.datas = retain_punkt_tab_languages(a.datas, ("english", "german"))'
-    assert spec.count(exact_language_filter) == 1
-    assert (
-        spec.index("a = Analysis(")
-        < spec.index(exact_filter)
-        < spec.index(exact_language_filter)
-        < spec.index("pyz = PYZ(a.pure)")
-    )
+    assert "nltk" not in spec.lower()
+    assert "punkt" not in spec.lower()
+    assert '"sentencex",' in spec
+    assert '"loudness",' in spec
 
 
 def test_nsis_upgrade_hook_removes_only_obsolete_frozen_runtime_files_and_directories():
@@ -572,39 +544,20 @@ def test_backend_runtime_import_check_exercises_sentence_segmentation():
         "cjk_punctuation",
         "arabic_punctuation",
     }
-    assert (
-        tuple(language for _label, language, _text, _expected in PUNKT_TAB_LANGUAGE_PROBES)
-        == PUNKT_TAB_RETAINED_LANGUAGES
-    )
-    assert {label for label, _language, _text, _expected in PUNKT_TAB_LANGUAGE_PROBES} == {
-        "english-punkt-tab",
-        "german-punkt-tab",
-    }
-    assert check_sentence_segmentation(frozen=False) == []
+    assert check_sentence_segmentation() == []
 
 
-def test_pinned_pipecat_and_scriber_sentence_paths_do_not_request_other_languages():
+def test_pinned_pipecat_sentence_paths_use_embedded_sentencex_rules():
     pipecat_spec = importlib.util.find_spec("pipecat")
     assert pipecat_spec is not None
     assert pipecat_spec.submodule_search_locations is not None
     pipecat_root = Path(next(iter(pipecat_spec.submodule_search_locations)))
     string_source = (pipecat_root / "utils" / "string.py").read_text(encoding="utf-8")
-    assert string_source.count("sent_tokenize(text)") == 1
-    assert "sent_tokenize(text," not in string_source
-
-    expected_callers = {
-        "processors/aggregators/sentence.py": 1,
-        "processors/frameworks/rtvi/observer.py": 1,
-        "services/google/gemini_live/llm.py": 1,
-        "utils/text/simple_text_aggregator.py": 1,
-    }
-    actual_callers: dict[str, int] = {}
+    assert "from sentencex import segment" in string_source
     for source_path in pipecat_root.rglob("*.py"):
         source = source_path.read_text(encoding="utf-8")
-        call_count = source.count("match_endofsentence(") - source.count("def match_endofsentence(")
-        if call_count:
-            actual_callers[source_path.relative_to(pipecat_root).as_posix()] = call_count
-    assert actual_callers == expected_callers
+        assert "import nltk" not in source
+        assert "from nltk" not in source
 
     repo_root = Path(__file__).resolve().parents[1]
     application_sources = sorted((repo_root / "src").rglob("*.py"))
@@ -615,164 +568,56 @@ def test_pinned_pipecat_and_scriber_sentence_paths_do_not_request_other_language
         assert "match_endofsentence" not in source
 
 
-def test_frozen_sentence_check_uses_only_bundled_nltk_data(tmp_path):
-    bundled_nltk_data = _write_complete_punkt_tab(tmp_path)
-    original_download_calls: list[str] = []
+def test_sentence_check_rejects_a_wrong_boundary():
+    def import_module(module_name):
+        assert module_name == "pipecat.utils.string"
+        return SimpleNamespace(match_endofsentence=lambda _text: 0)
 
-    def original_download(name: str) -> bool:
-        original_download_calls.append(name)
-        return True
-
-    fake_nltk = SimpleNamespace(
-        data=SimpleNamespace(path=["user-cache", "developer-cache"]),
-        download=original_download,
-    )
-    expected_ends = {text: len(expected) for _label, text, expected in SENTENCE_SEGMENTATION_PROBES}
-    expected_tokenizations = {
-        (language, text): expected for _label, language, text, expected in PUNKT_TAB_LANGUAGE_PROBES
-    }
-    observed_paths: list[list[str]] = []
-    tokenizer_calls: list[tuple[str, str]] = []
-    cache_clear_calls: list[bool] = []
-
-    def fake_sent_tokenize(text: str, *, language: str) -> tuple[str, ...]:
-        tokenizer_calls.append((language, text))
-        return expected_tokenizations[(language, text)]
-
-    def fake_cache_clear() -> None:
-        cache_clear_calls.append(True)
-
-    tokenizer_factory = SimpleNamespace(cache_clear=fake_cache_clear)
-
-    def fake_import(module_name: str) -> object:
-        if module_name == "nltk":
-            return fake_nltk
-        if module_name == "nltk.tokenize":
-            assert fake_nltk.download is not original_download
-            return SimpleNamespace(
-                sent_tokenize=fake_sent_tokenize,
-                _get_punkt_tokenizer=tokenizer_factory,
-            )
-        if module_name == "pipecat.utils.string":
-            observed_paths.append(list(fake_nltk.data.path))
-            assert fake_nltk.download is not original_download
-            return SimpleNamespace(match_endofsentence=lambda text: expected_ends[text])
-        raise AssertionError(f"unexpected import: {module_name}")
-
-    assert (
-        check_sentence_segmentation(
-            import_module=fake_import,
-            frozen=True,
-            frozen_root=tmp_path,
-        )
-        == []
-    )
-    assert observed_paths == [[str(bundled_nltk_data)]]
-    assert fake_nltk.data.path == [str(bundled_nltk_data)]
-    assert fake_nltk.download is original_download
-    assert original_download_calls == []
-    assert cache_clear_calls == [True]
-    assert tokenizer_calls == [(language, text) for _label, language, text, _expected in PUNKT_TAB_LANGUAGE_PROBES]
-
-
-def test_frozen_sentence_check_rejects_download_fallback(tmp_path):
-    bundled_nltk_data = _write_complete_punkt_tab(tmp_path)
-    original_download_calls: list[str] = []
-
-    def original_download(name: str) -> bool:
-        original_download_calls.append(name)
-        return True
-
-    fake_nltk = SimpleNamespace(
-        data=SimpleNamespace(path=["user-cache"]),
-        download=original_download,
-    )
-
-    def fake_import(module_name: str) -> object:
-        if module_name == "nltk":
-            return fake_nltk
-        if module_name == "nltk.tokenize":
-            fake_nltk.download("punkt_tab")
-        raise AssertionError(f"unexpected import: {module_name}")
-
-    failures = check_sentence_segmentation(
-        import_module=fake_import,
-        frozen=True,
-        frozen_root=tmp_path,
-    )
-
-    assert failures == [
+    assert check_sentence_segmentation(import_module=import_module, loaded_modules={"sentencex"}) == [
         {
             "module": "pipecat.utils.string.match_endofsentence",
-            "reason": "bundled NLTK/Pipecat sentence segmentation runtime",
+            "reason": "bundled sentencex/Pipecat sentence segmentation runtime",
             "error": "RuntimeError: sentence segmentation probe failed",
         }
     ]
-    assert fake_nltk.data.path == [str(bundled_nltk_data)]
-    assert fake_nltk.download is original_download
-    assert original_download_calls == []
 
 
-def test_frozen_sentence_check_rejects_any_third_punkt_tab_language(tmp_path):
-    bundled_nltk_data = _write_complete_punkt_tab(
-        tmp_path,
-        languages=("english", "german", "spanish"),
-    )
+def test_sentence_check_rejects_nltk_or_a_missing_sentencex_segmenter():
+    expected_ends = {text: len(first) for _label, text, first in SENTENCE_SEGMENTATION_PROBES}
 
-    def original_download(*_args, **_kwargs):
-        return True
+    def import_module(_module_name):
+        return SimpleNamespace(match_endofsentence=lambda text: expected_ends[text])
 
-    fake_nltk = SimpleNamespace(
-        data=SimpleNamespace(path=["user-cache"]),
-        download=original_download,
-    )
-
-    def fake_import(module_name: str) -> object:
-        if module_name == "nltk":
-            return fake_nltk
-        raise AssertionError(f"unexpected import: {module_name}")
-
-    assert check_sentence_segmentation(
-        import_module=fake_import,
-        frozen=True,
-        frozen_root=tmp_path,
-    ) == [
-        {
-            "module": "pipecat.utils.string.match_endofsentence",
-            "reason": "bundled NLTK/Pipecat sentence segmentation runtime",
-            "error": "RuntimeError: sentence segmentation probe failed",
-        }
-    ]
-    assert fake_nltk.data.path == ["user-cache"]
-    assert fake_nltk.download is original_download
-    assert bundled_nltk_data.is_dir()
+    assert check_sentence_segmentation(import_module=import_module, loaded_modules={"sentencex"}) == []
+    for loaded in ({"sentencex", "nltk"}, set()):
+        failures = check_sentence_segmentation(import_module=import_module, loaded_modules=loaded)
+        assert [failure["error"] for failure in failures] == ["RuntimeError: sentence segmentation probe failed"]
 
 
-def test_runtime_requirements_stop_before_pipecat_imports_when_sentence_gate_fails(
-    monkeypatch,
-):
+def test_runtime_requirements_run_every_gate_when_sentence_gate_fails(monkeypatch):
     failure = {
         "module": "pipecat.utils.string.match_endofsentence",
-        "reason": "bundled NLTK/Pipecat sentence segmentation runtime",
-        "error": "LookupError: sentence segmentation probe failed",
+        "reason": "bundled sentencex/Pipecat sentence segmentation runtime",
+        "error": "RuntimeError: sentence segmentation probe failed",
     }
-    monkeypatch.setattr(
-        runtime_import_checks,
-        "check_sentence_segmentation",
-        lambda: [failure],
-    )
-    monkeypatch.setattr(
-        runtime_import_checks,
-        "check_imports",
-        lambda: (_ for _ in ()).throw(AssertionError("imports must not run")),
-    )
-    monkeypatch.setattr(
-        runtime_import_checks,
-        "check_package_versions",
-        lambda: [],
-    )
+    import_failure = {"module": "loudness", "reason": "test", "error": "ImportError: missing"}
+    monkeypatch.setattr(runtime_import_checks, "check_sentence_segmentation", lambda: [failure])
+    monkeypatch.setattr(runtime_import_checks, "check_imports", lambda: [import_failure])
+    monkeypatch.setattr(runtime_import_checks, "check_package_versions", lambda: [])
+    for gate in (
+        "check_frozen_youtube_only_yt_dlp",
+        "check_frozen_text_export_graph",
+        "check_python314_native_runtime",
+        "check_provider_initialization_matrix",
+        "check_frozen_build_tool_pruning",
+        "check_frozen_docstring_pruning",
+        "check_frozen_provider_pruning",
+        "check_frozen_numpy_noblas",
+        "check_podcast_feed_runtime",
+    ):
+        monkeypatch.setattr(runtime_import_checks, gate, lambda: [])
 
-    assert check_runtime_requirements() == [failure]
+    assert check_runtime_requirements() == [failure, import_failure]
 
 
 def test_frozen_youtube_only_runtime_check_requires_registry_and_blocked_imports():
@@ -842,17 +687,18 @@ def test_standard_requirements_include_audio_runtime_dependencies():
     assert "onnxruntime" in requirements
     assert "onnx-asr[cpu,hub]>=0.10.2,<0.11" in requirements
     assert "sherpa-onnx==1.13.4" not in requirements
-    assert "pipecat-ai[silero]==1.5.0" in requirements
+    assert "pipecat-ai[silero]==1.14.0" in requirements
     assert "yt-dlp[default]==2026.8.19" in requirements
     assert all(not line.startswith("deno==") for line in requirements)
     assert "deepgram-sdk==7.4.0" in requirements
     assert "google-cloud-speech<3,>=2.33.0" in requirements
     assert "google-genai<3,>=1.68.0" in requirements
     assert "groq~=0.23.0" in requirements
-    assert "nltk<4,>=3.9.4" in requirements
+    assert all(not line.startswith("nltk") for line in requirements)
     assert "openai<3,>=1.74.0" in requirements
-    assert "speechmatics-rt==1.1.0" in requirements
-    assert "speechmatics-voice==0.2.8" in requirements
+    assert "speechmatics-agent-stt==0.3.0" in requirements
+    assert "speechmatics-rt==1.2.1" in requirements
+    assert all(not line.startswith("speechmatics-voice") for line in requirements)
     assert "speechmatics-python" not in requirements
     assert all("transformers" not in line for line in requirements)
     assert "google-generativeai" not in requirements
@@ -933,7 +779,8 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert '"pipecat.services.azure.stt"' not in spec
     assert '"pipecat.services.soniox.stt"' in spec
     assert '"pipecat.services.assemblyai.stt"' in spec
-    assert '"pyloudnorm.meter"' in spec
+    assert "pyloudnorm" not in spec
+    assert '"loudness",' in spec
     assert '"scipy",' in spec
     assert '"scipy.signal"' not in spec
     collect_submodules_packages = spec.split("for package in (", 1)[1].split(

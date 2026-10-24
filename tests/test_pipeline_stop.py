@@ -1666,7 +1666,7 @@ def test_mistral_segmented_live_uses_transcribe_model_when_rt_model_is_realtime_
     ),
 )
 @pytest.mark.asyncio
-async def test_pipecat_1_5_live_factories_match_runtime_signatures(
+async def test_pipecat_live_factories_match_runtime_signatures(
     monkeypatch,
     service_name,
     api_key_attribute,
@@ -1687,6 +1687,13 @@ async def test_pipecat_1_5_live_factories_match_runtime_signatures(
             # Soniox Realtime uses native semantic endpoint detection. Local VAD
             # may support diagnostics, but must not force transcript commits.
             assert service._vad_force_turn_endpoint is False
+        if service_name == "speechmatics":
+            # Pipecat 1.14 reaches Speechmatics live only through Agent STT.
+            assert service._base_url == "wss://eu2.rt.speechmatics.com/v2/agent"
+            assert service._settings.model == "linden-1"
+            assert service._settings.turn_detection_mode == service.TurnDetectionMode.VAD
+            assert service._settings.speaker_active_format == "{text}"
+            assert [entry.content for entry in service._settings.additional_vocab] == ["Scriber", "Pipecat"]
     finally:
         cleanup = getattr(service, "cleanup", None)
         if callable(cleanup):
@@ -2111,7 +2118,7 @@ def test_assemblyai_realtime_factory_rejects_pre_1_5_pipecat(monkeypatch):
     monkeypatch.setattr(Config, "CUSTOM_VOCAB", "")
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
 
-    with pytest.raises(RuntimeError, match="Pipecat 1.5.0"):
+    with pytest.raises(RuntimeError, match="Pipecat 1.14.0"):
         ScriberPipeline(service_name="assemblyai_realtime")._create_stt_service(object())
 
 
@@ -2248,8 +2255,9 @@ def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatc
     class _SpeechmaticsSTTService:
         Settings = _Settings
 
-        class OperatingPoint(StrEnum):
-            ENHANCED = "enhanced"
+        class TurnDetectionMode(StrEnum):
+            EXTERNAL = "external"
+            VAD = "vad"
 
         class AdditionalVocabEntry:
             def __init__(self, *, content):
@@ -2272,11 +2280,11 @@ def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatc
     monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Scriber, Pipecat")
     monkeypatch.delenv("SPEECHMATICS_RT_URL", raising=False)
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
-    realtime_url = "wss://eu2.rt.speechmatics.com/v2"
+    realtime_url = "wss://eu2.rt.speechmatics.com/v2/agent"
     route = freeze_provider_route(
         workload="file",
         provider="speechmatics",
-        model="enhanced",
+        model="linden-1",
         language="de-DE",
         custom_vocab="Scriber, Pipecat",
         provider_endpoint_sha256=hashlib.sha256(realtime_url.encode("utf-8")).hexdigest(),
@@ -2292,12 +2300,11 @@ def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatc
     settings = dict(service.settings.kwargs)
     additional_vocab = settings.pop("additional_vocab")
     assert settings == {
-        "model": "enhanced",
+        "model": "linden-1",
         "enable_diarization": False,
         "language": Language.DE,
-        "operating_point": _SpeechmaticsSTTService.OperatingPoint.ENHANCED,
-        "speaker_active_format": "[Speaker {speaker_id}]: {text}",
-        "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
+        "turn_detection_mode": _SpeechmaticsSTTService.TurnDetectionMode.VAD,
+        "speaker_active_format": "{text}",
     }
     assert [entry.content for entry in additional_vocab] == ["Scriber", "Pipecat"]
     assert service.base_url == realtime_url
@@ -2311,17 +2318,16 @@ def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatc
     speaker_settings = dict(service_with_speakers.settings.kwargs)
     speaker_settings.pop("additional_vocab")
     assert speaker_settings == {
-        "model": "enhanced",
+        "model": "linden-1",
         "enable_diarization": False,
         "language": Language.DE,
-        "operating_point": _SpeechmaticsSTTService.OperatingPoint.ENHANCED,
-        "speaker_active_format": "[Speaker {speaker_id}]: {text}",
-        "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
+        "turn_detection_mode": _SpeechmaticsSTTService.TurnDetectionMode.VAD,
+        "speaker_active_format": "{text}",
     }
 
     monkeypatch.setenv(
         "SPEECHMATICS_RT_URL",
-        "wss://private.invalid/speechmatics/v2",
+        "wss://private.invalid/speechmatics/v2/agent",
     )
     with pytest.raises(RuntimeError, match="endpoint no longer matches"):
         ScriberPipeline(
@@ -2438,8 +2444,9 @@ def test_speechmatics_factory_enables_batch_labeled_diarization(monkeypatch):
     class _SpeechmaticsSTTService:
         Settings = _Settings
 
-        class OperatingPoint(StrEnum):
-            ENHANCED = "enhanced"
+        class TurnDetectionMode(StrEnum):
+            EXTERNAL = "external"
+            VAD = "vad"
 
         class AdditionalVocabEntry:
             def __init__(self, *, content):
@@ -2469,14 +2476,23 @@ def test_speechmatics_factory_enables_batch_labeled_diarization(monkeypatch):
     )._create_stt_service(object())
 
     assert service.settings.kwargs == {
-        "model": "enhanced",
+        "model": "linden-1",
         "enable_diarization": False,
         "language": Language.DE,
         "additional_vocab": [],
-        "operating_point": _SpeechmaticsSTTService.OperatingPoint.ENHANCED,
-        "speaker_active_format": "[Speaker {speaker_id}]: {text}",
-        "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
+        "turn_detection_mode": _SpeechmaticsSTTService.TurnDetectionMode.VAD,
+        "speaker_active_format": "{text}",
     }
+
+    file_service = ScriberPipeline(
+        service_name="speechmatics",
+        enable_speaker_diarization=True,
+    )._create_stt_service(object(), for_file=True)
+
+    # Only diarized files carry speaker labels; Pipecat 1.14 applies the
+    # template to every final, so plain dictation must keep "{text}".
+    assert file_service.settings.kwargs["enable_diarization"] is True
+    assert file_service.settings.kwargs["speaker_active_format"] == "[Speaker {speaker_id}]: {text}"
 
 
 @pytest.mark.asyncio

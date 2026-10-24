@@ -65,10 +65,12 @@ then imports `src.backend_worker`. The runtime cache therefore contains no
 `src` package and can survive ordinary backend-code changes; the complete
 composed sidecar remains independently cacheable for exact hits.
 
-The runtime contract pins Pipecat 1.5 and enumerates the exact direct
+The runtime contract pins Pipecat 1.14 and enumerates the exact direct
 `pipecat.*` modules used by `src`. An AST parity gate prevents application code
-from importing a module that PyInstaller did not freeze. Contract revision 5
-uses Pipecat 1.5's canonical `PipelineWorker` and `WorkerRunner` modules and
+from importing a module that PyInstaller did not freeze. Contract revision 9
+moves to Pipecat 1.14: it adds the `loudness` and `sentencex` runtimes and
+`pipecat.utils.types`, and drops the local `pyloudnorm` compatibility package.
+Contract revision 5 introduced Pipecat's canonical `PipelineWorker` and `WorkerRunner` modules and
 freezes the `audioop-lts` PCM RMS runtime, while preserving the revision-4
 bounded installer-research YouTube holdout probe and revision-3
 `pipecat.transports.base_input` addition. Changing that revision invalidates the
@@ -2169,16 +2171,21 @@ AssemblyAI is exposed as both a direct async/batch provider and a realtime
 Pipecat provider. Both default to Universal-3.5-Pro. The async adapter sends
 the configured model through AssemblyAI's `speech_models` field; the realtime
 path uses Pipecat `AssemblyAISTTService.Settings` when available, filters
-settings by the Pipecat 1.5 signature, and fails visibly if an older runtime is
+settings by the Pipecat 1.14 signature, and fails visibly if an older runtime is
 present. Soniox, ElevenLabs, Deepgram, Gladia, OpenAI, and Speechmatics live
-factories use the same Pipecat 1.5 `Settings` contract instead of deprecated
-`InputParams` or `LiveOptions` compatibility paths.
-Custom buffered STT services use Pipecat 1.5 `STTUpdateSettingsFrame.delta`
+factories use the same Pipecat `Settings` contract instead of deprecated
+`InputParams` or `LiveOptions` compatibility paths. Speechmatics live runs on
+Speechmatics Agent STT (`wss://eu2.rt.speechmatics.com/v2/agent`, model
+`linden-1`), the only realtime endpoint Pipecat 1.10+ supports. Scriber sets
+server-side turn detection (`TurnDetectionMode.VAD`) because it attaches no
+local VAD to native streams, and keeps the speaker template plain (`{text}`)
+unless a diarized file run asks for labels.
+Custom buffered STT services use Pipecat `STTUpdateSettingsFrame.delta`
 objects, initialize complete `STTSettings` (`model` and `language` included),
 and use the explicit `AIService` lifecycle so terminal audio is flushed before
 an `EndFrame` is forwarded. This contract also applies to Scriber's Mistral,
 Azure MAI, and ONNX service implementations; leaving those fields `NOT_GIVEN`
-creates Pipecat 1.5 runtime warnings and ambiguous updates.
+creates Pipecat runtime warnings and ambiguous updates.
 Modulate realtime sends raw binary audio and the provider-defined empty text
 frame at EOS, accepts only finalized `utterance` messages, and waits for
 `done`. Its aiohttp connection intentionally has no client heartbeat, matching
@@ -2192,7 +2199,7 @@ Pipecat's `local-smart-turn` extra is intentionally not installed because its
 Torch/Torchaudio/Transformers dependency chain conflicts with the standard
 ONNX-only local-runtime footprint. The lightweight bundled ONNX
 `LocalSmartTurnAnalyzerV3` import stays available without the removed
-`UserIdleProcessor`; Silero remains the bundled VAD path. Pipecat 1.5 analyzers
+`UserIdleProcessor`; Silero remains the bundled VAD path. Pipecat analyzers
 are processors rather than transport parameters: live input runs through an
 explicit `VADProcessor`, the optional segmented-HTTP gate remains between VAD
 and STT, and native realtime providers do not attach local SmartTurn. Startup
@@ -2322,7 +2329,8 @@ authoritative. The migration persists `settings.json` only and cannot rewrite
 OpenAI live STT uses Pipecat's OpenAI Realtime STT service plus the explicit
 `openai` SDK and `websockets` dependencies; OpenAI async/batch uses the direct
 Audio Transcriptions HTTP adapter. Groq STT uses Pipecat's `groq` SDK
-dependency, and Pipecat provider imports require `nltk` at runtime.
+dependency. Since Pipecat 1.12 sentence boundaries come from the embedded
+`sentencex` rules, so the backend no longer bundles NLTK or Punkt data.
 Gladia live transcription still uses Pipecat's Gladia service with a small
 Scriber stop wrapper that runs the base STT stop hook without disconnecting,
 sends `stop_recording`, waits briefly for a final transcript, and only then
@@ -2336,7 +2344,7 @@ adding the separate `speechmatics-batch` SDK to the standard sidecar. Build-time
 runtime import checks cover the offered standard provider modules, and the
 footprint analyzer rejects unused provider SDKs if PyInstaller pulls them back
 in. The runtime import gate verifies both provider imports and the exact
-`pipecat-ai==1.5.0` distribution version so stale sidecar caches cannot pass.
+`pipecat-ai==1.14.0` distribution version so stale sidecar caches cannot pass.
 
 ## Media Boundary
 

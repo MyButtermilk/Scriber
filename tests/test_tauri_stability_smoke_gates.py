@@ -1133,7 +1133,8 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert 'Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/icons" -Filter "*"' in script
     assert '"scripts/check_backend_runtime_imports.py"' in script
     assert 'Add-FileGlobEntries -Entries $backendRuntimeEntries -Root "backend_runtime" -Filter "*.py"' in script
-    assert 'Add-FileGlobEntries -Entries $backendRuntimeEntries -Root "pyloudnorm" -Filter "*.py"' in script
+    assert '-Root "pyloudnorm"' not in script
+    assert "nltk" not in script.lower()
     assert "constant`tffmpeg-profile-lock`tffmpeg-profile-b-release-lock-v1" in script
     assert '"packaging/ffmpeg-profile-b-release-lock-v1.json"' in script
     assert "Get-BackendSidecarOutputContract" in script

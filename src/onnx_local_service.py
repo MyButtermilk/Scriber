@@ -197,7 +197,7 @@ class OnnxLocalBufferedSTTService(STTService):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         # Keep terminal frames under this service's control so buffered audio is
         # transcribed before EndFrame reaches downstream processors. AIService
-        # owns the Pipecat 1.5 lifecycle; STTService would also forward frames.
+        # owns the Pipecat lifecycle; STTService would also forward frames.
         await AIService.process_frame(self, frame, direction)
 
         if isinstance(frame, AudioRawFrame):

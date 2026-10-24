@@ -41,10 +41,16 @@ async def test_every_connection_and_reconnect_authenticates_before_config(monkey
     calls = []
     sockets = []
 
-    async def open_socket(url, *, additional_headers, logger):
+    async def open_socket(url, *, additional_headers, logger, **bounds):
         assert url == soniox_realtime_websocket_url(region)
         assert additional_headers == {"Authorization": f"Bearer {KEY}"}
         assert logger.disabled
+        if kind == "dictation":
+            # Pipecat's connector bounds the closing handshake for every reconnect.
+            assert bounds["close_timeout"] == 2.0
+            assert "create_connection" in bounds
+        else:
+            assert not bounds
         calls.append(url)
         socket = AsyncMock()
         socket.state = State.OPEN
@@ -57,7 +63,7 @@ async def test_every_connection_and_reconnect_authenticates_before_config(monkey
             socket = await service._open_websocket()
             await socket.close()
     else:
-        monkeypatch.setattr("src.soniox_realtime.websocket_connect", open_socket)
+        monkeypatch.setattr("pipecat.services.websocket_service.websocket_connect", open_socket)
         service = SonioxSTTService(
             api_key=KEY, url=soniox_realtime_websocket_url(region), sample_rate=16000, vad_force_turn_endpoint=False
         )
@@ -98,7 +104,7 @@ async def test_failed_setup_does_not_expose_credentials_and_closes_socket(monkey
                 await service._open_websocket()
             assert KEY not in str(caught.value)
         else:
-            monkeypatch.setattr("src.soniox_realtime.websocket_connect", connector)
+            monkeypatch.setattr("pipecat.services.websocket_service.websocket_connect", connector)
             service = SonioxSTTService(api_key=KEY)
             service.push_error = AsyncMock()
             if failure_stage == "cancel":

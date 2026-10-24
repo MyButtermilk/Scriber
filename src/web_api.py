@@ -555,7 +555,7 @@ _PRIVATE_NETWORK_ACCESS_REQUEST_HEADER = "Access-Control-Request-Private-Network
 _PRIVATE_NETWORK_ACCESS_ALLOW_HEADER = "Access-Control-Allow-Private-Network"
 _RUST_AUDIO_PROTOTYPE_AVAILABLE = False
 _AUDIO_DIAGNOSTIC_IMPORTS = (
-    "pyloudnorm",
+    "loudness",
     "onnxruntime",
     "pipecat.frames.frames",
     "pipecat.audio.vad.vad_analyzer",

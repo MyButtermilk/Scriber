@@ -943,9 +943,9 @@ ${output}"""
             # Gladia's current pre-recorded v2 request has no STT model field.
             "gladia-async": "provider default (Gladia Pre-recorded API v2)",
             "groq": "whisper-large-v3-turbo",
-            # Speechmatics exposes an accuracy/latency operating point rather
-            # than a public model slug on these two routes.
-            "speechmatics": "enhanced",
+            # Live Speechmatics runs on Agent STT (`linden-1`); batch exposes an
+            # accuracy/latency operating point rather than a public model slug.
+            "speechmatics": "linden-1",
             "speechmatics-async": "enhanced",
             "elevenlabs": "scribe_v2_realtime",
             "google": "latest_long",

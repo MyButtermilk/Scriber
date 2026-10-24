@@ -71,32 +71,6 @@ numpy_distribution_root = Path(numpy_distribution.locate_file("")).resolve()
 if not numpy_distribution_root.is_relative_to(numpy_overlay_root):
     raise RuntimeError("PyInstaller resolved NumPy metadata outside the validated product overlay")
 
-nltk_data_value = os.environ.get("SCRIBER_NLTK_DATA_ROOT")
-if not nltk_data_value:
-    raise RuntimeError("PyInstaller requires the validated NLTK Punkt data root")
-nltk_data_root = Path(nltk_data_value).resolve()
-punkt_tab_root = nltk_data_root / "tokenizers" / "punkt_tab"
-expected_punkt_tab_files = frozenset(
-    {
-        "README",
-        "english/abbrev_types.txt",
-        "english/collocations.tab",
-        "english/ortho_context.tab",
-        "english/sent_starters.txt",
-        "german/abbrev_types.txt",
-        "german/collocations.tab",
-        "german/ortho_context.tab",
-        "german/sent_starters.txt",
-    }
-)
-actual_punkt_tab_files = frozenset(
-    path.relative_to(punkt_tab_root).as_posix()
-    for path in punkt_tab_root.rglob("*")
-    if path.is_file()
-) if punkt_tab_root.is_dir() else frozenset()
-if actual_punkt_tab_files != expected_punkt_tab_files:
-    raise RuntimeError("PyInstaller NLTK Punkt input is not exactly English/German")
-
 from PyInstaller.config import CONF
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules, copy_metadata
 
@@ -137,9 +111,9 @@ def exclude_pure_modules(pure, excluded_module_prefixes):
 
 
 def exclude_development_datas(datas):
-    # Analysis hooks collect package data recursively. These two exact trees
-    # contain upstream doctests and project generators, never runtime models.
-    excluded = ("nltk/test/", "pipecat/cli/")
+    # Analysis hooks collect package data recursively. This exact tree
+    # contains upstream project generators, never runtime models.
+    excluded = ("pipecat/cli/",)
     return [
         entry
         for entry in datas
@@ -289,28 +263,11 @@ def strip_runtime_docstrings(code: CodeType) -> tuple[CodeType, int]:
 RUNTIME_DOCSTRING_REQUIRED_PREFIXES = ("pycparser",)
 
 
-def retain_punkt_tab_languages(datas, retained_languages):
-    prefix = "nltk_data/tokenizers/punkt_tab/"
-    retained = frozenset(str(language).casefold() for language in retained_languages)
-    filtered = []
-    for entry in datas:
-        destination = str(entry[0]).replace("\\", "/")
-        if destination.startswith(prefix):
-            relative = destination[len(prefix) :]
-            path_parts = relative.split("/", 1)
-            if len(path_parts) == 2 and path_parts[0].casefold() not in retained:
-                continue
-        filtered.append(entry)
-    return filtered
-
-
 hiddenimports = [module for module, _reason in RUNTIME_REQUIRED_IMPORTS]
 hiddenimports += [
     "backend_runtime.docstring_prune_probe",
-    "pyloudnorm",
-    "pyloudnorm.meter",
-    "pyloudnorm.normalize",
-    "pyloudnorm.util",
+    "loudness",
+    "sentencex",
     "onnx_asr",
     "onnxruntime",
     "pipecat.audio.vad.silero",
@@ -493,29 +450,9 @@ a = Analysis(
     optimize=0,
 )
 
-# Filter after Analysis as the NLTK contrib hook adds its own package data.
-# Keep notices, locked Punkt languages, Silero and SmartTurn data intact.
+# Filter after Analysis: hooks add package data recursively.
+# Keep notices, Silero and SmartTurn data intact.
 a.datas[:] = exclude_development_datas(a.datas)
-
-# The contrib NLTK hook scans every default/user NLTK search path. Discard all
-# of those results and rebuild the data TOC exclusively from the locked work-root
-# tree so a developer's roaming cache cannot change the installer.
-a.datas[:] = [
-    entry
-    for entry in a.datas
-    if not (
-        str(entry[0]).replace("\\", "/") == "nltk_data"
-        or str(entry[0]).replace("\\", "/").startswith("nltk_data/")
-    )
-]
-for relative_path in sorted(expected_punkt_tab_files):
-    a.datas.append(
-        (
-            f"nltk_data/tokenizers/punkt_tab/{relative_path}",
-            str(punkt_tab_root / Path(*relative_path.split("/"))),
-            "DATA",
-        )
-    )
 
 analysis_data_destinations = {
     str(entry[0]).replace("\\", "/")
@@ -536,31 +473,6 @@ if any(
     for destination in analysis_data_destinations
 ):
     raise RuntimeError("Frozen runtime retained official NumPy metadata")
-
-# PyInstaller's NLTK hook includes both the complete expanded punkt_tab tree
-# and its redundant source archive. Scriber and Pipecat 1.5 use English sentence
-# segmentation, while the complete German model is an explicit product/runtime
-# contract. Keep both languages plus root metadata and drop every other language.
-a.datas = [
-    entry
-    for entry in a.datas
-    if str(entry[0]).replace("\\", "/")
-    != "nltk_data/tokenizers/punkt_tab.zip"
-]
-a.datas = retain_punkt_tab_languages(a.datas, ("english", "german"))
-actual_frozen_punkt_data = frozenset(
-    str(entry[0]).replace("\\", "/")
-    for entry in a.datas
-    if str(entry[0]).replace("\\", "/").startswith(
-        "nltk_data/tokenizers/punkt_tab/"
-    )
-)
-expected_frozen_punkt_data = frozenset(
-    f"nltk_data/tokenizers/punkt_tab/{path}"
-    for path in expected_punkt_tab_files
-)
-if actual_frozen_punkt_data != expected_frozen_punkt_data:
-    raise RuntimeError("Frozen NLTK Punkt payload is not exactly the locked English/German set")
 
 # The setuptools hook also stages vendored metadata/text files underneath a
 # setuptools directory. With the code removed, that directory would form an

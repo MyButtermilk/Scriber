@@ -49,16 +49,15 @@ def service(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("region", ["us", "eu"])
 async def test_pipecat_start_and_reconnect_authenticate_and_preserve_config(service, monkeypatch, region):
-    from pipecat.clocks.system_clock import SystemClock
-    from pipecat.processors.frame_processor import FrameProcessorSetup
     from pipecat.services.soniox import stt as upstream
     from pipecat.utils.asyncio.task_manager import TaskManager
 
-    await service.setup(FrameProcessorSetup(clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=None))
+    # Pipecat 1.14 services connect inside setup(); drive the connection directly.
+    service._task_manager = TaskManager()
     service._url = soniox_realtime_websocket_url(region)
     first, second, reference_socket = Socket(), Socket(), Socket()
     connect = AsyncMock(side_effect=[first, second])
-    monkeypatch.setattr("src.soniox_realtime.websocket_connect", connect)
+    monkeypatch.setattr("pipecat.services.websocket_service.websocket_connect", connect)
     connected = AsyncMock()
     service._call_event_handler = connected
     try:
@@ -75,22 +74,25 @@ async def test_pipecat_start_and_reconnect_authenticate_and_preserve_config(serv
             assert call.args == (service._url,)
             assert call.kwargs["additional_headers"] == {"Authorization": f"Bearer {KEY}"}
             assert not call.kwargs["logger"].isEnabledFor(logging.DEBUG)
+            assert call.kwargs["close_timeout"] == 2.0
         assert [call.args[0] for call in connected.await_args_list] == [
             "on_connected",
             "on_disconnected",
             "on_connected",
         ]
 
-        # Pin parity with the installed 1.5.0 configuration, not a partial mock.
-        monkeypatch.setattr(upstream, "websocket_connect", AsyncMock(return_value=reference_socket))
+        # Pin parity with the installed 1.14.0 configuration, not a partial mock.
+        reference_connect = AsyncMock(return_value=reference_socket)
+        monkeypatch.setattr("pipecat.services.websocket_service.websocket_connect", reference_connect)
         reference = upstream.SonioxSTTService(
             api_key=KEY, sample_rate=16_000, settings=service._settings, vad_force_turn_endpoint=False
         )
         reference._sample_rate = 16_000
         try:
             await reference._connect_websocket()
+            assert reference_connect.await_args.kwargs["additional_headers"] == {"Authorization": f"Bearer {KEY}"}
             expected = json.loads(reference_socket.send.await_args.args[0])
-            assert expected.pop("api_key") == KEY
+            assert "api_key" not in expected
             for socket in (first, second):
                 socket.send.assert_awaited_once()
                 actual = json.loads(socket.send.await_args.args[0])
@@ -113,7 +115,7 @@ async def test_pipecat_connection_failure_is_private_and_cleans_up(service, monk
         connect.side_effect = error
     else:
         socket.send.side_effect = asyncio.CancelledError() if failure == "cancel" else error
-    monkeypatch.setattr("src.soniox_realtime.websocket_connect", connect)
+    monkeypatch.setattr("pipecat.services.websocket_service.websocket_connect", connect)
     frames = []
     service.push_frame = AsyncMock(side_effect=lambda frame, *_args, **_kwargs: frames.append(frame))
     logs = []

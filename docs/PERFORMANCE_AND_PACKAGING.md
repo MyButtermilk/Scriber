@@ -35,8 +35,8 @@ H17 bzip2 build from 2026-07-20:
   regression.
 - Frozen runtime validation keeps `Analysis(optimize=0)`, `__debug__`, and real
   `assert` execution while removing compiler-owned runtime docstrings from the
-  PyInstaller code cache. English and German Punkt loading/segmentation both
-  pass from the frozen bundle.
+  PyInstaller code cache. Pipecat's sentence segmentation (English, German,
+  decimal, CJK and Arabic probes) passes from the frozen bundle.
 - A real German `de-DE` audio gate produced byte-identical H16/H17 transcripts
   with token recall `18/20` (`0.90`) and WER `3/20` (`0.15`). SmartTurn produced
   all `64,000/64,000` float32 feature values and its prediction/probability
@@ -2049,7 +2049,14 @@ No-feature-loss constraints:
 
 Current packaging choices:
 
-- `pyloudnorm` is provided locally without SciPy in the packaged sidecar.
+- Pipecat 1.14 measures loudness with the NumPy-only `loudness` package and
+  segments sentences with the embedded `sentencex` rules. The former local
+  SciPy-free `pyloudnorm` package, NLTK, its `regex`/`joblib` dependencies and
+  the English/German Punkt data are no longer installed or bundled; the
+  frozen gate runs Pipecat's sentence probes and fails if NLTK is loaded.
+  ONNXRuntime 1.31 no longer depends on SymPy, which also leaves the closure.
+  Upstream, Pipecat 1.8 loads heavy dependencies lazily and sets up services
+  concurrently, so the first recording after startup pays less import time.
 - ONNXRuntime remains because Pipecat Silero VAD needs it.
 - SciPy, Torch, full NeMo, ONNX training/tooling stacks, numba, llvmlite, and
   unused ONNXRuntime tooling are excluded from the standard sidecar. The
@@ -2066,8 +2073,9 @@ Current packaging choices:
   3,149,007 bytes from the complete staged sidecar tree. A bzip2 level-9 proxy
   predicts 3,128,914 bytes of installer savings; this remains a forecast until
   confirmed by a complete installer build.
-- The frozen NLTK `punkt_tab` payload retains the complete English and German
-  models plus root metadata, but no other language directories. Pipecat 1.5's
+- Until Pipecat 1.14 the frozen NLTK `punkt_tab` payload retained the
+  complete English and German models plus root metadata, but no other language
+  directories (history; the payload is gone now). Pipecat 1.5's
   four sentence-boundary call sites all delegate to
   `match_endofsentence()`, which invokes `sent_tokenize(text)` without a
   language argument and therefore uses the English model. Scriber does not add
@@ -2098,12 +2106,12 @@ Current packaging choices:
 - AWS Transcribe is no longer exposed in frontend or backend settings. The
   standard sidecar excludes `boto3`, `botocore`, `s3transfer`, `aioboto3`,
   `aiobotocore`, and Pipecat AWS service modules.
-- The post-Analysis data filter removes only upstream `nltk/test/` doctests and
-  `pipecat/cli/` project-generator templates, including files reintroduced by
-  hooks. The v0.5.115 payload inventory contains 131 such files / 966,180 bytes;
-  this is uncompressed payload savings, not a measured installer-time claim.
-  English/German Punkt, Silero, SmartTurn, ONNX preprocessors and legal notices
-  remain. Explicit `mypy`, `mypyc` and Pydantic mypy-plugin exclusions prevent
+- The post-Analysis data filter removes only upstream `pipecat/cli/`
+  project-generator templates, including files reintroduced by hooks (it also
+  removed `nltk/test/` doctests while NLTK was bundled). The v0.5.115 payload
+  inventory contained 131 such files / 966,180 bytes; this is uncompressed
+  payload savings, not a measured installer-time claim. Silero, SmartTurn, ONNX
+  preprocessors and legal notices remain. Explicit `mypy`, `mypyc` and Pydantic mypy-plugin exclusions prevent
   optional compiled developer tools from contaminating a local frozen build.
   Real provider initialization is tested with those imports blocked. This spec
   change requires one fresh frozen-runtime product before future reuse.
@@ -2111,13 +2119,13 @@ Current packaging choices:
   so `google-generativeai` and Google Cloud Text-to-Speech are excluded from the
   standard sidecar. Google Cloud STT
   remains supported through `google-cloud-speech` plus Pipecat's required
-  `google-genai` namespace dependency; OpenAI STT, Groq STT, and Pipecat's
-  provider import path remain supported through explicit `openai`, `groq`, and
-  `nltk` runtime dependencies.
+  `google-genai` namespace dependency; OpenAI STT and Groq STT remain supported
+  through explicit `openai` and `groq` runtime dependencies.
 - Deepgram Async, Gladia Async, OpenAI Async, and Speechmatics Batch use direct
   HTTP/batch adapters in `src/cloud_async_stt.py`. Speechmatics Batch does not
-  add `speechmatics-batch`; the standard sidecar keeps only the existing
-  Speechmatics realtime/runtime packages.
+  add `speechmatics-batch`; the standard sidecar keeps only the Speechmatics
+  Agent STT (`speechmatics-agent-stt`) and `speechmatics-rt` packages that
+  Pipecat's live service needs.
 - Modulate multilingual batch and streaming use the existing `aiohttp` runtime
   through `src/modulate_stt.py`; no Modulate SDK or additional provider package
   is bundled. Its provider boundary discards utterance metadata and does not

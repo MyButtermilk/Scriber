@@ -351,25 +351,15 @@ def test_runtime_cache_key_source_excludes_application_code() -> None:
     assert '"scripts/stage_backend_application_layer.py"' in application_block
 
 
-def test_backend_runtime_prepares_locked_punkt_data_for_child_processes_only() -> None:
+def test_backend_runtime_has_no_nltk_punkt_build_inputs() -> None:
+    # Pipecat 1.12+ segments sentences with sentencex rules embedded in its
+    # wheel, so the frozen backend neither prepares nor bundles NLTK data.
     builder = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(encoding="utf-8")
     cache_script = (REPO_ROOT / "scripts" / "ci" / "write_release_cache_keys.ps1").read_text(encoding="utf-8")
-
-    for relative_path in (
-        "packaging/nltk-punkt-tab-lock-v1.json",
-        "scripts/prepare_nltk_punkt_data.py",
-    ):
-        assert relative_path.replace("/", "\\") in builder
-        assert relative_path in cache_script
-    assert 'Invoke-TimedStep -Label "nltk-punkt-data"' in builder
-    assert "$env:NLTK_DATA = $NltkDataRoot" in builder
-    assert "$env:NLTK_DATA = $script:NltkDataRoot" in builder
-    assert "Remove-Item Env:NLTK_DATA -ErrorAction SilentlyContinue" in builder
-    assert "$env:SCRIBER_NLTK_DATA_ROOT = $script:NltkDataRoot" in builder
-    assert "Remove-Item Env:SCRIBER_NLTK_DATA_ROOT" in builder
-
     spec = (REPO_ROOT / "packaging" / "scriber-backend.spec").read_text(encoding="utf-8")
-    assert 'os.environ.get("SCRIBER_NLTK_DATA_ROOT")' in spec
-    assert "Discard all" in spec
-    assert 'startswith("nltk_data/")' in spec
-    assert "actual_frozen_punkt_data != expected_frozen_punkt_data" in spec
+
+    for text in (builder, cache_script, spec):
+        assert "nltk" not in text.lower()
+        assert "punkt" not in text.lower()
+    assert not (REPO_ROOT / "packaging" / "nltk-punkt-tab-lock-v1.json").exists()
+    assert not (REPO_ROOT / "scripts" / "prepare_nltk_punkt_data.py").exists()

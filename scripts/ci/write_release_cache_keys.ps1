@@ -425,12 +425,10 @@ foreach ($entry in $pythonDependencyEntries) {
 foreach ($path in @(
     "packaging/scriber-backend.spec",
     "packaging/backend-sidecar-output-contract.json",
-    "packaging/nltk-punkt-tab-lock-v1.json",
     "packaging/quickjs-youtube-runtime-lock-v1.json",
     "packaging/ffmpeg-profile-b-release-lock-v1.json",
     "scripts/validate_numpy_noblas_wheel.py",
     "scripts/build_cpython_windows_runtime.ps1",
-    "scripts/prepare_nltk_punkt_data.py",
     "scripts/build_quickjs_youtube_runtime.py",
     "scripts/perf/profiles/installer-size/quickjs-runtime-lock-v1.json",
     "native/scriber-quickjs-wrapper/Cargo.toml",
@@ -446,7 +444,6 @@ $backendRuntimeEntries.Add("contract`tname`t$($backendContract.name)")
 $backendRuntimeEntries.Add("contract`trevision`t$($backendContract.revision)")
 $backendRuntimeEntries.Add("flag`tpyInstallerClean`ttrue")
 Add-FileGlobEntries -Entries $backendRuntimeEntries -Root "backend_runtime" -Filter "*.py"
-Add-FileGlobEntries -Entries $backendRuntimeEntries -Root "pyloudnorm" -Filter "*.py"
 Write-KeyFile -Name "backend-runtime.txt" -Entries $backendRuntimeEntries
 
 $backendEntries = New-EntryList

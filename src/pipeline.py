@@ -575,7 +575,7 @@ def _create_vad_analyzer(*, quiet_mic: bool = False):
 
 
 def _create_soniox_smart_turn_processor() -> UserTurnProcessor | None:
-    """Create a session-owned Pipecat 1.5 SmartTurn processor.
+    """Create a session-owned Pipecat SmartTurn processor.
 
     ``TransportParams`` no longer accepts analyzers. SmartTurn must run after
     Soniox STT so its stop strategy sees both passthrough audio/VAD events and
@@ -612,7 +612,7 @@ def _ordered_live_pipeline_steps(
     provider_ingress_drain: FrameProcessor | None = None,
     silence_stop_observer: FrameProcessor | None = None,
 ) -> list[FrameProcessor]:
-    """Return the canonical Pipecat 1.5 live-microphone processor order."""
+    """Return the canonical Pipecat live-microphone processor order."""
     steps: list[FrameProcessor] = [audio_input]
     if silence_stop_observer is not None:
         steps.append(silence_stop_observer)
@@ -1406,7 +1406,7 @@ def _create_assemblyai_realtime_service(
     keyterms = build_keyterms_from_vocab(custom_vocab)
 
     if settings_cls is None:
-        raise RuntimeError("AssemblyAI realtime transcription requires Pipecat 1.5.0.")
+        raise RuntimeError("AssemblyAI realtime transcription requires Pipecat 1.14.0.")
 
     settings_candidates = {"model": model}
     if language_code:
@@ -3126,7 +3126,7 @@ class ScriberPipeline:
                 raise RuntimeError("SonioxSTTService not available.")
             settings_cls = getattr(soniox_service_cls, "Settings", None)
             if settings_cls is None:
-                raise RuntimeError("Soniox realtime transcription requires Pipecat 1.5.0.")
+                raise RuntimeError("Soniox realtime transcription requires Pipecat 1.14.0.")
             lang_hint = Language.EN if self.soniox_replay_url is not None else self._execution_pipecat_language()
             rt_model = self.soniox_replay_model or self._execution_model(Config.SONIOX_RT_MODEL)
             settings_candidates: dict[str, Any] = {
@@ -3141,7 +3141,7 @@ class ScriberPipeline:
                     logger.info(f"Applying custom vocabulary: {terms}")
                     settings_candidates["context"] = soniox_context_cls(terms=terms)
             settings = settings_cls(**_filter_supported_kwargs(settings_cls, settings_candidates))
-            logger.info("Creating SonioxSTTService with Pipecat 1.5 settings and Soniox semantic endpoint detection")
+            logger.info("Creating SonioxSTTService with Pipecat settings and Soniox semantic endpoint detection")
             service_kwargs: dict[str, Any] = {
                 "api_key": ("local-replay" if self.soniox_replay_url is not None else soniox_api_key),
                 "sample_rate": (48_000 if self._provider_replay_capture_enabled else Config.SAMPLE_RATE),
@@ -3271,7 +3271,7 @@ class ScriberPipeline:
                 raise ValueError("Google Cloud credentials path is missing.")
             settings_cls = getattr(GoogleSTTService, "Settings", None)
             if settings_cls is None:
-                raise RuntimeError("Google Cloud streaming transcription requires Pipecat 1.5.0.")
+                raise RuntimeError("Google Cloud streaming transcription requires Pipecat 1.14.0.")
             provider_route = realtime_route_for_provider("google")
             if not provider_route:
                 raise ProviderAudioCapabilityError("Google Cloud has no active exact streaming route.")
@@ -3351,11 +3351,11 @@ class ScriberPipeline:
 
             realtime_cls = getattr(module, "ElevenLabsRealtimeSTTService", None)
             if realtime_cls is None:
-                raise RuntimeError("ElevenLabs Live requires Pipecat 1.5.0.")
+                raise RuntimeError("ElevenLabs Live requires Pipecat 1.14.0.")
             commit_strategy = getattr(getattr(module, "CommitStrategy", object), "MANUAL", None)
             settings_cls = getattr(realtime_cls, "Settings", None)
             if settings_cls is None or commit_strategy is None:
-                raise RuntimeError("ElevenLabs Live requires Pipecat 1.5.0 settings support.")
+                raise RuntimeError("ElevenLabs Live requires Pipecat 1.14.0 settings support.")
             bound_model = self._require_realtime_pcm_request_contract(
                 provider="elevenlabs",
                 default_model="scribe_v2_realtime",
@@ -3404,7 +3404,7 @@ class ScriberPipeline:
                 raise ValueError("Deepgram API Key is missing.")
             settings_cls = getattr(DeepgramSTTService, "Settings", None)
             if settings_cls is None:
-                raise RuntimeError("Deepgram streaming transcription requires Pipecat 1.5.0.")
+                raise RuntimeError("Deepgram streaming transcription requires Pipecat 1.14.0.")
             bound_model = self._require_realtime_pcm_request_contract(
                 provider="deepgram",
                 default_model=Config.DEEPGRAM_MODEL,
@@ -3433,13 +3433,15 @@ class ScriberPipeline:
             pipeline_ref = self
 
             class ScriberDeepgramSTTService(DeepgramSTTService):
-                async def push_error(self, error_msg: str, exception=None, fatal: bool = False):
+                async def push_error(self, error_msg: str, exception=None, fatal: bool = False, **kwargs):
                     safe_error = _redact_provider_error_text(error_msg)
                     pipeline_ref._record_terminal_error(f"Deepgram streaming error: {safe_error}")
+                    # Pipecat 1.14 also passes the error category and permanence.
                     await super().push_error(
                         error_msg=error_msg,
                         exception=exception,
                         fatal=fatal,
+                        **kwargs,
                     )
 
             return ScriberDeepgramSTTService(
@@ -3473,10 +3475,10 @@ class ScriberPipeline:
             if not _get_api_key("openai"):
                 raise ValueError("OpenAI API Key is missing.")
             if OpenAIRealtimeSTTService is None:
-                raise RuntimeError("OpenAI Realtime STT requires Pipecat 1.5.0.")
+                raise RuntimeError("OpenAI Realtime STT requires Pipecat 1.14.0.")
             settings_cls = getattr(OpenAIRealtimeSTTService, "Settings", None)
             if settings_cls is None:
-                raise RuntimeError("OpenAI Realtime STT requires Pipecat 1.5.0 settings support.")
+                raise RuntimeError("OpenAI Realtime STT requires Pipecat 1.14.0 settings support.")
             bound_model = self._require_realtime_pcm_request_contract(
                 provider="openai",
                 default_model=Config.OPENAI_REALTIME_STT_MODEL,
@@ -3623,7 +3625,7 @@ class ScriberPipeline:
 
             settings_cls = getattr(GladiaSTTService, "Settings", None)
             if settings_cls is None:
-                raise RuntimeError("Gladia realtime transcription requires Pipecat 1.5.0.")
+                raise RuntimeError("Gladia realtime transcription requires Pipecat 1.14.0.")
             gladia_settings = settings_cls(
                 **_filter_supported_kwargs(
                     settings_cls,
@@ -3670,7 +3672,7 @@ class ScriberPipeline:
                 raise ValueError("Groq API Key is missing.")
             settings_cls = getattr(GroqSTTService, "Settings", None)
             if settings_cls is None:
-                raise RuntimeError("Groq transcription requires Pipecat 1.5.0.")
+                raise RuntimeError("Groq transcription requires Pipecat 1.14.0.")
             provider_route = batch_route_for_provider("groq")
             if not provider_route:
                 raise ProviderAudioCapabilityError("Groq has no active exact segmented request route.")
@@ -3721,23 +3723,13 @@ class ScriberPipeline:
             if not _get_api_key("speechmatics"):
                 raise ValueError("Speechmatics API Key is missing.")
             settings_cls = getattr(SpeechmaticsSTTService, "Settings", None)
-            if settings_cls is None:
-                raise RuntimeError("Speechmatics realtime transcription requires Pipecat 1.5.0.")
+            turn_detection_cls = getattr(SpeechmaticsSTTService, "TurnDetectionMode", None)
+            if settings_cls is None or turn_detection_cls is None:
+                raise RuntimeError("Speechmatics realtime transcription requires Pipecat 1.14.0.")
             bound_model = self._require_realtime_pcm_request_contract(
                 provider="speechmatics",
-                default_model="enhanced",
+                default_model="linden-1",
             )
-            operating_point_cls = getattr(
-                SpeechmaticsSTTService,
-                "OperatingPoint",
-                getattr(module, "OperatingPoint", None),
-            )
-            if operating_point_cls is None:
-                raise RuntimeError("Speechmatics Pipecat service cannot bind the frozen model.")
-            try:
-                operating_point = operating_point_cls(bound_model)
-            except (TypeError, ValueError) as exc:
-                raise RuntimeError("Speechmatics Pipecat service cannot bind the frozen model.") from exc
             speechmatics_terms = build_keyterms_from_vocab(self._execution_custom_vocab())
             additional_vocab_cls = getattr(
                 SpeechmaticsSTTService,
@@ -3752,25 +3744,31 @@ class ScriberPipeline:
                 else []
             )
             bound_language = self._execution_pipecat_language() or Language.EN
+            diarize = bool(self.enable_speaker_diarization if for_file else False)
             settings_values = {
                 "model": bound_model,
                 "language": bound_language,
                 "additional_vocab": additional_vocab,
-                "operating_point": operating_point,
-                "enable_diarization": (self.enable_speaker_diarization if for_file else False),
-                "speaker_active_format": "[Speaker {speaker_id}]: {text}",
-                "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
+                # Agent STT closes turns itself at pauses. Scriber attaches no local
+                # VAD to native streams, so EXTERNAL turns would never finalize.
+                "turn_detection_mode": turn_detection_cls.VAD,
+                "enable_diarization": diarize,
+                # Pipecat 1.14 formats every final with this template, even
+                # without diarization; plain dictation must stay plain text.
+                "speaker_active_format": ("[Speaker {speaker_id}]: {text}" if diarize else "{text}"),
             }
             settings_kwargs = _filter_supported_kwargs(
                 settings_cls,
                 settings_values,
             )
-            if settings_kwargs.get("model") != bound_model or settings_kwargs.get("operating_point") != operating_point:
+            if settings_kwargs.get("model") != bound_model:
                 raise RuntimeError("Speechmatics Pipecat settings cannot bind the frozen model.")
             if settings_kwargs.get("language") != bound_language:
                 raise RuntimeError("Speechmatics Pipecat settings cannot bind the frozen language.")
             if speechmatics_terms and (settings_kwargs.get("additional_vocab") != additional_vocab):
                 raise RuntimeError("Speechmatics Pipecat settings cannot bind the frozen vocabulary.")
+            if settings_kwargs.get("turn_detection_mode") != turn_detection_cls.VAD:
+                raise RuntimeError("Speechmatics Pipecat settings cannot bind provider turn detection.")
             settings = settings_cls(**settings_kwargs)
             speechmatics_base_url = self._bind_execution_provider_endpoint(
                 speechmatics_realtime_base_url(

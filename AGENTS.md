@@ -558,11 +558,6 @@ Packaging and scripts:
   `RMDir` statements. Final acceptance compares a real v0.5.47 overlay
   byte-for-byte with a clean CP314 install and preserves user data through
   strict uninstall.
-- `packaging/nltk-punkt-tab-lock-v1.json` and
-  `scripts/prepare_nltk_punkt_data.py`: locked source for the English/German
-  Punkt build data. A clean frozen-runtime miss must prepare it below the build
-  work root and expose `NLTK_DATA` only to the source import probe and
-  PyInstaller child; never rely on a developer's roaming NLTK cache.
 - `packaging/quickjs-youtube-runtime-lock-v1.json`,
   `native/scriber-quickjs-wrapper/`, and
   `scripts/build_quickjs_youtube_runtime.py`: byte-locked QuickJS-ng engine,
@@ -1485,16 +1480,19 @@ Packaging and scripts:
   job retry is disabled so billable work is not replayed. A durable recovered
   provider StageResult remains the only safe way to continue without a second
   provider call.
-- Standard backend builds pin `pipecat-ai[silero]==1.5.0`. It caps Pillow
-  below 13, so Pillow's 13.0.0-only advisory fixes wait for a deliberate
-  Pipecat upgrade (Scriber decodes no untrusted images); see
-  `docs/ROADMAP_AND_KNOWN_ISSUES.md`. Regenerate both constraint files with a
-  Windows/CPython 3.14.7 resolution and keep them identical apart from their
-  headers. Provider factories
-  must use the Pipecat 1.5 `Settings` API; do not restore deprecated
-  `InputParams`, `LiveOptions`, or pre-1.5 fallback paths. Synthetic VAD turn
+- Standard backend builds pin `pipecat-ai[silero]==1.14.0`. Regenerate both
+  constraint files with a Windows/CPython 3.14.7 resolution and keep them
+  identical apart from their headers. Pipecat 1.8+ connects services inside
+  `setup()` and holds frames until `StartFrame`; tests that drive a real
+  service connection must patch the connector before `setup()` or drive
+  `_connect_websocket()` directly so no provider traffic leaves the test.
+  Provider factories
+  must use the Pipecat `Settings` API; do not restore deprecated
+  `InputParams`, `LiveOptions`, or pre-1.5 fallback paths. Overrides of
+  `push_error` must forward Pipecat 1.14's `category` and
+  `force_treat_as_permanent` keywords. Synthetic VAD turn
   boundaries must use `VADUserStartedSpeakingFrame` and
-  `VADUserStoppedSpeakingFrame`, which are the frames consumed by Pipecat 1.5
+  `VADUserStoppedSpeakingFrame`, which are the frames consumed by Pipecat
   streaming and segmented STT services. The frozen runtime import gate must
   reject a sidecar containing any other Pipecat version. Every direct
   `pipecat.*` import under `src` must also appear as that exact module in the
@@ -1509,9 +1507,9 @@ Packaging and scripts:
   active boundaries on `CancelFrame`, including later cleanup flushes;
   `EndFrame` and `StopFrame` retain their normal finalization behavior.
 - Do not add Pipecat's `local-smart-turn` extra to the standard sidecar: in
-  Pipecat 1.5 it pulls Torch, Torchaudio, and Transformers. SmartTurn remains
+  Pipecat 1.14 it pulls Torch, Torchaudio, and Transformers. SmartTurn remains
   optional; import `LocalSmartTurnAnalyzerV3` directly and do not couple it to
-  the removed `pipecat.processors.user_idle_processor` module. Pipecat 1.5
+  the removed `pipecat.processors.user_idle_processor` module. Pipecat
   `TransportParams` does not own VAD or turn analyzers: eligible segmented and
   async live pipelines must wire an explicit `VADProcessor`. Native realtime
   providers, including Soniox, do not attach local SmartTurn. Analyzer instances
@@ -1543,10 +1541,12 @@ Packaging and scripts:
   fallback when bundled ffmpeg cannot produce WebM, not an API-rejection retry.
 - Soniox realtime authenticates every WebSocket upgrade (including reconnects)
   with `Authorization: Bearer`; start messages must not contain `api_key`.
-  `src/soniox_realtime.py` adapts pinned Pipecat 1.5 connection setup and
+  `src/soniox_realtime.py` adapts pinned Pipecat 1.14 connection setup and
   error frames (including authentication errors without tokens);
   preserve its inherited parser and lifecycle and the `SonioxSTTService` name
-  used by manual-stop/cleanup. Keep transport wire logging disabled so DEBUG
+  used by manual-stop/cleanup. It opens the socket through Pipecat's
+  `_websocket_connect` so the two-second closing handshake and bounded sends
+  apply. Keep transport wire logging disabled so DEBUG
   cannot expose credentials. The shared transport boundary strips raw exception
   and close-reason text while retaining normal/error closure classes and codes.
   Installed replay enforces the same handshake.
@@ -1792,14 +1792,15 @@ Packaging and scripts:
   `gpt-realtime-whisper`, while `openai_async` uses the direct OpenAI Audio
   Transcriptions HTTP adapter with `gpt-4o-mini-transcribe-2025-12-15`. Keep
   the explicit `openai` SDK and `websockets` dependencies for these paths.
-  Groq STT uses Pipecat's `groq` SDK dependency, and Pipecat provider imports
-  require `nltk` at runtime. The frozen `punkt_tab` data keeps only the complete
-  English and German models. Pipecat 1.5's sentence-boundary utility calls
-  `sent_tokenize(text)` without a language argument, so provider support for
-  Spanish, French, Italian, Portuguese, Dutch, or auto-detected speech must not
-  be conflated with a requirement to bundle those unused Punkt models. Frozen
-  gates must explicitly load English and German from the bundle, reject any
-  third language directory, and forbid NLTK download fallback. Gladia live
+  Groq STT uses Pipecat's `groq` SDK dependency. Pipecat 1.12+ segments
+  sentences with the embedded `sentencex` rules and measures loudness with the
+  NumPy-only `loudness` package, so the frozen backend bundles neither NLTK,
+  Punkt data, SciPy, nor a local `pyloudnorm`; the frozen gate runs Pipecat's
+  sentence probes and fails if NLTK is loaded. Speechmatics live uses
+  Pipecat's Agent STT service (`/v2/agent`, model `linden-1`) with
+  server-side turn detection, because Scriber attaches no local VAD to native
+  streams; the Pipecat 1.14 speaker template applies to every final, so only
+  diarized files use speaker labels. Gladia live
   transcription uses
   Pipecat's Gladia service; Gladia file and YouTube transcription use the
   direct pre-recorded HTTP upload/polling API and should not be routed through
@@ -1817,7 +1818,7 @@ Packaging and scripts:
   `onnx-asr[cpu,hub]` in the standard sidecar for the ONNX local-ASR path.
   NeMo/Torch is not exposed as a local provider in Settings.
   Local ONNX file transcription uses the buffered Pipecat service with bounded
-  30-second flush chunks. Pipecat 1.5 no longer carries the legacy transport
+  30-second flush chunks. Pipecat no longer carries the legacy transport
   `vad_analyzer` parameter, so file transcription must not depend on transport
   VAD frames to trigger ONNX recognition. Long files must flush completed
   chunks instead of dropping earlier PCM at the live-recording buffer limit.
@@ -2266,7 +2267,8 @@ Already implemented and should not be regressed:
   allowlist and the exclusions for unused Deepgram surfaces, OpenAI SDK
   Realtime/Conversations/Webhooks implementation modules, and synchronous grpc
   helpers. The frozen gate must initialize every supported provider path, reject
-  representative pruned imports, and load both English and German Punkt data.
+  representative pruned imports, and exercise Pipecat's sentencex
+  segmentation without NLTK.
 - The Windows frozen backend uses the validated
   `numpy-2.4.6+scriber.noblas.1` wheel through a work-root-local,
   PyInstaller-child-only overlay. Keep wheel/lock/validator in both the internal

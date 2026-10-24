@@ -759,20 +759,22 @@ scripts\project-python.cmd scripts\smoke_diarization_worker_resource.py `
 ```
 - `requirements-base.txt` pins the Pipecat/provider SDK combination used by the
   frozen backend runtime import gate. Pipecat, Deepgram, Speechmatics RT, and
-  `speechmatics-voice` must move together: unpinned Pipecat or provider SDK
-  drift can break fresh CI runners, while `pipecat-ai[speechmatics]` would pull
-  `transformers`/HuggingFace into the standard installer.
+  `speechmatics-agent-stt` must move together: unpinned Pipecat or provider SDK
+  drift can break fresh CI runners. Pipecat 1.10+ reaches Speechmatics live
+  only through Agent STT (`/v2/agent`, `linden-1`); the legacy realtime
+  endpoint and `speechmatics-voice` are no longer used.
 - The frozen runtime import gate also covers the AssemblyAI realtime Pipecat
   module and `onnx_asr`. This protects the installed AssemblyAI Universal-3.5
   realtime path and the bundled ONNX local-ASR path. The exact-module AST gate
   additionally requires every direct `pipecat.*` import under `src` to be in the
-  frozen contract; revision 5 replaces Pipecat's deprecated task/runner aliases
+  frozen contract; revision 9 moves to Pipecat 1.14 (`loudness`, `sentencex`,
+  `pipecat.utils.types`, no local `pyloudnorm`); revision 5 replaced Pipecat's deprecated task/runner aliases
   with the canonical `pipecat.pipeline.worker` and `pipecat.workers.runner`
   modules and includes the `audioop-lts` PCM RMS runtime, while preserving the
   revision-4 bounded installer-research YouTube holdout probe and revision-3
   `pipecat.transports.base_input` boundary.
 - Provider tests for custom Pipecat services must run with deprecation warnings
-  promoted to errors and assert complete Pipecat 1.5 `STTSettings`. Lifecycle
+  promoted to errors and assert complete Pipecat `STTSettings`. Lifecycle
   coverage also verifies that only the expected Windows Proactor WinError 10054
   cleanup callback is suppressed and unrelated loop errors are forwarded.
 - Live-mic post-processing coverage should include prompt-template tests,
@@ -926,14 +928,10 @@ tree directly; `backend\_internal\numpy.libs`, public
 `numpy-2.4.6.dist-info`, and every `*openblas*` file must be absent, while
 `numpy-2.4.6+scriber.noblas.1.dist-info` and its licenses must be present.
 
-A clean runtime-cache miss also prepares Punkt from
-`packaging/nltk-punkt-tab-lock-v1.json`. The preparer verifies the downloaded
-archive's exact length/SHA-256, validates every ZIP path, and extracts only the
-locked English/German files into the build work root. `NLTK_DATA` is scoped to
-the source import probe and PyInstaller child and restored afterward. If a CI
-build reports `LookupError` for `pipecat.utils.string.match_endofsentence`,
-check the `nltk-punkt-data` phase and archive identity first; do not rely on or
-copy a developer's `%APPDATA%\nltk_data` cache.
+Since Pipecat 1.12 sentence segmentation uses the `sentencex` rules embedded
+in its wheel, so a runtime-cache miss no longer prepares NLTK Punkt data. If a
+CI build reports a failure for `pipecat.utils.string.match_endofsentence`, the
+frozen bundle either lacks the `sentencex` extension or loaded NLTK.
 
 SmartTurn equivalence is stricter than a smoke test. Compare all `64,000`
 float32 feature values, final probability, and boolean prediction against a
@@ -1126,7 +1124,7 @@ parser through a local one-shot raw transport. Before activation that lane
 prepares bounded decode references from the exact PCM fixture; the measured
 transport then uses bundled ffmpeg to decode the actual MP3 upload and rejects
 corruption, content/duration mismatch, a non-zero or overlong tail, and any
-URL/API/model/locale/definition or credential-sentinel drift. Soniox traverses Pipecat 1.5's
+URL/API/model/locale/definition or credential-sentinel drift. Soniox traverses Pipecat 1.14's
 real `stt-rt-v5` WebSocket parser through a loopback server. Speechmatics
 traverses the real `speechmatics_async` Batch-v2 adapter and JSON-v2 parser;
 its local one-shot raw transport fully consumes and validates the uploaded WAV

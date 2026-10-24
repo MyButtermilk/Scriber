@@ -929,7 +929,7 @@ def test_transcription_provider_models_expose_effective_provider_names(monkeypat
     assert models["openai"] == "realtime-custom"
     assert models["google"] == "latest_long"
     assert models["groq"] == "whisper-large-v3-turbo"
-    assert models["speechmatics"] == "enhanced"
+    assert models["speechmatics"] == "linden-1"
     assert models["gladia-async"] == "provider default (Gladia Pre-recorded API v2)"
 
 
