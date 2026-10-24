@@ -706,6 +706,7 @@ export interface BackendStateResponse {
   recordingState: string;
   transcribing: boolean;
   micStartPending?: boolean;
+  nativeCleanupPending?: boolean;
 }
 
 export interface LiveMicStopRequestResponse {

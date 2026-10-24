@@ -189,6 +189,7 @@ class RustAudioPrewarmManager:
         self._temporary_idle_prewarm = False
         self._paused_for_active_capture = False
         self._paused_for_device_refresh = False
+        self._device_refresh_generation = 0
         self._active_capture_attached = False
         self._pending_adoption_prewarm_id = ""
         self._last_error = ""
@@ -798,7 +799,8 @@ class RustAudioPrewarmManager:
             if not Config.MIC_ALWAYS_ON and not self._temporary_idle_prewarm:
                 return None
             if (
-                self._paused_for_device_refresh
+                self._paused_for_active_capture
+                or self._paused_for_device_refresh
                 or self._route_restart_in_progress
                 or self._pending_stop_prewarm_id
                 or self._active_capture_attached
@@ -891,7 +893,8 @@ class RustAudioPrewarmManager:
             if not Config.MIC_ALWAYS_ON and not self._temporary_idle_prewarm:
                 return None
             if (
-                self._paused_for_device_refresh
+                self._paused_for_active_capture
+                or self._paused_for_device_refresh
                 or self._route_restart_in_progress
                 or self._pending_stop_prewarm_id
                 or self._active_capture_attached
@@ -970,6 +973,11 @@ class RustAudioPrewarmManager:
 
     def pause_for_active_capture(self) -> None:
         with self._lock:
+            # Settings can request another pause after native capture adopted
+            # the idle producer but before its first live frame commits it.
+            # Only that capture may finish or roll back the handoff.
+            if self._active_capture_attached:
+                return
             self._paused_for_active_capture = True
             self._active_capture_attached = False
             self._pending_adoption_prewarm_id = ""
@@ -1013,10 +1021,13 @@ class RustAudioPrewarmManager:
             # intact; the capture owner performs the eventual idle resume.
             if self._active_capture_attached:
                 return
+            self._device_refresh_generation += 1
             # A deferred PortAudio refresh can quiesce again before its
             # successful retry resumes us. The first stop clears the native
             # lease, but must not erase that outstanding resume obligation.
-            if (self._prewarm_id or self._pending_stop_prewarm_id) and not self._paused_for_device_refresh:
+            if (
+                self._prewarm_id or self._pending_stop_prewarm_id or self._start_in_progress
+            ) and not self._paused_for_device_refresh:
                 self._paused_for_device_refresh = True
                 self._device_refresh_pause_count += 1
                 self._record_transition_locked("device_refresh_pause", "device_refresh")
@@ -1026,14 +1037,25 @@ class RustAudioPrewarmManager:
     def resume_after_device_refresh(self) -> bool:
         with self._lock:
             should_resume = self._paused_for_device_refresh
-            self._paused_for_device_refresh = False
+            generation = self._start_generation
+            refresh_generation = self._device_refresh_generation
         if not should_resume:
             return False
+        # A refresh may invalidate a start before its native ID is known.
+        # Join that start's cleanup before replacing it, without waiting
+        # indefinitely on the device-monitor thread. On timeout the watchdog
+        # can recover once cleanup settles; do not retain a permanent pause.
+        settled = self._start_settled.wait(timeout=3.0)
         with self._lock:
+            if self._device_refresh_generation != refresh_generation or not self._paused_for_device_refresh:
+                return False
+            self._paused_for_device_refresh = False
             self._device_refresh_resume_count += 1
             self._record_transition_locked("device_refresh_resume", "device_refresh")
             self._record_event_locked("device_refresh_resume", "device_refresh")
-        return self.start_if_enabled()
+        if not settled or not Config.MIC_ALWAYS_ON:
+            return False
+        return self.start(expected_generation=generation)
 
     def restart_for_route_change(self) -> bool:
         """Settle an old idle start before publishing the changed Settings route.
@@ -1349,6 +1371,13 @@ class RustAudioPrewarmManager:
 
     def stop(self, *, reason: str = "stop") -> None:
         with self._lock:
+            # Disabling idle prewarm must not stop an already attached capture.
+            # Its pending adoption still needs to commit (or roll back) even
+            # when Always-on is toggled off during native startup.
+            if self._active_capture_attached and (
+                reason in {"disabled", "settings_disabled"} or reason.endswith(":disabled")
+            ):
+                return
             self._start_generation += 1
             if reason != "settings_route_changed":
                 self._route_restart_cancel_generation += 1

@@ -66,6 +66,9 @@ afterEach(() => {
   history.length = 0;
   vi.unstubAllGlobals();
 });
+beforeEach(() => {
+  vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("No state snapshot configured")));
+});
 
 type WsPayload<T> = T extends unknown ? Omit<T, "apiVersion"> : never;
 
@@ -135,6 +138,28 @@ describe("Live Mic consecutive recordings", () => {
     await screen.findByRole("button", { name: "Start next recording" });
   });
 
+  it("retries an unconfirmed microphone stop before offering a new recording", async () => {
+    mount();
+    state({
+      sessionId: null,
+      listening: false,
+      recordingState: "failed",
+      status: "Error",
+      nativeCleanupPending: true,
+      current: { content: "Saved words" },
+    });
+    send({ type: "status", listening: false, recordingState: "failed", status: "Error" });
+    send({ type: "session_finished", session: { content: "Saved words" } });
+    const retryStop = screen.getByRole("button", { name: "Stop recording" });
+    expect(retryStop).toBeEnabled();
+    fireEvent.click(retryStop);
+    await waitFor(() => expect(stop).toHaveBeenCalledOnce());
+    expect(start).not.toHaveBeenCalled();
+    state({ sessionId: null, recordingState: "idle", nativeCleanupPending: false, current: null });
+    expect(await screen.findByRole("button", { name: "Start recording" })).toBeEnabled();
+    expect(screen.getByTestId("live-mic-transcript-output")).toHaveTextContent("Saved words");
+  });
+
   it("keeps a new capture and its text when the previous session emits late events", async () => {
     mount();
     state({ micStartPending: true });
@@ -157,6 +182,107 @@ describe("Live Mic consecutive recordings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Stop recording" }));
     await waitFor(() => expect(stop).toHaveBeenCalledOnce());
   });
+
+  it("restores the running recording when returning to Live Mic without a new WebSocket event", async () => {
+    const firstVisit = mount();
+    state({ sessionId: "running", listening: true, recordingState: "recording", status: "Listening" });
+    firstVisit.unmount();
+    vi.mocked(fetch).mockResolvedValueOnce(
+      Response.json({
+        sessionId: "running",
+        listening: true,
+        recordingState: "recording",
+        status: "Listening",
+        current: { content: "Already dictated" },
+      }),
+    );
+
+    mount();
+    const stopButton = await screen.findByRole("button", { name: "Stop recording" });
+    expect(screen.getByTestId("live-mic-transcript-output")).toHaveTextContent("Already dictated");
+    fireEvent.click(stopButton);
+    await waitFor(() => expect(stop).toHaveBeenCalledOnce());
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("clears old dictation when a reconnect snapshot identifies an empty new recording", () => {
+    mount();
+    state({ sessionId: "old", current: { content: "Old dictation" } });
+    state({ sessionId: null, recordingState: "idle", current: null });
+    expect(screen.getByTestId("live-mic-transcript-output")).toHaveTextContent("Old dictation");
+    state({
+      sessionId: "new",
+      listening: true,
+      recordingState: "recording",
+      status: "Listening",
+      current: { content: "" },
+    });
+    expect(screen.getByRole("button", { name: "Stop recording" })).toBeEnabled();
+    expect(screen.getByTestId("live-mic-transcript-output")).not.toHaveTextContent("Old dictation");
+  });
+
+  it("ignores a late navigation snapshot after a new recording starts", async () => {
+    let resolveSnapshot!: (response: Response) => void;
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise<Response>((resolve) => (resolveSnapshot = resolve)));
+    mount();
+    send({ type: "session_started", sessionId: "new", session: {} });
+    send({ type: "status", sessionId: "new", listening: true, recordingState: "recording", status: "Listening" });
+    send({ type: "transcript", sessionId: "new", text: "New dictation", isFinal: true });
+    await act(async () => {
+      resolveSnapshot(
+        Response.json({
+          sessionId: "old",
+          listening: false,
+          recordingState: "idle",
+          current: { content: "Old dictation" },
+        }),
+      );
+    });
+    expect(screen.getByRole("button", { name: "Stop recording" })).toBeEnabled();
+    expect(screen.getByTestId("live-mic-transcript-output")).toHaveTextContent("New dictation");
+    expect(screen.getByTestId("live-mic-transcript-output")).not.toHaveTextContent("Old dictation");
+  });
+
+  it.each(["running", "old-finalizer"])(
+    "hydrates capture state while %s transcript events arrive during the read",
+    async (transcriptSession) => {
+      let resolveSnapshot!: (response: Response) => void;
+      vi.mocked(fetch).mockImplementationOnce(() => new Promise<Response>((resolve) => (resolveSnapshot = resolve)));
+      mount();
+      send({
+        type: "transcript",
+        sessionId: transcriptSession,
+        text: "New final",
+        content: "New final",
+        isFinal: true,
+      });
+      send({ type: "transcript", sessionId: transcriptSession, text: "New interim", isFinal: false });
+      if (transcriptSession === "old-finalizer") {
+        send({ type: "session_finished", sessionId: transcriptSession, session: { content: "Old dictation" } });
+      }
+      await act(async () => {
+        resolveSnapshot(
+          Response.json({
+            sessionId: "running",
+            listening: true,
+            recordingState: "recording",
+            current: { content: "Snapshot text" },
+          }),
+        );
+      });
+      expect(screen.getByRole("button", { name: "Stop recording" })).toBeEnabled();
+      const output = screen.getByTestId("live-mic-transcript-output");
+      if (transcriptSession === "running") {
+        expect(output).toHaveTextContent("New final New interim");
+        expect(output).not.toHaveTextContent("Snapshot text");
+      } else {
+        expect(output).toHaveTextContent("Snapshot text");
+        expect(output).not.toHaveTextContent("New final");
+        expect(output).not.toHaveTextContent("New interim");
+        expect(output).not.toHaveTextContent("Old dictation");
+      }
+    },
+  );
 });
 
 describe("Live Mic render isolation", () => {

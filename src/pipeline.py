@@ -1907,6 +1907,7 @@ class ScriberPipeline:
         self.on_capture_stopped = on_capture_stopped
         self._capture_stopped_notified = False
         self._capture_stop_drained = False
+        self._capture_stop_failed = False
         self._silence_stop_observer: MicSilenceStopObserver | None = None
         self.on_transcription = on_transcription
         self.on_text_injected = on_text_injected
@@ -2513,7 +2514,7 @@ class ScriberPipeline:
     def _requires_provider_ingress_audio_drain(self) -> bool:
         return str(self.service_name or "").strip().lower() in _PROVIDER_INGRESS_DRAIN_SERVICES
 
-    async def _abort_after_provider_ingress_drain_failure(self) -> None:
+    async def _abort_before_provider_finalization(self, *, reason: str) -> None:
         """Cancel without allowing a buffered provider to upload partial PCM."""
 
         self._mark_provider_terminal_transcription_skip()
@@ -2522,7 +2523,7 @@ class ScriberPipeline:
         if task is not None and not task.has_finished():
             try:
                 try:
-                    cancellation = task.cancel(reason="provider ingress audio drain failed")
+                    cancellation = task.cancel(reason=reason)
                 except TypeError:
                     cancellation = task.cancel()
                 if inspect.isawaitable(cancellation):
@@ -2531,10 +2532,10 @@ class ScriberPipeline:
                         timeout=_PROVIDER_INGRESS_ABORT_TIMEOUT_SECONDS,
                     )
             except TimeoutError:
-                logger.debug("Timed out cancelling pipeline after provider ingress drain failure")
+                logger.debug("Timed out cancelling pipeline after audio drain failure")
             except Exception as exc:
                 logger.debug(
-                    "Pipeline cancel after provider ingress drain failure warning: {}",
+                    "Pipeline cancel after audio drain failure warning: {}",
                     exc,
                 )
 
@@ -2549,10 +2550,10 @@ class ScriberPipeline:
                         timeout=_PROVIDER_INGRESS_ABORT_TIMEOUT_SECONDS,
                     )
             except TimeoutError:
-                logger.debug("Timed out cancelling runner after provider ingress drain failure")
+                logger.debug("Timed out cancelling runner after audio drain failure")
             except Exception as exc:
                 logger.debug(
-                    "Runner cancel after provider ingress drain failure warning: {}",
+                    "Runner cancel after audio drain failure warning: {}",
                     exc,
                 )
 
@@ -2603,8 +2604,26 @@ class ScriberPipeline:
 
         logger.error(reason)
         self._record_terminal_error(reason)
-        await self._abort_after_provider_ingress_drain_failure()
+        await self._abort_before_provider_finalization(reason="provider ingress audio drain failed")
         raise RuntimeError(reason)
+
+    def _record_capture_stop_failure(self, error: Exception) -> None:
+        self._capture_stop_failed = True
+        self._record_terminal_error("Microphone audio capture did not finish cleanly.")
+        self._last_error_diagnostics.update(exception_diagnostics(error))
+
+    async def _abort_if_capture_stop_failed(self) -> None:
+        if not self._capture_stop_failed:
+            return
+        # Native release and complete audio delivery are separate outcomes.
+        # Even a reaped producer must not turn truncated PCM into a successful
+        # transcript; an unconfirmed producer remains available for stop retry.
+        await self._abort_before_provider_finalization(reason="microphone capture did not drain")
+        await self._cleanup_audio_input()
+        self.is_active = False
+        if self.on_status_change:
+            self.on_status_change("Error")
+        raise RuntimeError(self._terminal_error)
 
     @staticmethod
     def _read_native_audio_stop_confirmation(
@@ -2692,12 +2711,15 @@ class ScriberPipeline:
                 stop_call_completed = True
                 self._capture_stop_drained = True
             except Exception as exc:
+                self._record_capture_stop_failure(exc)
                 logger.debug(f"Audio input cleanup warning: {exc}")
             finally:
                 self._native_audio_stop_confirmation = self._read_native_audio_stop_confirmation(
                     audio_input,
                     stop_call_completed=stop_call_completed,
                 )
+                if self._native_audio_stop_confirmation is not True:
+                    self._record_capture_stop_failure(RuntimeError("microphoneNativeStopUnconfirmed"))
                 capture_snapshot = getattr(
                     audio_input,
                     "provider_replay_capture_attestation",
@@ -2710,10 +2732,11 @@ class ScriberPipeline:
                         self._provider_replay_capture_attestation = None
                 if self._terminal_error:
                     self.last_error_diagnostics()
-                self.audio_input = None
+                if self._native_audio_stop_confirmation is True:
+                    self.audio_input = None
                 self._mic_prewarm_handoff_prepared = False
                 self._mic_prewarm_handoff_resumed = False
-        if resume_prewarm and not prewarm_resumed_before_stop:
+        if resume_prewarm and not prewarm_resumed_before_stop and self._native_audio_stop_confirmation is True:
             try:
                 await asyncio.to_thread(self.mic_prewarm_manager.resume_after_active_capture)
             except Exception as exc:
@@ -2751,12 +2774,15 @@ class ScriberPipeline:
                         await stop_capture(close_stream=True)
                         stop_call_completed = True
                     except Exception as exc:
+                        self._record_capture_stop_failure(exc)
                         logger.debug(f"Segmented STT capture-stop warning: {exc}")
                     finally:
                         self._native_audio_stop_confirmation = self._read_native_audio_stop_confirmation(
                             audio_input,
                             stop_call_completed=stop_call_completed,
                         )
+                        if self._native_audio_stop_confirmation is not True:
+                            self._record_capture_stop_failure(RuntimeError("microphoneNativeStopUnconfirmed"))
                 queue_drain_completed = False
                 try:
                     audio_queue = getattr(audio_input, "_audio_in_queue", None)
@@ -2764,8 +2790,10 @@ class ScriberPipeline:
                         await asyncio.wait_for(audio_queue.join(), timeout=1.0)
                     queue_drain_completed = True
                 except TimeoutError:
+                    self._record_capture_stop_failure(RuntimeError("microphoneDownstreamDrainTimeout"))
                     logger.debug("Timed out waiting for segmented STT audio queue to drain")
                 except Exception as exc:
+                    self._record_capture_stop_failure(exc)
                     logger.debug(f"Segmented STT audio queue drain warning: {exc}")
                 if stop_call_completed and queue_drain_completed:
                     self._capture_stop_drained = True
@@ -3879,6 +3907,7 @@ class ScriberPipeline:
         self._silence_stop_observer = None
         self._capture_stopped_notified = False
         self._capture_stop_drained = False
+        self._capture_stop_failed = False
         self._provider_ingress_drain_processor = None
         self._final_transcription_received.clear()
         self._start_done.clear()
@@ -4146,6 +4175,12 @@ class ScriberPipeline:
                     include_smart_turn=uses_smart_turn,
                 )
             self._start_done.set()
+
+        # A runner may finish without stop() owning its teardown. Preserve a
+        # failed capture drain as the task's result so the controller cannot
+        # classify that completion as a successful recording.
+        if self._capture_stop_failed:
+            raise RuntimeError(self._terminal_error)
 
     async def _cleanup_aborted_file_pipeline(
         self,
@@ -5273,6 +5308,7 @@ class ScriberPipeline:
         if requires_pre_endframe_finalization:
             final_generation_before_commit = self._final_transcription_generation
             await self._stop_audio_capture_for_segmented_finalization()
+            await self._abort_if_capture_stop_failed()
             await self._await_provider_ingress_audio_drain(provider_ingress_audio_input)
             await self._notify_capture_stopped()
             boundary_flushed = await self._flush_segmented_stt_buffers()
@@ -5289,6 +5325,7 @@ class ScriberPipeline:
             # the replacement WASAPI client first, so the Windows privacy light
             # remains continuous while transcription finalizes.
             await self._cleanup_audio_input()
+            await self._abort_if_capture_stop_failed()
             await self._await_provider_ingress_audio_drain(provider_ingress_audio_input)
             await self._notify_capture_stopped()
             boundary_flushed = await self._flush_live_vad_finalization_turn()

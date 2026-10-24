@@ -668,7 +668,6 @@ def test_rust_audio_prewarm_start_if_enabled_stops_disabled_paused_session(monke
         manager._prewarm_payload = {"prewarmId": "prewarm-disabled"}
         manager._stream_signature = {"sample_rate": 16000}
         manager._paused_for_active_capture = True
-        manager._active_capture_attached = True
 
     assert manager.start_if_enabled() is False
     assert manager.is_active is False
@@ -680,6 +679,47 @@ def test_rust_audio_prewarm_start_if_enabled_stops_disabled_paused_session(monke
     assert snapshot["lastStopReason"] == "disabled"
     assert snapshot["lastStopSuccess"] is True
     assert "prewarm-disabled" not in str(snapshot)
+
+
+@pytest.mark.parametrize("settings_action", ["pause", "disable"])
+def test_settings_preserves_adopted_capture_until_first_live_frame(monkeypatch, settings_action):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default")
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "")
+    monkeypatch.setattr(Config, "MIC_BLOCK_SIZE", 160)
+    commands = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        if command == "audioPrewarmStart":
+            return {"success": True, "payload": {"prewarmId": f"producer-{commands.count(command)}"}}
+        assert command == "audioPrewarmStop"
+        # The native capture already owns this producer. It cannot acknowledge
+        # an idle prewarm stop while Python awaits its first live frame.
+        return {"success": True, "payload": {"stopped": False, "reason": "noActivePrewarm"}}
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    assert manager.start_if_enabled() is True
+    adopted = manager.attach_active_capture(sample_rate=16000, target_channels=1, block_size=160, device="default")
+    assert adopted is not None
+
+    if settings_action == "disable":
+        monkeypatch.setattr(Config, "MIC_ALWAYS_ON", False)
+        manager.stop(reason="settings_disabled")
+        assert manager.start_if_enabled() is False
+        assert manager.ensure_healthy(reason="watchdog") is False
+    else:
+        manager.pause_for_active_capture()
+    assert commands == ["audioPrewarmStart"]
+    assert manager.commit_active_capture(adopted["prewarmId"]) is True
+
+    # Finishing that capture and enabling idle prewarm must remain possible;
+    # an unknown stop for its consumed ID must not poison every later start.
+    manager.detach_active_capture()
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True)
+    assert manager.resume_after_active_capture() is True
+    assert commands == ["audioPrewarmStart", "audioPrewarmStart"]
+    assert manager.leased_capture_device_preference(sample_rate=16000, target_channels=1, block_size=160) == "default"
 
 
 def test_rust_audio_prewarm_discards_late_start_after_disable(monkeypatch):
@@ -1516,6 +1556,8 @@ def test_rust_audio_prewarm_manager_pause_stops_sidecar_session(monkeypatch):
     monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)
     monkeypatch.setattr(Config, "CHANNELS", 1, raising=False)
     monkeypatch.setattr(Config, "MIC_BLOCK_SIZE", 160, raising=False)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default")
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "")
     commands: list[tuple[str, dict]] = []
 
     def shell_call(command, payload=None, **_kwargs):
@@ -1544,6 +1586,19 @@ def test_rust_audio_prewarm_manager_pause_stops_sidecar_session(monkeypatch):
         },
     )
 
+    original_stop = manager.stop
+
+    def stop_after_competing_hotkey(*, reason):
+        # Pause reserves capture ownership before its native stop RPC begins.
+        # A hotkey in that interval must not adopt the retiring producer.
+        assert manager.leased_capture_device_preference(sample_rate=16000, target_channels=1, block_size=160) is None
+        assert (
+            manager.attach_active_capture(sample_rate=16000, target_channels=1, block_size=160, device="default")
+            is None
+        )
+        original_stop(reason=reason)
+
+    monkeypatch.setattr(manager, "stop", stop_after_competing_hotkey)
     assert manager.start_if_enabled() is True
     manager.pause_for_active_capture()
 
@@ -1607,6 +1662,84 @@ def test_deferred_device_refresh_retry_preserves_prewarm_resume(monkeypatch):
     ]
     assert manager.diagnostic_snapshot()["deviceRefreshPauseCount"] == 1
     assert manager.diagnostic_snapshot()["deviceRefreshResumeCount"] == 1
+
+
+@pytest.mark.parametrize("interruption", [None, "capture", "shutdown", "refresh", "timeout"])
+def test_device_refresh_settles_inflight_start_before_resuming(monkeypatch, interruption):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True)
+    monkeypatch.setattr(Config, "MIC_DEVICE", "default")
+    monkeypatch.setattr(Config, "FAVORITE_MIC", "")
+    entered_start = threading.Event()
+    finish_start = threading.Event()
+    entered_resume = threading.Event()
+    commands = []
+
+    def shell_call(command, payload=None, **_kwargs):
+        commands.append(command)
+        if command == "audioPrewarmStart":
+            if commands.count(command) == 1:
+                entered_start.set()
+                assert finish_start.wait(timeout=5)
+            return {"success": True, "payload": {"prewarmId": f"producer-{commands.count(command)}"}}
+        assert command == "audioPrewarmStop"
+        assert payload["prewarmId"] == "producer-1"
+        return {"success": True, "payload": {"stopped": True}}
+
+    manager = RustAudioPrewarmManager(shell_call=shell_call)
+    original_wait = manager._start_settled.wait
+
+    def observed_wait(*, timeout):
+        entered_resume.set()
+        return False if interruption == "timeout" else original_wait(timeout=timeout)
+
+    monkeypatch.setattr(manager._start_settled, "wait", observed_wait)
+    started = []
+    resumed = []
+    starter = threading.Thread(target=lambda: started.append(manager.start_if_enabled()))
+    resumer = threading.Thread(target=lambda: resumed.append(manager.resume_after_device_refresh()))
+    starter.start()
+    try:
+        assert entered_start.wait(timeout=2)
+        manager.quiesce_for_device_refresh()
+        manager.quiesce_for_device_refresh()
+        resumer.start()
+        assert entered_resume.wait(timeout=2)
+        assert commands == ["audioPrewarmStart"]
+        if interruption == "capture":
+            manager.pause_for_active_capture()
+        elif interruption == "shutdown":
+            manager.stop(reason="shutdown")
+        elif interruption == "refresh":
+            manager.quiesce_for_device_refresh()
+        elif interruption == "timeout":
+            resumer.join(timeout=2)
+            assert resumed == [False]
+            assert manager.start_if_enabled() is False
+    finally:
+        finish_start.set()
+        starter.join(timeout=5)
+        if resumer.ident is not None:
+            resumer.join(timeout=5)
+    assert not starter.is_alive() and not resumer.is_alive()
+    assert started == [False]
+    assert resumed == [interruption is None]
+    assert commands[:2] == ["audioPrewarmStart", "audioPrewarmStop"]
+
+    if interruption == "shutdown":
+        assert commands == ["audioPrewarmStart", "audioPrewarmStop"]
+        assert manager.is_active is False
+        return
+    if interruption == "capture":
+        assert manager.ensure_healthy() is False
+        assert commands == ["audioPrewarmStart", "audioPrewarmStop"]
+        assert manager.resume_after_active_capture() is True
+    elif interruption == "refresh":
+        assert manager.start_if_enabled() is False
+        assert manager.resume_after_device_refresh() is True
+    elif interruption == "timeout":
+        assert manager.ensure_healthy() is True
+    assert commands == ["audioPrewarmStart", "audioPrewarmStop", "audioPrewarmStart"]
+    assert manager.is_active is True
 
 
 def test_rust_audio_prewarm_stop_does_not_report_failed_transport_as_stopped(monkeypatch):

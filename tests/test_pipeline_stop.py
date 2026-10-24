@@ -34,7 +34,7 @@ import src.pipeline as pipeline_module
 from src.config import Config
 from src.core.provider_errors import ProviderTransportError
 from src.mic_silence_stop import MicSilenceStopObserver
-from src.microphone import MicrophoneInput
+from src.microphone import MicrophoneInput, RustPrototypeFrameSource
 from src.pipeline import (
     LIVE_STT_STOP_END_FRAME_FINALIZES,
     LIVE_STT_STOP_PROVIDER_MANUAL,
@@ -2796,6 +2796,148 @@ async def test_native_stop_without_successful_eos_drain_cannot_release_early():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "failure"),
+    [("azure_mai", "missing_eos"), ("openai", "missing_eos"), ("openai", "downstream_timeout")],
+)
+async def test_capture_integrity_failure_aborts_provider_finalization(provider, failure):
+    statuses = []
+    callback = AsyncMock()
+    pipeline = ScriberPipeline(service_name=provider, on_status_change=statuses.append, on_capture_stopped=callback)
+    pipeline.is_active = True
+    pipeline._start_done.clear()
+    pipeline.task = _RecordingStopTask(pipeline._start_done, [])
+    mic = MicrophoneInput()
+    source = RustPrototypeFrameSource(
+        sample_rate=16000,
+        target_channels=1,
+        block_size=512,
+        device="default",
+        shell_call=lambda *_args, **_kwargs: {"success": True, "payload": {"stopped": True}},
+    )
+    source.stream_id = "missing-eos"
+    source._requires_terminal_eos = True
+    source._end_of_stream_wait_seconds = 0
+    mic._frame_source = source
+    mic.stream = source.stream
+    if failure == "downstream_timeout":
+        source._end_of_stream_event.set()
+
+        class StalledDownstreamQueue:
+            async def join(self):
+                raise TimeoutError
+
+        mic._audio_in_queue = StalledDownstreamQueue()
+    pipeline.audio_input = mic
+    pipeline._native_audio_stop_confirmation = None
+    pipeline.pipeline = _DummyRuntimePipelineGraph(
+        [SegmentedSTTRecordingGate(vad_segmentation_enabled=False, stop_strategy=_live_stt_stop_strategy(provider))]
+    )
+    pipeline._await_provider_ingress_audio_drain = AsyncMock(return_value=True)
+    pipeline._flush_segmented_stt_buffers = AsyncMock(return_value=False)
+    pipeline._flush_live_vad_finalization_turn = AsyncMock(return_value=False)
+
+    with pytest.raises(RuntimeError, match="Microphone audio capture did not finish cleanly"):
+        await pipeline.stop(timeout_secs=0.1)
+
+    assert pipeline.task.cancel_called is True
+    assert pipeline.task.stop_when_done_called is False
+    assert pipeline.native_audio_stop_confirmed() is True
+    assert pipeline.audio_input is None
+    assert statuses[-1] == "Error"
+    callback.assert_not_awaited()
+    pipeline._await_provider_ingress_audio_drain.assert_not_awaited()
+    pipeline._flush_segmented_stt_buffers.assert_not_awaited()
+    pipeline._flush_live_vad_finalization_turn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_closed_microphone_remains_available_for_stop_retry():
+    calls = []
+
+    def shell_call(command, payload, **_kwargs):
+        calls.append((command, payload))
+        if len(calls) <= 2:
+            raise TimeoutError("stop response lost")
+        source._end_of_stream_event.set()
+        return {"success": True, "payload": {"stopped": True, "eosWritten": True}}
+
+    source = RustPrototypeFrameSource(
+        sample_rate=16000, target_channels=1, block_size=512, device="default", shell_call=shell_call
+    )
+    source.stream_id = "pending-stop"
+    source._requires_terminal_eos = True
+    mic = MicrophoneInput()
+    mic._frame_source = source
+    mic.stream = source.stream
+    pipeline = ScriberPipeline(service_name="azure_mai")
+    pipeline.audio_input = mic
+    pipeline._native_audio_stop_confirmation = None
+
+    await pipeline._cleanup_audio_input()
+
+    assert pipeline.audio_input is mic
+    assert mic.stream is None
+    assert pipeline.native_audio_stop_confirmed() is False
+    with pytest.raises(RuntimeError, match="Microphone audio capture did not finish cleanly"):
+        await pipeline.stop()
+
+    assert calls == [("audioCaptureStop", {"streamId": "pending-stop"})] * 3
+    assert pipeline.native_audio_stop_confirmed() is True
+    assert pipeline.audio_input is None
+
+
+@pytest.mark.asyncio
+async def test_pipeline_completion_surfaces_capture_cleanup_failure(monkeypatch):
+    started = asyncio.Event()
+
+    class FinishingMicrophone(FrameProcessor):
+        def __init__(self, **_kwargs):
+            super().__init__()
+
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            await self.push_frame(frame, direction)
+            if isinstance(frame, StartFrame):
+                started.set()
+
+        async def stop(self, _frame, *, close_stream):
+            raise RuntimeError("rustFramePipeMissingEndOfStream")
+
+        def native_audio_stop_confirmed(self):
+            return True
+
+    monkeypatch.setattr(pipeline_module, "MicrophoneInput", FinishingMicrophone)
+    monkeypatch.setattr(pipeline_module, "_resolve_live_mic_capture_device", lambda _manager: ("default", False))
+    monkeypatch.setattr(pipeline_module, "_analyzer_warmup_enabled", lambda: False)
+    monkeypatch.setattr(Config, "MIC_AUTO_STOP_ENABLED", False)
+    monkeypatch.setattr(Config, "SEGMENT_SPEECH_WITH_VAD", False)
+
+    class PassthroughProvider(FrameProcessor):
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            await self.push_frame(frame, direction)
+
+    pipeline = ScriberPipeline(service_name="azure_mai", text_injection_enabled=False)
+    monkeypatch.setattr(pipeline, "_create_stt_service", lambda _session: PassthroughProvider())
+
+    running = asyncio.create_task(pipeline.start())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        await pipeline.task.stop_when_done()
+        with pytest.raises(RuntimeError, match="Microphone audio capture did not finish cleanly"):
+            await asyncio.wait_for(running, timeout=2.0)
+    finally:
+        if not running.done():
+            running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+
+    assert pipeline._start_done.is_set()
+    assert pipeline.native_audio_stop_confirmed() is True
+    assert pipeline.audio_input is None
+
+
+@pytest.mark.asyncio
 async def test_segmented_stop_uses_normal_cleanup_when_prewarm_handoff_fails(monkeypatch):
     monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
     events: list[str] = []
@@ -2938,12 +3080,13 @@ async def test_cleanup_audio_input_preserves_native_stop_confirmation_after_clea
 
     pipeline = ScriberPipeline(service_name="soniox", on_status_change=None)
     pipeline._native_audio_stop_confirmation = None
-    pipeline.audio_input = _CleanupErrorAudioInput()
+    audio_input = _CleanupErrorAudioInput()
+    pipeline.audio_input = audio_input
 
     assert pipeline.native_audio_stop_confirmed() is native_stop_confirmed
     await pipeline._cleanup_audio_input()
 
-    assert pipeline.audio_input is None
+    assert pipeline.audio_input is (None if native_stop_confirmed is True else audio_input)
     assert pipeline.native_audio_stop_confirmed() is native_stop_confirmed
 
 

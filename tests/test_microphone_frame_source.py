@@ -3115,6 +3115,29 @@ async def test_microphone_terminal_eos_failure_suppresses_last_chunk_marker(monk
     assert snapshot["acceptingAudio"] is False
 
 
+@pytest.mark.asyncio
+async def test_microphone_downstream_drain_timeout_cannot_report_success(monkeypatch):
+    events = []
+    mic = microphone.MicrophoneInput()
+
+    class StalledDownstreamQueue:
+        async def join(self):
+            events.append("drain")
+            raise TimeoutError
+
+    async def stop_transport(_self, _frame):
+        events.append("transport-stopped")
+
+    monkeypatch.setattr(microphone.BaseInputTransport, "stop", stop_transport)
+    mic._audio_in_queue = StalledDownstreamQueue()
+
+    with pytest.raises(RuntimeError, match="microphoneDownstreamDrainTimeout"):
+        await mic.stop(microphone.EndFrame())
+
+    assert events == ["drain", "transport-stopped"]
+    assert mic.diagnostic_snapshot()["captureIntegrityError"] == "microphoneDownstreamDrainTimeout"
+
+
 def test_rust_audio_timeout_configuration_is_finite_and_bounded(monkeypatch):
     monkeypatch.setenv("SCRIBER_RUST_AUDIO_FIRST_FRAME_TIMEOUT_SEC", "inf")
     monkeypatch.setenv("SCRIBER_RUST_AUDIO_FAILURE_COOLDOWN_SEC", "inf")

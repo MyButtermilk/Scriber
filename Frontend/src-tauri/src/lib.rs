@@ -828,6 +828,29 @@ impl ShellIpcState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PushToTalkIntent {
+    gesture_id: String,
+    revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DesktopHotkeyAction {
+    path: &'static str,
+    push_to_talk: Option<PushToTalkIntent>,
+}
+
+impl DesktopHotkeyAction {
+    fn request_body(&self, mut body: Option<Value>) -> Option<Value> {
+        if let Some(intent) = &self.push_to_talk {
+            let payload = body.get_or_insert_with(|| json!({}));
+            payload["pushToTalk"] = json!(intent);
+        }
+        body
+    }
+}
+
 struct DesktopHotkeyStateInner {
     registered_hotkey: Option<String>,
     registered_hotkey_id: Option<u32>,
@@ -841,6 +864,31 @@ struct DesktopHotkeyStateInner {
     message: String,
     last_dispatched_at: Option<Instant>,
     capture_suspended: bool,
+    push_to_talk_gesture: Option<(u32, String)>,
+    push_to_talk_revision: u64,
+}
+
+impl DesktopHotkeyStateInner {
+    fn push_to_talk_intent(&mut self, gesture_id: String) -> PushToTalkIntent {
+        // QPC is shared across Windows processes, so restarting only the shell
+        // cannot make a new gesture older than an in-flight request. The local
+        // counter also makes edges strict when clock samples are identical.
+        let clock_revision = query_performance_marker()
+            .and_then(|(_, _, timestamp_ns)| u64::try_from(timestamp_ns).ok())
+            .unwrap_or_else(|| {
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+                    .min(u128::from(u64::MAX)) as u64
+            });
+        self.push_to_talk_revision =
+            clock_revision.max(self.push_to_talk_revision.saturating_add(1));
+        PushToTalkIntent {
+            gesture_id,
+            revision: self.push_to_talk_revision,
+        }
+    }
 }
 
 impl DesktopHotkeyState {
@@ -862,6 +910,8 @@ impl DesktopHotkeyState {
                 message: "Global hotkey not initialized".to_string(),
                 last_dispatched_at: None,
                 capture_suspended: false,
+                push_to_talk_gesture: None,
+                push_to_talk_revision: 0,
             }),
         }
     }
@@ -1056,8 +1106,23 @@ impl DesktopHotkeyState {
         shortcut_id: u32,
         event_state: ShortcutState,
         now: Instant,
-    ) -> Option<&'static str> {
+    ) -> Option<DesktopHotkeyAction> {
         let mut state = lock_unpoisoned(&self.inner);
+        // Preserve the admitted press across hotkey re-registration or mode
+        // changes. A late release must still fence that exact gesture.
+        if matches!(event_state, ShortcutState::Released)
+            && state
+                .push_to_talk_gesture
+                .as_ref()
+                .is_some_and(|(id, _)| *id == shortcut_id)
+        {
+            let (_, gesture_id) = state.push_to_talk_gesture.take().unwrap();
+            let intent = state.push_to_talk_intent(gesture_id);
+            return Some(DesktopHotkeyAction {
+                path: "/api/live-mic/stop-request",
+                push_to_talk: Some(intent),
+            });
+        }
         if state.capture_suspended {
             return None;
         }
@@ -1080,24 +1145,35 @@ impl DesktopHotkeyState {
                 {
                     return None;
                 }
-                state.last_dispatched_at = Some(now);
-                if is_meeting {
-                    Some(MEETING_HOTKEY_BACKEND_PATH)
-                } else if is_post_processing {
-                    Some("/api/live-mic/toggle-post-processing")
-                } else if state.mode == "push_to_talk" {
-                    Some("/api/live-mic/start")
-                } else {
-                    Some("/api/live-mic/toggle")
+                if is_primary
+                    && state.mode == "push_to_talk"
+                    && state
+                        .push_to_talk_gesture
+                        .as_ref()
+                        .is_some_and(|(id, _)| *id == shortcut_id)
+                {
+                    return None;
                 }
-            }
-            ShortcutState::Released => {
-                if is_primary && state.mode == "push_to_talk" {
-                    Some("/api/live-mic/stop-request")
+                state.last_dispatched_at = Some(now);
+                let path = if is_meeting {
+                    MEETING_HOTKEY_BACKEND_PATH
+                } else if is_post_processing {
+                    "/api/live-mic/toggle-post-processing"
+                } else if state.mode == "push_to_talk" {
+                    "/api/live-mic/start"
+                } else {
+                    "/api/live-mic/toggle"
+                };
+                let push_to_talk = if path == "/api/live-mic/start" {
+                    let gesture_id = Uuid::new_v4().to_string();
+                    state.push_to_talk_gesture = Some((shortcut_id, gesture_id.clone()));
+                    Some(state.push_to_talk_intent(gesture_id))
                 } else {
                     None
-                }
+                };
+                Some(DesktopHotkeyAction { path, push_to_talk })
             }
+            ShortcutState::Released => None,
         }
     }
 }
@@ -2633,12 +2709,12 @@ fn run_shell_menu_smoke_hotkey_event<R: Runtime>(
             return;
         }
     };
-    let path = app.try_state::<DesktopHotkeyState>().and_then(|state| {
+    let action = app.try_state::<DesktopHotkeyState>().and_then(|state| {
         shortcut_id_for_hotkey(&status.hotkey).and_then(|shortcut_id| {
             state.action_for_event(shortcut_id, event_state, Instant::now())
         })
     });
-    let Some(path) = path else {
+    let Some(action) = action else {
         write_shell_log(&format!(
             "shell menu smoke action {label} completed elapsedMs={} mode={} path=none dispatched=false posted=false",
             started.elapsed().as_millis(),
@@ -2647,10 +2723,15 @@ fn run_shell_menu_smoke_hotkey_event<R: Runtime>(
         return;
     };
 
+    let path = action.path;
     let manager = app.state::<BackendManager>();
     let backend_status = manager.ensure_started();
     let (posted, error) = if backend_status.ready {
-        match post_backend_path(&manager.access(), path) {
+        match post_backend_path_with_body(
+            &manager.access(),
+            path,
+            action.request_body(None).as_ref(),
+        ) {
             Ok(_) => (true, String::new()),
             Err(err) => (false, sanitize_shell_log_token(&err)),
         }
@@ -4385,12 +4466,13 @@ fn handle_shortcut_id_event<R: Runtime>(
     let benchmark_callback_qpc = app
         .try_state::<BenchmarkHotkeyState>()
         .and_then(|state| state.callback_qpc_snapshot());
-    let Some(path) = app
+    let Some(action) = app
         .try_state::<DesktopHotkeyState>()
         .and_then(|state| state.action_for_event(shortcut_id, event_state, Instant::now()))
     else {
         return;
     };
+    let path = action.path;
     let benchmark_marker = if should_attach_benchmark_hotkey_marker(path, false) {
         match app.try_state::<BenchmarkHotkeyState>().map(|state| {
             state.capture_callback_marker(
@@ -4515,14 +4597,23 @@ fn handle_shortcut_id_event<R: Runtime>(
         } else {
             None
         };
-        if let Err(err) = post_backend_path_with_body(&access, path, benchmark_body.as_ref()) {
-            write_shell_log(&format!("global hotkey action failed action_id={action_id} path={path} elapsed_ms={}: {err}", received_at.elapsed().as_millis()));
-            hide_hotkey_overlay_preview(show_initializing_overlay.then_some(action_id));
-        } else {
-            write_shell_log(&format!(
-                "hotkey_dispatch action_id={action_id} path={path} elapsed_ms={} outcome=completed",
-                received_at.elapsed().as_millis()
-            ));
+        let request_body = action.request_body(benchmark_body);
+        match post_backend_path_with_body(&access, path, request_body.as_ref()) {
+            Err(err) => {
+                write_shell_log(&format!("global hotkey action failed action_id={action_id} path={path} elapsed_ms={}: {err}", received_at.elapsed().as_millis()));
+                hide_hotkey_overlay_preview(show_initializing_overlay.then_some(action_id));
+            }
+            Ok(response) => {
+                if response.get("pushToTalkIgnored").and_then(Value::as_bool) == Some(true) {
+                    // A release can reach Python before this delayed press.
+                    // Retire only our preview, never a successor's overlay.
+                    hide_hotkey_overlay_preview(show_initializing_overlay.then_some(action_id));
+                }
+                write_shell_log(&format!(
+                    "hotkey_dispatch action_id={action_id} path={path} elapsed_ms={} outcome=completed",
+                    received_at.elapsed().as_millis()
+                ));
+            }
         }
     });
 }
@@ -6767,31 +6858,39 @@ mod tests {
         let now = Instant::now();
 
         assert_eq!(
-            state.action_for_event(primary_id, ShortcutState::Pressed, now),
+            state
+                .action_for_event(primary_id, ShortcutState::Pressed, now)
+                .map(|action| action.path),
             Some("/api/live-mic/toggle")
         );
         assert_eq!(
-            state.action_for_event(
-                primary_id,
-                ShortcutState::Pressed,
-                now + HOTKEY_DISPATCH_DEBOUNCE - Duration::from_millis(1)
-            ),
+            state
+                .action_for_event(
+                    primary_id,
+                    ShortcutState::Pressed,
+                    now + HOTKEY_DISPATCH_DEBOUNCE - Duration::from_millis(1)
+                )
+                .map(|action| action.path),
             None
         );
         assert_eq!(
-            state.action_for_event(
-                primary_id,
-                ShortcutState::Released,
-                now + HOTKEY_DISPATCH_DEBOUNCE
-            ),
+            state
+                .action_for_event(
+                    primary_id,
+                    ShortcutState::Released,
+                    now + HOTKEY_DISPATCH_DEBOUNCE
+                )
+                .map(|action| action.path),
             None
         );
         assert_eq!(
-            state.action_for_event(
-                primary_id,
-                ShortcutState::Pressed,
-                now + HOTKEY_DISPATCH_DEBOUNCE + Duration::from_millis(1)
-            ),
+            state
+                .action_for_event(
+                    primary_id,
+                    ShortcutState::Pressed,
+                    now + HOTKEY_DISPATCH_DEBOUNCE + Duration::from_millis(1)
+                )
+                .map(|action| action.path),
             Some("/api/live-mic/toggle")
         );
     }
@@ -6815,15 +6914,19 @@ mod tests {
         assert!(suspended_status.capture_suspended);
         assert!(!suspended_status.registered);
         assert_eq!(
-            state.action_for_event(primary_id, ShortcutState::Pressed, now),
+            state
+                .action_for_event(primary_id, ShortcutState::Pressed, now)
+                .map(|action| action.path),
             None
         );
         assert_eq!(
-            state.action_for_event(
-                primary_id,
-                ShortcutState::Released,
-                now + Duration::from_millis(25)
-            ),
+            state
+                .action_for_event(
+                    primary_id,
+                    ShortcutState::Released,
+                    now + Duration::from_millis(25)
+                )
+                .map(|action| action.path),
             None
         );
 
@@ -6838,11 +6941,13 @@ mod tests {
         );
         assert!(!state.status().capture_suspended);
         assert_eq!(
-            state.action_for_event(
-                primary_id,
-                ShortcutState::Pressed,
-                now + HOTKEY_DISPATCH_DEBOUNCE + Duration::from_millis(1)
-            ),
+            state
+                .action_for_event(
+                    primary_id,
+                    ShortcutState::Pressed,
+                    now + HOTKEY_DISPATCH_DEBOUNCE + Duration::from_millis(1)
+                )
+                .map(|action| action.path),
             Some("/api/live-mic/toggle")
         );
     }
@@ -6932,9 +7037,10 @@ mod tests {
     }
 
     #[test]
-    fn desktop_hotkey_push_to_talk_maps_press_and_release_to_backend_endpoints() {
+    fn desktop_push_to_talk_keeps_ordered_gesture_identity_across_delayed_dispatch() {
         let state = DesktopHotkeyState::new();
         let primary_id = shortcut_id_for_hotkey("ctrl+alt+s").unwrap();
+        let replacement_id = shortcut_id_for_hotkey("ctrl+alt+t").unwrap();
         state.set_registered(
             "ctrl+alt+s".to_string(),
             String::new(),
@@ -6944,18 +7050,94 @@ mod tests {
             "registered".to_string(),
         );
         let now = Instant::now();
-
+        let press = state
+            .action_for_event(primary_id, ShortcutState::Pressed, now)
+            .unwrap();
+        // A held key may produce another native press after the debounce window.
+        // It must not create a successor gesture that this release cannot own.
         assert_eq!(
-            state.action_for_event(primary_id, ShortcutState::Pressed, now),
-            Some("/api/live-mic/start")
+            state.action_for_event(
+                primary_id,
+                ShortcutState::Pressed,
+                now + HOTKEY_DISPATCH_DEBOUNCE + Duration::from_millis(1)
+            ),
+            None
+        );
+        state.set_registered(
+            "ctrl+alt+t".to_string(),
+            String::new(),
+            false,
+            String::new(),
+            "push_to_talk".to_string(),
+            "changed".to_string(),
+        );
+        let release = state
+            .action_for_event(
+                primary_id,
+                ShortcutState::Released,
+                now + HOTKEY_DISPATCH_DEBOUNCE + Duration::from_millis(2),
+            )
+            .unwrap();
+        // Materialize the release HTTP body first, as occurs when the press
+        // worker is still waiting for the overlay or backend startup.
+        let release_body = release.request_body(None).unwrap();
+        let press_body = press
+            .request_body(Some(
+                serde_json::json!({"benchmarkHotkeyMarker": {"sampleId": "kept"}}),
+            ))
+            .unwrap();
+        assert_eq!(press.path, "/api/live-mic/start");
+        assert_eq!(release.path, "/api/live-mic/stop-request");
+        assert_eq!(press_body["benchmarkHotkeyMarker"]["sampleId"], "kept");
+        let first_gesture = press_body["pushToTalk"]["gestureId"].as_str().unwrap();
+        assert!(uuid::Uuid::parse_str(first_gesture).is_ok());
+        assert_eq!(release_body["pushToTalk"]["gestureId"], first_gesture);
+        assert!(
+            release_body["pushToTalk"]["revision"].as_u64().unwrap()
+                > press_body["pushToTalk"]["revision"].as_u64().unwrap()
+        );
+
+        let successor = state
+            .action_for_event(
+                replacement_id,
+                ShortcutState::Pressed,
+                now + Duration::from_secs(1),
+            )
+            .unwrap();
+        let successor_body = successor.request_body(None).unwrap();
+        assert_ne!(successor_body["pushToTalk"]["gestureId"], first_gesture);
+        assert!(
+            successor_body["pushToTalk"]["revision"].as_u64().unwrap()
+                > release_body["pushToTalk"]["revision"].as_u64().unwrap()
         );
         assert_eq!(
             state.action_for_event(
                 primary_id,
                 ShortcutState::Released,
-                now + Duration::from_millis(25)
+                now + Duration::from_secs(2)
             ),
-            Some("/api/live-mic/stop-request")
+            None
+        );
+        // Capture-mode suspension must not discard the admitted release either.
+        state.set_capture_suspended(true, "editing shortcut".to_string());
+        let successor_release = state
+            .action_for_event(
+                replacement_id,
+                ShortcutState::Released,
+                now + Duration::from_secs(3),
+            )
+            .unwrap()
+            .request_body(None)
+            .unwrap();
+        assert_eq!(
+            successor_release["pushToTalk"]["gestureId"],
+            successor_body["pushToTalk"]["gestureId"]
+        );
+        assert!(
+            successor_release["pushToTalk"]["revision"]
+                .as_u64()
+                .unwrap()
+                > successor_body["pushToTalk"]["revision"].as_u64().unwrap()
         );
     }
 
@@ -6975,23 +7157,29 @@ mod tests {
         let now = Instant::now();
 
         assert_eq!(
-            state.action_for_event(post_id, ShortcutState::Pressed, now),
+            state
+                .action_for_event(post_id, ShortcutState::Pressed, now)
+                .map(|action| action.path),
             Some("/api/live-mic/toggle-post-processing")
         );
         assert_eq!(
-            state.action_for_event(
-                post_id,
-                ShortcutState::Released,
-                now + Duration::from_millis(25)
-            ),
+            state
+                .action_for_event(
+                    post_id,
+                    ShortcutState::Released,
+                    now + Duration::from_millis(25)
+                )
+                .map(|action| action.path),
             None
         );
         assert_eq!(
-            state.action_for_event(
-                primary_id,
-                ShortcutState::Pressed,
-                now + HOTKEY_DISPATCH_DEBOUNCE + Duration::from_millis(1),
-            ),
+            state
+                .action_for_event(
+                    primary_id,
+                    ShortcutState::Pressed,
+                    now + HOTKEY_DISPATCH_DEBOUNCE + Duration::from_millis(1),
+                )
+                .map(|action| action.path),
             Some("/api/live-mic/start")
         );
     }
@@ -7230,15 +7418,19 @@ mod tests {
         let now = Instant::now();
         assert_eq!(state.status().meeting_hotkey, super::DEFAULT_MEETING_HOTKEY);
         assert_eq!(
-            state.action_for_event(meeting_id, ShortcutState::Pressed, now),
+            state
+                .action_for_event(meeting_id, ShortcutState::Pressed, now)
+                .map(|action| action.path),
             Some(super::MEETING_HOTKEY_BACKEND_PATH)
         );
         assert_eq!(
-            state.action_for_event(
-                meeting_id,
-                ShortcutState::Released,
-                now + Duration::from_millis(20)
-            ),
+            state
+                .action_for_event(
+                    meeting_id,
+                    ShortcutState::Released,
+                    now + Duration::from_millis(20)
+                )
+                .map(|action| action.path),
             None
         );
     }
@@ -7258,7 +7450,9 @@ mod tests {
         let status = state.status();
         assert_eq!(status.post_processing_hotkey, "");
         assert_eq!(
-            state.action_for_event(primary_id, ShortcutState::Pressed, Instant::now()),
+            state
+                .action_for_event(primary_id, ShortcutState::Pressed, Instant::now())
+                .map(|action| action.path),
             Some("/api/live-mic/toggle")
         );
     }

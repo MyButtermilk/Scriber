@@ -572,6 +572,7 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
   const [isRecording, setIsRecording] = useState(false);
   const [recordingState, setRecordingState] = useState<LiveRecordingState>("idle");
   const [micStartPending, setMicStartPending] = useState(false);
+  const [nativeCleanupPending, setNativeCleanupPending] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [status, setStatus] = useState<string>("Stopped");
   const [inputWarning, setInputWarning] = useState("");
@@ -585,14 +586,19 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
   const recordingStartedAtMsRef = useRef<number | null>(null);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
   const hasActiveSession =
+    nativeCleanupPending ||
     micStartPending ||
     recordingState === "initializing" ||
     recordingState === "recording" ||
     recordingState === "finalizing";
-  const isMicCaptureActive = recordingState === "initializing" || recordingState === "recording";
+  const isMicCaptureActive =
+    nativeCleanupPending || recordingState === "initializing" || recordingState === "recording";
   const isPreparing = recordingState === "initializing";
   const isTranscribing = recordingState === "finalizing";
   const activeSessionIdRef = useRef<string | null>(null);
+  const stateRevisionRef = useRef(0);
+  const finalTextRevisionRef = useRef({ revision: 0, sessionId: null as string | null });
+  const interimTextRevisionRef = useRef({ revision: 0, sessionId: null as string | null });
 
   const refreshVisualizerBarCount = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -654,15 +660,22 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
   }, []);
 
   const applyBackendStateSnapshot = useCallback(
-    (state: BackendLiveStateSnapshot) => {
+    (state: BackendLiveStateSnapshot, { preserveFinalText = false, preserveInterimText = false } = {}) => {
+      const previousSessionId = activeSessionIdRef.current;
       if (typeof state.sessionId === "string" && state.sessionId) {
         activeSessionIdRef.current = state.sessionId;
       } else if (!state.listening) {
         activeSessionIdRef.current = null;
       }
+      const newSession = activeSessionIdRef.current !== null && previousSessionId !== activeSessionIdRef.current;
+      if (newSession) {
+        recordingStartedAtMsRef.current = null;
+        setElapsed(0);
+      }
 
       const nextState = coerceRecordingState(state.recordingState, state.listening ? "recording" : "idle");
       setMicStartPending(state.micStartPending === true);
+      setNativeCleanupPending(state.nativeCleanupPending === true);
       setRecordingState(nextState);
       setIsRecording(nextState === "recording");
       if (nextState === "recording") {
@@ -680,9 +693,9 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
       }
       setStatus(state.status || "Stopped");
       applyInputWarning(state.inputWarning, state.inputWarningCode, state.inputWarningActions);
-      if (state.current?.content) {
-        setFinalText(String(state.current.content));
-        setInterimText("");
+      if (typeof state.current?.content === "string" || newSession) {
+        if (!preserveFinalText) setFinalText(String(state.current?.content || ""));
+        if (!preserveInterimText) setInterimText("");
       }
     },
     [applyInputWarning],
@@ -715,6 +728,18 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
       if (!msg || typeof msg !== "object") return;
       const msgSessionId = typeof msg.sessionId === "string" ? msg.sessionId : null;
       const activeSessionId = activeSessionIdRef.current;
+      const ownsSession = !msgSessionId || !activeSessionId || msgSessionId === activeSessionId;
+      if (
+        msg.type === "state" ||
+        msg.type === "session_started" ||
+        (activeSessionId !== null &&
+          ownsSession &&
+          ["status", "transcribing", "session_finished", "error"].includes(msg.type))
+      ) {
+        // Until hydration establishes the owner, an older finalizer's events
+        // cannot invalidate the current-capture snapshot.
+        stateRevisionRef.current += 1;
+      }
 
       switch (msg.type) {
         case "state":
@@ -728,6 +753,9 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
             const nextState = coerceRecordingState(msg.recordingState, msg.listening ? "recording" : "idle");
             if (typeof msg.micStartPending === "boolean") {
               setMicStartPending(msg.micStartPending);
+            }
+            if (typeof msg.nativeCleanupPending === "boolean") {
+              setNativeCleanupPending(msg.nativeCleanupPending);
             }
             setRecordingState(nextState);
             setIsRecording(nextState === "recording");
@@ -759,6 +787,14 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
             break;
           }
           if (msg.isFinal) {
+            finalTextRevisionRef.current = {
+              revision: finalTextRevisionRef.current.revision + 1,
+              sessionId: msgSessionId,
+            };
+            interimTextRevisionRef.current = {
+              revision: interimTextRevisionRef.current.revision + 1,
+              sessionId: msgSessionId,
+            };
             if (msg.content) {
               setFinalText(String(msg.content));
               setInterimText("");
@@ -768,6 +804,10 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
             if (t) setFinalText((prev) => (prev ? `${prev} ${t}` : t));
             setInterimText("");
           } else {
+            interimTextRevisionRef.current = {
+              revision: interimTextRevisionRef.current.revision + 1,
+              sessionId: msgSessionId,
+            };
             setInterimText(String(msg.text || ""));
           }
           break;
@@ -834,6 +874,38 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
 
   // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
   const { isConnected } = useSharedWebSocket(handleWsMessage);
+
+  useEffect(() => {
+    // Route navigation does not reconnect the shared socket or replay its
+    // initial state. Hydrate once; later WebSocket events stay authoritative.
+    const controller = new AbortController();
+    const stateRevision = stateRevisionRef.current;
+    const finalTextRevision = finalTextRevisionRef.current.revision;
+    const interimTextRevision = interimTextRevisionRef.current.revision;
+    void (async () => {
+      try {
+        const res = await fetchWithTimeout(
+          apiUrl("/api/state"),
+          { credentials: "include", signal: controller.signal },
+          5_000,
+        );
+        if (!res.ok) return;
+        const state = (await res.json()) as BackendStateResponse;
+        if (controller.signal.aborted || stateRevision !== stateRevisionRef.current) return;
+        applyBackendStateSnapshot(state, {
+          preserveFinalText:
+            finalTextRevision !== finalTextRevisionRef.current.revision &&
+            (!finalTextRevisionRef.current.sessionId || finalTextRevisionRef.current.sessionId === state.sessionId),
+          preserveInterimText:
+            interimTextRevision !== interimTextRevisionRef.current.revision &&
+            (!interimTextRevisionRef.current.sessionId || interimTextRevisionRef.current.sessionId === state.sessionId),
+        });
+      } catch {
+        // The shared socket and disconnected-session reconciliation can recover.
+      }
+    })();
+    return () => controller.abort();
+  }, [applyBackendStateSnapshot]);
 
   useEffect(() => {
     // The shared WebSocket sends an authoritative state snapshot on connect
@@ -917,34 +989,38 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
       ? t("Starting")
       : toggleAction === "stop"
         ? t("Stopping")
-        : micStartPending
-          ? t("Preparing next recording")
-          : isRecording
-            ? t("Listening")
-            : isPreparing
-              ? t("Preparing microphone")
-              : isTranscribing
-                ? t("Transcribing")
-                : isConnected
-                  ? t("Ready")
-                  : t("Offline");
+        : nativeCleanupPending
+          ? t("Stopping")
+          : micStartPending
+            ? t("Preparing next recording")
+            : isRecording
+              ? t("Listening")
+              : isPreparing
+                ? t("Preparing microphone")
+                : isTranscribing
+                  ? t("Transcribing")
+                  : isConnected
+                    ? t("Ready")
+                    : t("Offline");
 
   const stageStatusHint =
     toggleAction === "start"
       ? t("Connecting to your input device")
       : toggleAction === "stop"
         ? t("Saving your recording")
-        : micStartPending
-          ? t("Starts as soon as the microphone is ready")
-          : isRecording
-            ? t("Use the microphone button to stop")
-            : isPreparing
-              ? t("Connecting to your input device")
-              : isTranscribing
-                ? t("You can start your next recording now")
-                : isConnected
-                  ? t("Use the microphone button to start")
-                  : t("Reconnecting to Scriber");
+        : nativeCleanupPending
+          ? t("Use the microphone button to stop")
+          : micStartPending
+            ? t("Starts as soon as the microphone is ready")
+            : isRecording
+              ? t("Use the microphone button to stop")
+              : isPreparing
+                ? t("Connecting to your input device")
+                : isTranscribing
+                  ? t("You can start your next recording now")
+                  : isConnected
+                    ? t("Use the microphone button to start")
+                    : t("Reconnecting to Scriber");
 
   return (
     <section className="live-mic-stage-shell">

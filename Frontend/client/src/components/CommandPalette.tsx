@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -38,6 +38,7 @@ interface Transcript {
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const [, setLocation] = useLocation();
   const [isRecording, setIsRecording] = useState(false);
+  const nativeCleanupPendingRef = useRef(false);
   const [acceptSessionMessage] = useState(createLiveMicSessionMessageGate);
   const { toast } = useToast();
   const { checkNow: checkBackendStatus } = useBackendActions();
@@ -52,13 +53,21 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
       switch (msg.type) {
         case "state":
         case "status":
-          setIsRecording(!!msg.listening || !!msg.micStartPending || msg.recordingState === "initializing");
+          if (msg.type === "state" || typeof msg.nativeCleanupPending === "boolean") {
+            nativeCleanupPendingRef.current = msg.nativeCleanupPending === true;
+          }
+          setIsRecording(
+            !!msg.listening ||
+              !!msg.micStartPending ||
+              nativeCleanupPendingRef.current ||
+              msg.recordingState === "initializing",
+          );
           break;
         case "session_started":
           setIsRecording(true);
           break;
         case "session_finished":
-          setIsRecording(false);
+          setIsRecording(nativeCleanupPendingRef.current);
           break;
       }
     },
