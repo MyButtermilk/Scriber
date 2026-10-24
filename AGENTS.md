@@ -287,7 +287,14 @@ Backend and runtime:
   retry. Live Mic must carry the Rust producer's explicit stop confirmation
   through `MicrophoneInput` and `ScriberPipeline`: downstream provider/queue/
   text cleanup failure must not retain the lease after native stop is confirmed,
-  while an unknown native result remains fail closed. Only a current Meeting
+  while an unknown native result remains fail closed.
+  Live Mic retains the exact pipeline after an unconfirmed stop so explicit
+  Stop, lease loss, and shutdown can retry that producer. Expose
+  `nativeCleanupPending` until both native release and durable admission release
+  are confirmed; the Live Mic page and command palette keep Stop available.
+  Missing EOS or an undrained audio queue fails the transcript even when the
+  native producer has already exited; never finalize partial PCM as success.
+  Only a current Meeting
   claim explicitly marked durable after its `recording` row commits may ride
   out a generic renewal-store outage; pending
   Meetings, Live Mic, device tests, and Voice enrollment fail closed before
@@ -835,6 +842,12 @@ Packaging and scripts:
   tracked background stop and shield that task from poller cancellation so
   hotkey re-registration or shutdown cannot strand `_is_stopping` or lose the
   transcript. Shutdown must continue to drain that tracked stop task.
+- Native push-to-talk press/release requests carry one opaque gesture UUID and
+  increasing revision assigned at the shortcut callback. The backend rejects
+  superseded edges before awaiting audio admission and rechecks ownership after
+  the wait. A newer release cancels delayed or queued PTT starts; an old release
+  must not stop a successor or a UI-owned recording. Preserve admitted gesture
+  metadata through continuation and benchmark activation.
 - Rust initializes the Tauri updater plugin, but frontend code owns update
   checks and user-facing update UX. Keep update checks non-blocking, cached,
   about weekly by default, and suppress automatic prompts while recording or
@@ -1155,6 +1168,10 @@ Packaging and scripts:
   already pending a confirmed stop and no public prewarm ID remains.
   Refresh quiescence must preserve a capture-owned prewarm handoff, including
   the interval after native adoption and before Python's first-live commit.
+  Settings and watchdog disable paths preserve that same capture ownership.
+  Refresh also retains starts whose native response is still pending, settles
+  their cleanup within a bounded wait, and cannot override a newer refresh,
+  capture, or shutdown generation.
 - Persisted `SCRIBER_MIC_ALWAYS_ON=1` prewarm starts only after DeviceMonitor's
   initial PortAudio refresh callback has completed. Startup keeps a bounded
   fallback when initial device discovery cannot finish; do not reintroduce a
@@ -2262,6 +2279,10 @@ Already implemented and should not be regressed:
   row-render callbacks and next-page callbacks stable across unrelated inputs.
   Include all row-visible action state in callback dependencies. Preserve
   internal scroll/resize updates, replacement data, locale and layout changes.
+- Live Mic hydrates `/api/state` once on route re-entry because the shared
+  WebSocket does not replay its initial snapshot. Newer lifecycle and transcript
+  events fence stale responses. Preserve completed text on idle snapshots and
+  clear it when a new session starts, including an explicitly empty transcript.
 - Live Mic interim text, elapsed time, status and warnings stay inside the
   memoized `LiveMicStage`; history query, search and cards stay in the page.
   The stage receives only the history refresh callback for a finished session.

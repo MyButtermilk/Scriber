@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
+from uuid import UUID
 
 from aiohttp import web
 from loguru import logger
@@ -23,12 +25,57 @@ _TAURI_HOTKEY_BENCHMARK_RUN_ID_ENV = "SCRIBER_TAURI_BENCHMARK_HOTKEY_RUN_ID"
 
 
 @dataclass(frozen=True, slots=True)
+class PushToTalkCommand:
+    """One ordered edge of a native push-to-talk gesture."""
+
+    gesture_id: str
+    revision: int
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> PushToTalkCommand | None:
+        if "pushToTalk" not in payload:
+            return None
+        marker = payload["pushToTalk"]
+        if not isinstance(marker, dict) or set(marker) != {"gestureId", "revision"}:
+            raise RESTContractError("pushToTalk requires gestureId and revision")
+        gesture = marker["gestureId"]
+        revision = marker["revision"]
+        try:
+            valid_gesture = isinstance(gesture, str) and str(UUID(gesture)) == gesture
+        except ValueError:
+            valid_gesture = False
+        if not valid_gesture or type(revision) is not int or not 0 < revision < 2**64:
+            raise RESTContractError("pushToTalk requires a UUID and positive bounded revision")
+        return cls(gesture_id=gesture, revision=revision)
+
+
+async def _read_control_payload(request: web.Request) -> dict[str, Any]:
+    if not request.can_read_body or request.content_length == 0:
+        return {}
+    if request.content_length is not None and request.content_length > 2048:
+        raise RESTContractError("Live Mic request body exceeds the marker limit")
+    body = bytearray()
+    while chunk := await request.content.read(2049 - len(body)):
+        body.extend(chunk)
+        if len(body) > 2048:
+            raise RESTContractError("Live Mic request body exceeds the marker limit")
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeError) as exc:
+        raise RESTContractError("Live Mic request body must be JSON") from exc
+    if not isinstance(payload, dict):
+        raise RESTContractError("Live Mic request body must be a dict")
+    return payload
+
+
+@dataclass(frozen=True, slots=True)
 class LiveMicStartCommand:
     """Validated immutable input for one Live Mic start."""
 
     post_process: bool
     tauri_hotkey_marker: Mapping[str, Any] | None
     provider_replay_activation: bool
+    push_to_talk: PushToTalkCommand | None = None
 
     @classmethod
     async def from_request(
@@ -37,20 +84,9 @@ class LiveMicStartCommand:
         *,
         post_process: bool,
     ) -> LiveMicStartCommand:
-        if not request.can_read_body or request.content_length == 0:
-            return cls(
-                post_process=post_process,
-                tauri_hotkey_marker=None,
-                provider_replay_activation=False,
-            )
-        if request.content_length is not None and request.content_length > 2048:
-            raise RESTContractError("Live Mic request body exceeds the benchmark marker limit")
-        try:
-            payload = await request.json()
-        except Exception as exc:
-            raise RESTContractError("Live Mic request body must be JSON") from exc
-        if not isinstance(payload, dict):
-            raise RESTContractError("Live Mic request body must be a dict")
+        payload = await _read_control_payload(request)
+        push_to_talk = PushToTalkCommand.from_payload(payload)
+        payload = {key: value for key, value in payload.items() if key != "pushToTalk"}
         if "benchmarkActivationMarker" in payload:
             marker = validate_tauri_activation_marker_request_payload(
                 payload,
@@ -62,6 +98,7 @@ class LiveMicStartCommand:
                 post_process=post_process,
                 tauri_hotkey_marker=marker,
                 provider_replay_activation=True,
+                push_to_talk=push_to_talk,
             )
         if "benchmarkHotkeyMarker" in payload:
             marker = validate_tauri_hotkey_marker_request_payload(
@@ -74,11 +111,13 @@ class LiveMicStartCommand:
                 post_process=post_process,
                 tauri_hotkey_marker=marker,
                 provider_replay_activation=False,
+                push_to_talk=push_to_talk,
             )
         return cls(
             post_process=post_process,
             tauri_hotkey_marker=None,
             provider_replay_activation=False,
+            push_to_talk=push_to_talk,
         )
 
 
@@ -97,14 +136,16 @@ class LiveMicControllerPort(Protocol):
 
     async def stop_live_mic(self) -> LiveMicOutcome: ...
 
-    def request_live_mic_stop(self) -> LiveMicOutcome: ...
+    def request_live_mic_stop(self, push_to_talk: PushToTalkCommand | None = None) -> LiveMicOutcome: ...
 
 
 class LiveMicReplayPort(Protocol):
     @property
     def pending_activation(self) -> bool: ...
 
-    async def activate(self, marker: Mapping[str, Any]) -> LiveMicOutcome: ...
+    async def activate(
+        self, marker: Mapping[str, Any], push_to_talk: PushToTalkCommand | None = None
+    ) -> LiveMicOutcome: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,7 +187,10 @@ async def _start_live_request(
         if command.provider_replay_activation:
             if command.post_process or command.tauri_hotkey_marker is None:
                 raise ProviderReplayConflict("provider replay activation path is invalid")
-            outcome = await routes.replay.activate(command.tauri_hotkey_marker)
+            if command.push_to_talk is not None:
+                outcome = await routes.replay.activate(command.tauri_hotkey_marker, command.push_to_talk)
+            else:
+                outcome = await routes.replay.activate(command.tauri_hotkey_marker)
         else:
             if routes.replay.pending_activation:
                 raise ProviderReplayConflict("provider replay requires its armed native activation")
@@ -176,7 +220,12 @@ async def stop_live(request: web.Request) -> web.Response:
 
 
 async def request_stop_live(request: web.Request) -> web.Response:
-    outcome = request.app[APP_LIVE_MIC_ROUTES].control.request_live_mic_stop()
+    try:
+        marker = PushToTalkCommand.from_payload(await _read_control_payload(request))
+    except RESTContractError as exc:
+        return web.json_response({"message": str(exc)}, status=400)
+    control = request.app[APP_LIVE_MIC_ROUTES].control
+    outcome = control.request_live_mic_stop(marker) if marker is not None else control.request_live_mic_stop()
     return web.json_response(dict(outcome.payload), status=outcome.status)
 
 

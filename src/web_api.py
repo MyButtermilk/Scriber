@@ -50,6 +50,7 @@ from src.api.http_security import (
 from src.api.live_mic_routes import (
     LiveMicOutcome,
     LiveMicStartCommand,
+    PushToTalkCommand,
     register_live_mic_routes,
 )
 from src.api.local_polishing_routes import register_local_polishing_routes
@@ -2096,7 +2097,21 @@ def _audio_admission_owner(controller: Any) -> AudioAdmissionOwner:
         return owner
 
     def _set_claim(claim: AudioAdmissionClaim | None) -> None:
+        previous = getattr(controller, "_persistent_audio_claim", None)
         controller._persistent_audio_claim = claim
+        pending = getattr(controller, "_pending_live_mic_native_cleanup", None)
+        if (
+            claim is None
+            and pending is not None
+            and previous is not None
+            and previous.owner_kind == "live_mic"
+            and previous.owner_id == pending[0]
+        ):
+            # The owner invokes this only after its durable release settles.
+            # Keep the retry reference across a failed release after native
+            # stop, including the owner's own lease-loss cleanup path.
+            controller._pending_live_mic_native_cleanup = None
+            controller._schedule_state_snapshot_broadcast()
 
     async def _default_loss_handler(claim: AudioAdmissionClaim, reason: str) -> None:
         if claim.owner_kind == "live_mic":
@@ -3302,7 +3317,11 @@ def _live_mic_admission_conflict_info(
             title="Previous audio cleanup incomplete",
             message=(
                 "Scriber could not confirm that the previous native audio capture stopped. "
-                "Restart Scriber before recording again."
+                + (
+                    "Press Stop to retry cleanup before recording again. Restart Scriber if cleanup still fails."
+                    if getattr(controller, "_pending_live_mic_native_cleanup", None) is not None
+                    else "Restart Scriber before recording again."
+                )
             ),
             category=ErrorCategory.CONFIG_INVALID,
             code="recording_cleanup_pending",
@@ -3503,6 +3522,7 @@ class ScriberWebController:
         self._live_transcribing_visible = False
         self._pending_post_processing_fallback_event: tuple[float, dict[str, Any]] | None = None
         self._live_mic_stop_owner: object | None = None
+        self._pending_live_mic_native_cleanup: tuple[str, Any] | None = None
         self._listening_lock = asyncio.Lock()  # Prevent race conditions on rapid hotkey presses
         self._mic_prewarm = RustAudioPrewarmManager()
         self._mic_prewarm_task: asyncio.Task | None = None
@@ -3535,6 +3555,8 @@ class ScriberWebController:
         self._live_mic_insertion_done: dict[str, asyncio.Future[None]] = {}
         self._live_mic_injection_predecessors: dict[str, asyncio.Future[None]] = {}
         self._live_mic_start_generation = 0
+        self._push_to_talk_revision = 0
+        self._push_to_talk_owner: PushToTalkCommand | None = None
         self._live_mic_start_in_progress_generation: int | None = None
         self._live_mic_cancel_start_generation: int | None = None
         self._live_mic_start_task: asyncio.Task | None = None
@@ -4688,6 +4710,8 @@ class ScriberWebController:
             return False
         try:
             await _await_cleanup_barrier(asyncio.to_thread(self._mic_prewarm.stop, reason=reason))
+            if self._mic_prewarm.is_active:
+                raise RuntimeError("Native microphone prewarm stop was not confirmed")
         finally:
             self._stop_mic_watchdog_if_idle()
         return True
@@ -8469,6 +8493,7 @@ class ScriberWebController:
         return {
             "listening": self._is_listening,
             "micStartPending": self._pending_live_mic_start is not None,
+            "nativeCleanupPending": self._pending_live_mic_native_cleanup is not None,
             "voiceEnrollmentActive": bool(self._voice_enrollment_active),
             "status": self._status,
             "inputWarning": self._mic_input_warning,
@@ -9204,6 +9229,7 @@ class ScriberWebController:
         payload["recordingState"] = self._recording_state_machine.state.value
         payload["transcribing"] = bool(self._live_transcribing_visible)
         payload["micStartPending"] = self._pending_live_mic_start is not None
+        payload["nativeCleanupPending"] = self._pending_live_mic_native_cleanup is not None
         payload["inputWarning"] = self._mic_input_warning
         payload["inputWarningCode"] = self._mic_input_warning_code
         payload["inputWarningActions"] = [dict(item) for item in self._mic_input_warning_actions]
@@ -9484,16 +9510,22 @@ class ScriberWebController:
                         "Temporary microphone prewarm cleanup after pipeline exit failed: {}",
                         type(prewarm_cleanup_exc).__name__,
                     )
-                if prewarm_cleanup_confirmed:
+                pipeline = self._pipeline
+                native_stopped = _pipeline_native_audio_stop_confirmation(pipeline, pipeline_stop_completed=True)
+                if (not prewarm_cleanup_confirmed or native_stopped is not True) and session_id is not None:
+                    self._pending_live_mic_native_cleanup = (session_id, pipeline)
+                if prewarm_cleanup_confirmed and native_stopped is True:
                     try:
                         await _release_persistent_audio(self)
                     except BaseException as release_exc:
+                        if session_id is not None and _audio_admission_owner(self).current is not None:
+                            self._pending_live_mic_native_cleanup = (session_id, pipeline)
                         logger.warning(
                             "Persistent native-audio admission release after pipeline exit failed: {}",
                             type(release_exc).__name__,
                         )
                 else:
-                    logger.error("Persistent native-audio admission retained after unconfirmed prewarm cleanup")
+                    logger.error("Persistent native-audio admission retained after unconfirmed pipeline cleanup")
                 self._is_listening = False
                 self._is_stopping = False
                 self._live_transcribing_visible = False
@@ -9507,12 +9539,14 @@ class ScriberWebController:
                 if session_id is not None:
                     self._live_mic_injection_predecessors.pop(session_id, None)
                     self._post_processing_session_ids.discard(session_id)
+                self._schedule_state_snapshot_broadcast()
             if replay_execution is not None:
                 replay_execution.fail("pipeline_failed")
                 await replay_execution.close()
             self._overlay_audio_enabled = False
             self._hide_recording_overlay_async(session_id=session_id)
-            self._resume_idle_mic_prewarm_after_capture()
+            if _audio_admission_owner(self).current is None:
+                self._resume_idle_mic_prewarm_after_capture()
 
         async def _broadcast_error(payload: dict[str, Any]):
             """Broadcast error to frontend."""
@@ -12444,12 +12478,24 @@ class ScriberWebController:
         post_process: bool = False,
         tauri_hotkey_marker: dict[str, Any] | None = None,
         provider_replay_execution: ProviderReplayExecution | None = None,
+        push_to_talk: PushToTalkCommand | None = None,
+        queued_command: LiveMicStartCommand | None = None,
     ) -> ProviderUserError | None:
         controller_entry_ns = time.perf_counter_ns()
         # Acquire lock for entire operation - no parallel start/stop allowed
         async with _audio_admission_lock(self):
             if self._shutting_down:
                 return None
+            if queued_command is not None:
+                # Stop may revoke a continuation while it waits for this lock.
+                # Consume only its exact command once admission is serialized.
+                if self._pending_live_mic_start is not queued_command:
+                    return None
+                self._cancel_pending_live_mic_start()
+            if push_to_talk is not None and self._push_to_talk_owner != push_to_talk:
+                return None
+            if push_to_talk is None and not self._is_listening:
+                self._push_to_talk_owner = None
             if self._is_stopping or (self._background_stop_task is not None and not self._background_stop_task.done()):
                 if provider_replay_execution is not None:
                     # Replay activation must retain its exact execution binding;
@@ -12457,7 +12503,11 @@ class ScriberWebController:
                     raise ProviderReplayConflict(
                         "provider replay cannot activate while live microphone stop is pending"
                     )
-                self._queue_live_mic_start(post_process=post_process, tauri_hotkey_marker=tauri_hotkey_marker)
+                self._queue_live_mic_start(
+                    post_process=post_process,
+                    tauri_hotkey_marker=tauri_hotkey_marker,
+                    push_to_talk=push_to_talk,
+                )
                 return None
             if self._is_listening:
                 return None
@@ -13091,12 +13141,18 @@ class ScriberWebController:
                     try:
                         await _release_persistent_audio(self)
                     except BaseException as release_exc:
+                        claim = _audio_admission_owner(self).current
+                        if claim is not None and claim.owner_kind == "live_mic" and claim.owner_id == session_id:
+                            self._pending_live_mic_native_cleanup = (session_id, None)
+                            self._schedule_state_snapshot_broadcast()
                         logger.warning(
                             "Native-audio claim cleanup after pipeline construction failed: {}",
                             type(release_exc).__name__,
                         )
                 else:
                     logger.error("Native-audio claim retained after unconfirmed cold-start prewarm cleanup")
+                    self._pending_live_mic_native_cleanup = (session_id, None)
+                    self._schedule_state_snapshot_broadcast()
                 self._resume_idle_mic_prewarm_after_capture()
                 self._finish_live_mic_start_transition(start_generation)
                 self._clear_hot_path_tracer(session_id)
@@ -13180,6 +13236,63 @@ class ScriberWebController:
 
         await self.broadcast(session_payload)
 
+    async def _retry_live_mic_native_cleanup(
+        self, *, session_id: str | None = None, release_audio_claim: bool = True
+    ) -> bool:
+        """Retry the exact producer retained after an unconfirmed stop."""
+        stop_owner = object()
+        async with self._listening_lock:
+            pending = self._pending_live_mic_native_cleanup
+            if pending is None or (session_id is not None and pending[0] != session_id):
+                return False
+            if self._live_mic_stop_owner is not None:
+                return False
+            self._live_mic_stop_owner = stop_owner
+            self._is_stopping = True
+            owner_id, pipeline = pending
+            claim = _audio_admission_owner(self).current
+            if claim is not None and (claim.owner_kind != "live_mic" or claim.owner_id != owner_id):
+                self._live_mic_stop_owner = None
+                self._is_stopping = False
+                return False
+
+        cleanup_completed = False
+        try:
+            stop_completed = pipeline is None
+            if pipeline is not None:
+                try:
+                    await asyncio.wait_for(pipeline.stop(), timeout=2.0)
+                    stop_completed = True
+                except Exception as exc:
+                    logger.warning("Live Mic native cleanup retry warning: {}", type(exc).__name__)
+            if _pipeline_native_audio_stop_confirmation(pipeline, pipeline_stop_completed=stop_completed) is not True:
+                return False
+            try:
+                await self._stop_unretained_mic_prewarm(reason="live_mic_native_cleanup_retry")
+            except Exception as exc:
+                logger.warning("Live Mic prewarm cleanup retry warning: {}", type(exc).__name__)
+                return False
+            if release_audio_claim and claim is not None:
+                try:
+                    await _release_persistent_audio(self, claim)
+                except Exception as exc:
+                    logger.warning("Live Mic admission cleanup retry warning: {}", type(exc).__name__)
+                    return False
+                if _audio_admission_owner(self).current is not None:
+                    return False
+            cleanup_completed = True
+            return True
+        finally:
+            async with self._listening_lock:
+                if cleanup_completed and release_audio_claim and self._pending_live_mic_native_cleanup is pending:
+                    self._pending_live_mic_native_cleanup = None
+                if self._live_mic_stop_owner is stop_owner:
+                    self._live_mic_stop_owner = None
+                    self._is_stopping = False
+                self._schedule_state_snapshot_broadcast()
+            if cleanup_completed and release_audio_claim and not self._shutting_down:
+                self._resume_idle_mic_prewarm_after_capture()
+
     async def _emergency_stop_pipeline(
         self,
         *,
@@ -13187,6 +13300,10 @@ class ScriberWebController:
         release_audio_claim: bool = True,
     ) -> bool:
         """Emergency stop for connection errors - doesn't save transcript."""
+        if self._pending_live_mic_native_cleanup is not None:
+            return await self._retry_live_mic_native_cleanup(
+                session_id=session_id, release_audio_claim=release_audio_claim
+            )
         logger.warning("Emergency pipeline stop triggered")
         self._emit_workflow_event(
             message="Emergency pipeline stop triggered",
@@ -13268,6 +13385,8 @@ class ScriberWebController:
                     pipeline,
                     pipeline_stop_completed=pipeline_stop_completed,
                 )
+                if audio_claim is not None and audio_claim.owner_kind == "live_mic":
+                    self._pending_live_mic_native_cleanup = (audio_claim.owner_id, pipeline)
                 # Release only the claim captured by this exact session. A
                 # stale cleanup must never release a later recording's claim.
                 try:
@@ -13284,8 +13403,9 @@ class ScriberWebController:
                             self._live_mic_stop_owner = None
                             self._is_stopping = False
                             resume_idle_prewarm = True
+                            self._schedule_state_snapshot_broadcast()
 
-                    if resume_idle_prewarm:
+                    if resume_idle_prewarm and native_audio_stop_confirmation is True:
                         # Schedule the replacement idle capture only after
                         # releasing the serialized stop gate. The scheduling
                         # helper treats an active stop as an active capture and
@@ -13321,24 +13441,47 @@ class ScriberWebController:
         )
 
     def _on_background_stop_done(self, task: asyncio.Task) -> None:
-        if self._background_stop_task is task:
+        owns_background_stop = self._background_stop_task is task
+        if owns_background_stop:
             self._background_stop_task = None
         try:
-            task.result()
+            stop_error = task.result()
         except asyncio.CancelledError:
             return
         except Exception as exc:
             logger.warning(f"Background live mic stop failed: {exc}")
+            return
+        # A canceled startup may never create a pipeline. Its no-op stop then
+        # has no capture-stopped/finalization callback to admit a newer start
+        # that arrived while the background stop still owned the gate.
+        if (
+            owns_background_stop
+            and stop_error is None
+            and self._pending_live_mic_start is not None
+            and not self._shutting_down
+            and not self._is_listening
+            and not self._is_stopping
+            and _audio_admission_owner(self).current is None
+        ):
+            self._spawn_detached(self._start_pending_live_mic(), name="live_mic_continuation_start")
 
     def _queue_live_mic_start(
-        self, *, post_process: bool = False, tauri_hotkey_marker: dict[str, Any] | None = None
+        self,
+        *,
+        post_process: bool = False,
+        tauri_hotkey_marker: dict[str, Any] | None = None,
+        push_to_talk: PushToTalkCommand | None = None,
     ) -> None:
-        if self._shutting_down or self._pending_live_mic_start is not None:
+        if self._shutting_down:
+            return
+        pending = self._pending_live_mic_start
+        if pending is not None and pending.push_to_talk is None:
             return
         self._pending_live_mic_start = LiveMicStartCommand(
             post_process=post_process,
             tauri_hotkey_marker=tauri_hotkey_marker,
             provider_replay_activation=False,
+            push_to_talk=push_to_talk,
         )
         self._pending_hotkey_toggle = True
         self._schedule_state_snapshot_broadcast()
@@ -13353,9 +13496,10 @@ class ScriberWebController:
 
     async def _start_pending_live_mic(self) -> None:
         command = self._pending_live_mic_start
-        self._cancel_pending_live_mic_start()
         if command is not None and not self._shutting_down:
-            await self.start_live_mic(command)
+            # This command already passed native edge ordering at ingress.
+            # Keep it cancellable until start_listening owns admission.
+            await self._execute_live_mic_start(command, queued=True)
 
     def _request_live_mic_silence_stop(self, session_id: str) -> None:
         if session_id == self._session_id and self._is_listening and not self._is_stopping:
@@ -13506,11 +13650,37 @@ class ScriberWebController:
     async def start_live_mic(self, command: LiveMicStartCommand) -> LiveMicOutcome:
         """Start one validated Live Mic command and project its public result."""
 
+        if command.push_to_talk is not None and not self._accept_push_to_talk_start(command.push_to_talk):
+            return LiveMicOutcome(status=200, payload={**self.get_state(), "pushToTalkIgnored": True})
+        return await self._execute_live_mic_start(command)
+
+    def _accept_push_to_talk_start(self, marker: PushToTalkCommand) -> bool:
+        # Native press/release workers can reach HTTP in either order. Record
+        # accepted edges before any await, and never take over a UI recording.
+        if marker.revision <= self._push_to_talk_revision:
+            return False
+        self._push_to_talk_revision = marker.revision
+        pending = self._pending_live_mic_start
+        if pending is not None and pending.push_to_talk is None:
+            return False
+        starting = self._live_mic_start_in_progress_generation
+        uncancelled_start = starting is not None and starting != self._live_mic_cancel_start_generation
+        if (self._is_listening or uncancelled_start) and self._push_to_talk_owner is None:
+            return False
+        self._push_to_talk_owner = marker
+        return True
+
+    async def _execute_live_mic_start(self, command: LiveMicStartCommand, *, queued: bool = False) -> LiveMicOutcome:
+
         start_kwargs: dict[str, Any] = {
             "tauri_hotkey_marker": command.tauri_hotkey_marker,
         }
+        if queued:
+            start_kwargs["queued_command"] = command
         if command.post_process:
             start_kwargs["post_process"] = True
+        if command.push_to_talk is not None:
+            start_kwargs["push_to_talk"] = command.push_to_talk
         start_error = await self.start_listening(**start_kwargs)
         if start_error is not None:
             return LiveMicOutcome(
@@ -13519,7 +13689,14 @@ class ScriberWebController:
             )
         return LiveMicOutcome(
             status=202 if self._pending_live_mic_start is not None else 200,
-            payload=self.get_state(),
+            payload={
+                **self.get_state(),
+                **(
+                    {"pushToTalkIgnored": True}
+                    if command.push_to_talk is not None and self._push_to_talk_owner != command.push_to_talk
+                    else {}
+                ),
+            },
         )
 
     async def resolve_live_mic_toggle(self) -> LiveMicOutcome | None:
@@ -13558,8 +13735,26 @@ class ScriberWebController:
             )
         return LiveMicOutcome(status=200, payload=self.get_state())
 
-    def request_live_mic_stop(self) -> LiveMicOutcome:
+    def request_live_mic_stop(self, push_to_talk: PushToTalkCommand | None = None) -> LiveMicOutcome:
         """Acknowledge one non-blocking Live Mic stop request."""
+
+        if push_to_talk is not None:
+            owner = self._push_to_talk_owner
+            if push_to_talk.revision <= self._push_to_talk_revision:
+                return LiveMicOutcome(
+                    status=202,
+                    payload={"apiVersion": REST_API_VERSION, "stopAccepted": True, "pushToTalkIgnored": True},
+                )
+            self._push_to_talk_revision = push_to_talk.revision
+            # A newer release also supersedes an older PTT capture when the
+            # intervening press itself is delayed. UI-owned captures have no
+            # gesture owner and must remain untouched.
+            if owner is None:
+                return LiveMicOutcome(
+                    status=202,
+                    payload={"apiVersion": REST_API_VERSION, "stopAccepted": True, "pushToTalkIgnored": True},
+                )
+            self._push_to_talk_owner = None
 
         replay_execution = self._provider_replay_execution
         try:
@@ -13614,7 +13809,7 @@ class ScriberWebController:
         # the generation cancelled lets capture-first cleanup finish safely but
         # prevents provider/pipeline activation after a user's stop intent.
         start_in_progress = bool(self._live_mic_start_in_progress_generation is not None)
-        if not self._is_listening and not start_in_progress:
+        if not self._is_listening and not start_in_progress and self._pending_live_mic_native_cleanup is None:
             return {
                 "stopAccepted": True,
                 "stopScheduled": False,
@@ -13725,6 +13920,11 @@ class ScriberWebController:
         return result
 
     async def _stop_listening_session(self, stop_owner: object) -> ProviderUserError | None:
+        if self._pending_live_mic_native_cleanup is not None:
+            if await self._retry_live_mic_native_cleanup():
+                return None
+            claim = _audio_admission_owner(self).current
+            return _live_mic_admission_conflict_info(self, claim) if claim is not None else None
         self._mark_live_mic_stop_requested()
         # Acquire lock for entire operation - no parallel start/stop allowed
         async with self._listening_lock:
@@ -14001,6 +14201,14 @@ class ScriberWebController:
                     pipeline,
                     pipeline_stop_completed=pipeline_stop_completed,
                 )
+                current_claim = _audio_admission_owner(self).current
+                if (
+                    session_id is not None
+                    and current_claim is not None
+                    and current_claim.owner_kind == "live_mic"
+                    and current_claim.owner_id == session_id
+                ):
+                    self._pending_live_mic_native_cleanup = (session_id, pipeline)
                 if audio_claim is not None and native_audio_stop_confirmation is True:
                     await _release_persistent_audio(self, audio_claim)
                 elif audio_claim is not None:
@@ -17765,7 +17973,11 @@ class ScriberWebController:
         # waiting for startup to release the capture lock. Admit the shutdown
         # stop before sealing, then every accepted finalizer is in the join
         # below and no later stop can enter after the polisher snapshot.
-        if self._is_listening or self._live_mic_start_in_progress_generation is not None:
+        if (
+            self._is_listening
+            or self._live_mic_start_in_progress_generation is not None
+            or self._pending_live_mic_native_cleanup is not None
+        ):
             self._admit_live_mic_finalizer()
         self._live_mic_finalizer_supervisor.seal()
         replay_execution, self._provider_replay_execution = (
@@ -19338,7 +19550,7 @@ APP_PROVIDER_REPLAY: web.AppKey[ProviderReplayRegistry] = web.AppKey(
 class _LiveMicReplayAdapter:
     pending_activations: Mapping[str, Mapping[str, Any]]
     activate_replay: Callable[
-        [dict[str, Any]],
+        [dict[str, Any], PushToTalkCommand | None],
         Awaitable[tuple[ProviderReplayExecution, dict[str, Any]]],
     ]
     state: Callable[[], dict[str, Any]]
@@ -19347,8 +19559,10 @@ class _LiveMicReplayAdapter:
     def pending_activation(self) -> bool:
         return bool(self.pending_activations)
 
-    async def activate(self, marker: Mapping[str, Any]) -> LiveMicOutcome:
-        await self.activate_replay(dict(marker))
+    async def activate(
+        self, marker: Mapping[str, Any], push_to_talk: PushToTalkCommand | None = None
+    ) -> LiveMicOutcome:
+        await self.activate_replay(dict(marker), push_to_talk)
         return LiveMicOutcome(status=200, payload=self.state())
 
 
@@ -19765,11 +19979,14 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     async def activate_provider_replay(
         marker: dict[str, Any],
+        push_to_talk: PushToTalkCommand | None = None,
     ) -> tuple[ProviderReplayExecution, dict[str, Any]]:
         """Consume one shell-bound activation and start the real controller."""
 
         replay = app[APP_PROVIDER_REPLAY]
         ctl: ScriberWebController = app[APP_CONTROLLER]
+        if push_to_talk is not None and not ctl._accept_push_to_talk_start(push_to_talk):
+            raise ProviderReplayConflict("provider replay push-to-talk activation was superseded")
         sample_id = str(marker["sampleId"])
         run_id = str(marker["runId"])
         activation_kind = str(marker["activationKind"])
@@ -19865,6 +20082,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 post_process=execution.post_processing_enabled,
                 tauri_hotkey_marker=marker,
                 provider_replay_execution=execution,
+                push_to_talk=push_to_talk,
             )
             if start_error is not None:
                 raise RuntimeError("provider replay pipeline was rejected")

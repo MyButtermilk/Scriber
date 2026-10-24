@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -14,6 +16,7 @@ from src.api.live_mic_routes import (
     LiveMicOutcome,
     LiveMicReplayPort,
     LiveMicStartCommand,
+    PushToTalkCommand,
     register_live_mic_routes,
 )
 
@@ -36,7 +39,7 @@ class _InMemoryLiveMicControl:
         self.stop_count += 1
         return LiveMicOutcome(status=200, payload={"listening": False, "apiVersion": "1"})
 
-    def request_live_mic_stop(self) -> LiveMicOutcome:
+    def request_live_mic_stop(self, push_to_talk: PushToTalkCommand | None = None) -> LiveMicOutcome:
         self.stop_request_count += 1
         return LiveMicOutcome(status=202, payload={"stopAccepted": True, "apiVersion": "1"})
 
@@ -46,7 +49,9 @@ class _InMemoryLiveMicReplay:
     def pending_activation(self) -> bool:
         return False
 
-    async def activate(self, marker: Mapping[str, Any]) -> LiveMicOutcome:
+    async def activate(
+        self, marker: Mapping[str, Any], push_to_talk: PushToTalkCommand | None = None
+    ) -> LiveMicOutcome:
         raise AssertionError(f"unexpected replay activation: {marker}")
 
 
@@ -161,3 +166,25 @@ def test_create_app_wires_all_live_mic_handlers_to_the_domain_module() -> None:
     }
 
     assert handlers == {path: "src.api.live_mic_routes" for path in paths}
+
+
+@pytest.mark.asyncio
+async def test_push_to_talk_marker_accepts_fragmented_json_and_rejects_invalid_revision() -> None:
+    control = _InMemoryLiveMicControl()
+    app = web.Application()
+    register_live_mic_routes(app, control=control, replay=_InMemoryLiveMicReplay())
+    marker = {"gestureId": "bdbe01ce-5633-4aef-80f9-543900c484c6", "revision": 1}
+    body = json.dumps({"pushToTalk": marker}).encode()
+
+    async def chunks():
+        yield body[:12]
+        await asyncio.sleep(0)
+        yield body[12:]
+
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post("/api/live-mic/start", data=chunks())
+        assert response.status == 200
+        assert control.started[-1].push_to_talk == PushToTalkCommand(marker["gestureId"], 1)
+        malformed = await client.post("/api/live-mic/stop-request", json={"pushToTalk": {**marker, "revision": True}})
+        assert malformed.status == 400
+        assert control.stop_request_count == 0

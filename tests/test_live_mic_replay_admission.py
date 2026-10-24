@@ -26,7 +26,7 @@ async def test_replay_activation_during_stop_never_enters_ordinary_queue(
     monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False)
     controller = web_api.ScriberWebController(asyncio.get_running_loop())
     start_live_mic = AsyncMock()
-    monkeypatch.setattr(controller, "start_live_mic", start_live_mic)
+    monkeypatch.setattr(controller, "_execute_live_mic_start", start_live_mic)
     monkeypatch.setattr(controller, "_schedule_state_snapshot_broadcast", MagicMock())
     ordinary = (
         LiveMicStartCommand(post_process=True, tauri_hotkey_marker=None, provider_replay_activation=False)
@@ -64,8 +64,9 @@ async def test_replay_activation_during_stop_never_enters_ordinary_queue(
         if ordinary is None:
             start_live_mic.assert_not_awaited()
         else:
-            start_live_mic.assert_awaited_once_with(ordinary)
-        assert controller._pending_live_mic_start is None
+            start_live_mic.assert_awaited_once_with(ordinary, queued=True)
+        # The mocked executor has not acquired admission or consumed the command.
+        assert controller._pending_live_mic_start is ordinary
     finally:
         controller._is_stopping = False
         stop_gate.set()

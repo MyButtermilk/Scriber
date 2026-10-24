@@ -6,12 +6,15 @@ import asyncio
 import json
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 
 from src import database, native_overlay, web_api
-from src.api.live_mic_routes import LiveMicStartCommand
+from src.api.live_mic_routes import LiveMicStartCommand, register_live_mic_routes
 from src.gemini_realtime_stt import GeminiTranscribeLiveSTTService
 
 
@@ -54,6 +57,10 @@ class _ContinuationPipeline:
         self.native_stopped = True
         await self.callbacks["on_capture_stopped"]()
         self.capture_stopped.set()
+        if self.provider_completed.is_set():
+            if self.failure is not None:
+                raise self.failure
+            return
         await self.provider_gate.wait()
         if self.text:
             self.callbacks["on_transcription"](self.text, True)
@@ -469,6 +476,184 @@ async def test_unconfirmed_native_stop_keeps_capture_exclusive(continuation, con
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("confirmation", [False, None, True])
+async def test_pipeline_exit_keeps_native_owner_until_confirmed_stop_retry(continuation, confirmation):
+    ctl = continuation.controller
+    first, first_record = await continuation.start("")
+    first.native_confirmation = confirmation
+    first.native_stopped = True
+    task = ctl._pipeline_task
+    first.finished.set()
+    await asyncio.wait_for(task, 2)
+    await ctl._wait_for_detached_tasks()
+
+    if confirmation is not True:
+        assert ctl.get_state()["nativeCleanupPending"] is True
+        assert ctl._persistent_audio_claim is not None
+        assert ctl._persistent_audio_claim.owner_id == first_record.id
+        error = await ctl.start_listening()
+        assert error is not None and error.code == "recording_cleanup_pending"
+        assert len(continuation.pipelines) == 1
+
+        first.native_confirmation = True
+        first.provider_gate.set()
+        outcome = ctl.request_async_stop_listening()
+        assert outcome["stopScheduled"] is True
+        await asyncio.wait_for(ctl._background_stop_task, 2)
+
+    assert ctl._persistent_audio_claim is None
+    assert ctl.get_state()["nativeCleanupPending"] is False
+    second, second_record = await continuation.start("Nachtrag.")
+    assert second is not first
+    assert ctl._persistent_audio_claim.owner_id == second_record.id
+
+
+@pytest.mark.asyncio
+async def test_failed_stop_retries_exact_native_owner_without_republishing_transcript(continuation, monkeypatch):
+    ctl = continuation.controller
+    first, first_record = await continuation.start("Erster Gedanke.")
+    first.native_confirmation = False
+    first.failure = RuntimeError("Native microphone stop was not confirmed")
+    first.provider_gate.set()
+    await asyncio.wait_for(continuation.stop(), 2)
+    assert ctl._persistent_audio_claim.owner_id == first_record.id
+    assert ctl._pending_live_mic_native_cleanup[1] is first
+    saved_before_retry = ctl._save_transcript_to_db_async.await_count
+
+    outcome = await ctl.stop_live_mic()
+    assert outcome.status == 400
+    assert outcome.payload["code"] == "recording_cleanup_pending"
+    assert ctl._persistent_audio_claim.owner_id == first_record.id
+
+    first.native_confirmation = True
+    store = web_api._audio_admission_owner(ctl).store
+    original_release = store.release
+
+    def fail_release(_claim):
+        raise OSError("temporary admission storage failure")
+
+    monkeypatch.setattr(store, "release", fail_release)
+    assert (await ctl.stop_live_mic()).status == 400
+    assert ctl._persistent_audio_claim.owner_id == first_record.id
+    monkeypatch.setattr(store, "release", original_release)
+    # Downstream failure stays sticky even after native cleanup succeeds.
+    assert (await ctl.stop_live_mic()).status == 200
+    assert ctl._persistent_audio_claim is None
+    assert ctl._save_transcript_to_db_async.await_count == saved_before_retry
+    assert continuation.injected == ["Erster Gedanke."]
+    second, second_record = await continuation.start("Nachtrag.")
+    assert second is not first
+    assert ctl._persistent_audio_claim.owner_id == second_record.id
+    assert await ctl._emergency_stop_pipeline(session_id=first_record.id) is False
+    assert ctl._persistent_audio_claim.owner_id == second_record.id
+
+
+@pytest.mark.asyncio
+async def test_audio_lease_loss_retries_failed_emergency_cleanup(continuation):
+    ctl = continuation.controller
+    first, first_record = await continuation.start("")
+    first.native_confirmation = None
+    first.provider_gate.set()
+    assert await ctl._emergency_stop_pipeline(session_id=first_record.id) is False
+    owner = web_api._audio_admission_owner(ctl)
+    claim = owner.current
+    assert claim.owner_id == first_record.id
+
+    first.native_confirmation = True
+    await owner.note_loss(claim, reason="test_lease_expired")
+    assert owner.current is None
+    assert ctl._pending_live_mic_native_cleanup is None
+    assert ctl._is_stopping is False
+
+
+@pytest.mark.asyncio
+async def test_shutdown_retries_retained_native_cleanup_after_pipeline_exit(continuation):
+    ctl = continuation.controller
+    first, _first_record = await continuation.start("")
+    first.native_confirmation = False
+    first.native_stopped = True
+    task = ctl._pipeline_task
+    first.finished.set()
+    await task
+    await ctl._wait_for_detached_tasks()
+    assert ctl._persistent_audio_claim is not None
+
+    first.native_confirmation = True
+    first.provider_gate.set()
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=2)
+    assert ctl._persistent_audio_claim is None
+    assert ctl._pending_live_mic_native_cleanup is None
+
+
+@pytest.mark.asyncio
+async def test_temporary_prewarm_stop_timeout_retains_claim_after_pipeline_exit(continuation, monkeypatch):
+    ctl = continuation.controller
+    first, record = await continuation.start("")
+    monkeypatch.setattr(web_api.Config, "MIC_POST_RECORDING_PREWARM_SECONDS", 0.0)
+    manager = ctl._mic_prewarm
+    manager._pending_stop_prewarm_id = "still-stopping"
+    monkeypatch.setattr(manager, "stop", lambda **_kwargs: None)
+    task = ctl._pipeline_task
+    first.native_stopped = True
+    first.finished.set()
+    await task
+    await ctl._wait_for_detached_tasks()
+    assert ctl._persistent_audio_claim.owner_id == record.id
+
+    def confirm_stop(**_kwargs):
+        manager._pending_stop_prewarm_id = None
+
+    monkeypatch.setattr(manager, "stop", confirm_stop)
+    first.provider_gate.set()
+    assert (await ctl.stop_live_mic()).status == 200
+    assert ctl._persistent_audio_claim is None
+    assert not manager.is_active
+
+
+@pytest.mark.asyncio
+async def test_constructor_failure_keeps_failed_lease_release_available_for_stop_retry(continuation, monkeypatch):
+    ctl = continuation.controller
+    owner = web_api._audio_admission_owner(ctl)
+    store = owner.store
+    cleanup_visible = asyncio.Event()
+
+    async def observe_state(payload):
+        if payload.get("type") == "state" and payload.get("nativeCleanupPending") is True:
+            cleanup_visible.set()
+
+    monkeypatch.setattr(ctl, "broadcast", observe_state)
+
+    def fail_constructor(**_kwargs):
+        raise RuntimeError("synthetic pipeline construction failure")
+
+    def fail_release(_claim):
+        raise OSError("temporary admission storage failure")
+
+    with monkeypatch.context() as faults:
+        faults.setattr(web_api, "ScriberPipeline", fail_constructor)
+        faults.setattr(store, "release", fail_release)
+        with pytest.raises(RuntimeError, match="synthetic pipeline construction failure"):
+            await ctl.start_listening()
+
+    claim = owner.current
+    assert claim is not None
+    assert ctl.get_state()["nativeCleanupPending"] is True
+    await asyncio.wait_for(cleanup_visible.wait(), 2)
+    assert not continuation.pipelines
+    error = await ctl.start_listening()
+    assert error is not None and error.code == "recording_cleanup_pending"
+
+    stop = ctl.request_async_stop_listening()
+    assert stop["stopScheduled"] is True
+    await asyncio.wait_for(ctl._background_stop_task, 2)
+    assert owner.current is None
+    assert ctl.get_state()["nativeCleanupPending"] is False
+    _pipeline, record = await continuation.start("Nachtrag.")
+    assert record.id != claim.owner_id
+    assert owner.current.owner_id == record.id
+
+
+@pytest.mark.asyncio
 async def test_stop_cancels_start_queued_during_native_stop(continuation):
     ctl = continuation.controller
     first, _record = await continuation.start("Eins.")
@@ -488,6 +673,83 @@ async def test_stop_cancels_start_queued_during_native_stop(continuation):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_successor", [False, True])
+async def test_new_start_queued_behind_cancelled_start_is_eventually_admitted(
+    continuation, monkeypatch, cancel_successor
+):
+    ctl = continuation.controller
+    starting = asyncio.Event()
+    finish_setup = asyncio.Event()
+    continuation.cleanup_gates.append(finish_setup)
+    continuation_ready = asyncio.Event()
+    allow_continuation = asyncio.Event()
+    continuation.cleanup_gates.append(allow_continuation)
+    original_continue = ctl._start_pending_live_mic
+
+    async def hold_continuation():
+        continuation_ready.set()
+        await allow_continuation.wait()
+        await original_continue()
+
+    if cancel_successor:
+        monkeypatch.setattr(ctl, "_start_pending_live_mic", hold_continuation)
+
+    async def pause():
+        starting.set()
+        await finish_setup.wait()
+
+    monkeypatch.setattr(ctl, "_pause_idle_mic_prewarm_for_capture", pause)
+    first_start = asyncio.create_task(ctl.start_listening())
+    await asyncio.wait_for(starting.wait(), 2)
+    stop = continuation.stop()
+    second_start = asyncio.create_task(ctl.start_listening(post_process=True))
+    # The stop wrapper admits its own finalizer on the next event-loop turn;
+    # this later start can reach the shared lock before that finalizer.
+    await asyncio.sleep(0)
+    finish_setup.set()
+    await asyncio.wait_for(asyncio.gather(first_start, second_start, stop), 2)
+    if cancel_successor:
+        await asyncio.wait_for(continuation_ready.wait(), 2)
+        ctl.request_async_stop_listening()
+        allow_continuation.set()
+    await ctl._wait_for_detached_tasks()
+    assert ctl._pending_live_mic_start is None
+    if cancel_successor:
+        assert not continuation.pipelines
+        assert not ctl._is_listening
+    else:
+        assert len(continuation.pipelines) == 1
+        assert ctl._is_listening
+        assert ctl._session_id in ctl._post_processing_session_ids
+
+
+@pytest.mark.asyncio
+async def test_stop_revokes_dispatched_continuation_waiting_for_admission(continuation, monkeypatch):
+    ctl = continuation.controller
+    dispatched = asyncio.Event()
+    original = ctl._execute_live_mic_start
+
+    async def execute(command, **kwargs):
+        dispatched.set()
+        return await original(command, **kwargs)
+
+    monkeypatch.setattr(ctl, "_execute_live_mic_start", execute)
+    ctl._queue_live_mic_start()
+    background = asyncio.create_task(asyncio.sleep(0))
+    await background
+    ctl._background_stop_task = background
+    async with ctl._listening_lock:
+        ctl._on_background_stop_done(background)
+        await asyncio.wait_for(dispatched.wait(), 2)
+        ctl.request_async_stop_listening()
+    await ctl._wait_for_detached_tasks()
+
+    assert not continuation.pipelines
+    assert ctl._pending_live_mic_start is None
+    assert web_api._audio_admission_owner(ctl).current is None
+
+
+@pytest.mark.asyncio
 async def test_start_immediately_after_stop_request_is_retained_before_finalizer_runs(continuation):
     ctl = continuation.controller
     first, _record = await continuation.start("Eins.")
@@ -503,13 +765,17 @@ async def test_start_immediately_after_stop_request_is_retained_before_finalizer
 
 
 @pytest.mark.asyncio
-async def test_queued_post_processing_start_begins_at_native_release(continuation):
+@pytest.mark.parametrize("post_process", [False, True], ids=["dictation-hotkey", "post-processing-hotkey"])
+async def test_queued_hotkey_start_begins_at_native_release(continuation, post_process):
     ctl = continuation.controller
     first, _record = await continuation.start("Eins.")
     first.native_gate.clear()
     stop_task = continuation.stop()
     await asyncio.wait_for(first.stop_started.wait(), 2)
-    await ctl._handle_post_processing_hotkey_toggle()
+    if post_process:
+        await ctl._handle_post_processing_hotkey_toggle()
+    else:
+        await ctl._handle_hotkey_toggle()
     assert ctl.get_state()["micStartPending"] is True
     continuation.pipeline_created.clear()
     first.native_gate.set()
@@ -521,7 +787,7 @@ async def test_queued_post_processing_start_begins_at_native_release(continuatio
 
     assert not stop_task.done()
     assert ctl._is_listening is True
-    assert ctl._session_id in ctl._post_processing_session_ids
+    assert (ctl._session_id in ctl._post_processing_session_ids) is post_process
     assert second.text_injection_enabled is False
     assert ctl.get_state()["micStartPending"] is False
 
@@ -719,3 +985,158 @@ async def test_shutdown_seals_finalizer_admission_before_polisher_close(continua
     finalize.assert_not_awaited()
     allow_close.set()
     assert await asyncio.wait_for(drain, 3) == 0
+
+
+@pytest.mark.asyncio
+async def test_push_to_talk_release_before_delayed_press_cannot_start_capture(continuation):
+    ctl = continuation.controller
+    app = web.Application()
+    register_live_mic_routes(app, control=ctl, replay=MagicMock(pending_activation=False))
+    gesture = str(uuid4())
+    async with TestClient(TestServer(app)) as client:
+        released = await client.post(
+            "/api/live-mic/stop-request", json={"pushToTalk": {"gestureId": gesture, "revision": 2}}
+        )
+        assert released.status == 202
+        pressed = await client.post("/api/live-mic/start", json={"pushToTalk": {"gestureId": gesture, "revision": 1}})
+        assert pressed.status == 200
+        assert not continuation.pipelines
+        assert web_api._audio_admission_owner(ctl).current is None
+
+
+@pytest.mark.asyncio
+async def test_push_to_talk_late_release_cannot_stop_successor(continuation):
+    ctl = continuation.controller
+    app = web.Application()
+    register_live_mic_routes(app, control=ctl, replay=MagicMock(pending_activation=False))
+    old_gesture, new_gesture = str(uuid4()), str(uuid4())
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/api/live-mic/stop-request", json={"pushToTalk": {"gestureId": old_gesture, "revision": 2}})
+        await client.post("/api/live-mic/start", json={"pushToTalk": {"gestureId": new_gesture, "revision": 3}})
+        pipeline = continuation.pipelines[-1]
+        pipeline.provider_gate.set()
+        await asyncio.wait_for(pipeline.ready.wait(), 2)
+        await client.post("/api/live-mic/stop-request", json={"pushToTalk": {"gestureId": old_gesture, "revision": 2}})
+        assert ctl._background_stop_task is None
+        assert ctl._is_listening
+        await client.post("/api/live-mic/stop-request", json={"pushToTalk": {"gestureId": new_gesture, "revision": 4}})
+        await asyncio.wait_for(pipeline.stop_started.wait(), 2)
+        assert ctl._background_stop_task is not None
+        await ctl._background_stop_task
+        assert not ctl._is_listening
+        ui_pipeline, _ = await continuation.start("UI recording")
+        pressed = await client.post(
+            "/api/live-mic/start", json={"pushToTalk": {"gestureId": old_gesture, "revision": 5}}
+        )
+        assert (await pressed.json())["pushToTalkIgnored"] is True
+        await client.post("/api/live-mic/stop-request", json={"pushToTalk": {"gestureId": old_gesture, "revision": 6}})
+        assert ctl._is_listening
+        assert not ui_pipeline.stop_started.is_set()
+
+
+@pytest.mark.asyncio
+async def test_push_to_talk_release_cancels_press_waiting_for_audio_admission(continuation, monkeypatch):
+    ctl = continuation.controller
+    app = web.Application()
+    register_live_mic_routes(app, control=ctl, replay=MagicMock(pending_activation=False))
+    gesture = str(uuid4())
+    entered = asyncio.Event()
+    original = ctl.start_listening
+
+    async def waiting_start(**kwargs):
+        entered.set()
+        return await original(**kwargs)
+
+    monkeypatch.setattr(ctl, "start_listening", waiting_start)
+    async with TestClient(TestServer(app)) as client:
+        async with ctl._listening_lock:
+            press = asyncio.create_task(
+                client.post("/api/live-mic/start", json={"pushToTalk": {"gestureId": gesture, "revision": 1}})
+            )
+            await asyncio.wait_for(entered.wait(), 2)
+            release = await client.post(
+                "/api/live-mic/stop-request", json={"pushToTalk": {"gestureId": gesture, "revision": 2}}
+            )
+            assert release.status == 202
+        response = await asyncio.wait_for(press, 2)
+        assert (await response.json())["pushToTalkIgnored"] is True
+        assert not continuation.pipelines
+
+
+@pytest.mark.asyncio
+async def test_push_to_talk_queued_press_keeps_ownership_through_capture_release(continuation):
+    ctl = continuation.controller
+    old, _ = await continuation.start("old")
+    old.native_gate.clear()
+    old_stop = continuation.stop()
+    await asyncio.wait_for(old.stop_started.wait(), 2)
+    app = web.Application()
+    register_live_mic_routes(app, control=ctl, replay=MagicMock(pending_activation=False))
+    gesture = str(uuid4())
+    successor_gesture = str(uuid4())
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post("/api/live-mic/start", json={"pushToTalk": {"gestureId": gesture, "revision": 1}})
+        assert response.status == 202
+        response = await client.post(
+            "/api/live-mic/start", json={"pushToTalk": {"gestureId": successor_gesture, "revision": 3}}
+        )
+        assert response.status == 202
+        await client.post("/api/live-mic/stop-request", json={"pushToTalk": {"gestureId": gesture, "revision": 2}})
+        continuation.pipeline_created.clear()
+        old.native_gate.set()
+        await asyncio.wait_for(continuation.pipeline_created.wait(), 2)
+        new = continuation.pipelines[-1]
+        assert new is not old
+        new.provider_gate.set()
+        await asyncio.wait_for(new.ready.wait(), 2)
+        await client.post(
+            "/api/live-mic/stop-request", json={"pushToTalk": {"gestureId": successor_gesture, "revision": 4}}
+        )
+        await asyncio.wait_for(new.stop_started.wait(), 2)
+        old.provider_gate.set()
+        await old_stop
+
+
+@pytest.mark.asyncio
+async def test_push_to_talk_new_press_survives_cancelled_start_cleanup(continuation, monkeypatch):
+    ctl = continuation.controller
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    continuation.cleanup_gates.append(release)
+    original = web_api._live_mic_audio_conflict
+
+    async def conflict(controller):
+        entered.set()
+        await release.wait()
+        return await original(controller)
+
+    monkeypatch.setattr(web_api, "_live_mic_audio_conflict", conflict)
+    app = web.Application()
+    register_live_mic_routes(app, control=ctl, replay=MagicMock(pending_activation=False))
+    first, second = str(uuid4()), str(uuid4())
+    accepted_b = asyncio.Event()
+    original_accept = ctl._accept_push_to_talk_start
+
+    def accept(marker):
+        result = original_accept(marker)
+        if marker.gesture_id == second:
+            accepted_b.set()
+        return result
+
+    monkeypatch.setattr(ctl, "_accept_push_to_talk_start", accept)
+    async with TestClient(TestServer(app)) as client:
+        start_a = asyncio.create_task(
+            client.post("/api/live-mic/start", json={"pushToTalk": {"gestureId": first, "revision": 1}})
+        )
+        await asyncio.wait_for(entered.wait(), 2)
+        await client.post("/api/live-mic/stop-request", json={"pushToTalk": {"gestureId": first, "revision": 2}})
+        start_b = asyncio.create_task(
+            client.post("/api/live-mic/start", json={"pushToTalk": {"gestureId": second, "revision": 3}})
+        )
+        # The canceled prior start still holds admission; the new gesture must queue/wait, not be rejected as UI-owned.
+        await asyncio.wait_for(accepted_b.wait(), 2)
+        release.set()
+        await asyncio.wait_for(start_a, 2)
+        result = await asyncio.wait_for(start_b, 2)
+        assert (await result.json()).get("pushToTalkIgnored") is not True
+        await asyncio.wait_for(continuation.pipeline_created.wait(), 2)

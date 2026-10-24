@@ -1,5 +1,28 @@
 import type { ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 
+/** Keep only lifecycle changes received during one bounded state request. */
+export function createLiveMicSnapshotFence() {
+  let currentStateChanged = false;
+  const changedSessions = new Set<string>();
+  return {
+    observe(message: ScriberWebSocketMessage): void {
+      if (
+        message.type === "state" ||
+        message.type === "session_started" ||
+        (message.type === "status" && typeof message.nativeCleanupPending === "boolean")
+      ) {
+        currentStateChanged = true;
+      } else if (["status", "transcribing", "session_finished", "error"].includes(message.type)) {
+        if (message.sessionId) changedSessions.add(message.sessionId);
+        else currentStateChanged = true;
+      }
+    },
+    acceptsSnapshot(snapshot: { sessionId?: string | null }): boolean {
+      return !currentStateChanged && (!snapshot.sessionId || !changedSessions.has(snapshot.sessionId));
+    },
+  };
+}
+
 /** Follow the current capture while older recordings finish independently. */
 export function createLiveMicSessionMessageGate(): (message: ScriberWebSocketMessage) => boolean {
   let activeSessionId: string | null = null;

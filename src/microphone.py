@@ -2613,8 +2613,11 @@ class MicrophoneInput(BaseInputTransport):
             try:
                 await asyncio.wait_for(audio_queue.join(), timeout=1.0)
             except TimeoutError:
-                logger.debug("Timed out waiting for downstream microphone audio to drain")
+                self._capture_integrity_error = "microphoneDownstreamDrainTimeout"
+                self._consumer_error = "RuntimeError: microphoneDownstreamDrainTimeout"
         await super().stop(frame)
+        if self._capture_integrity_error:
+            raise RuntimeError(self._capture_integrity_error)
 
     def _stop_capture_source_blocking(self, *, close_stream: bool) -> None:
         """Synchronously release native capture while holding the device guard.
@@ -2628,10 +2631,10 @@ class MicrophoneInput(BaseInputTransport):
         with get_device_guard_lock():
             source = self._frame_source
             source_stream = source.stream if source is not None else None
+            # A closed wrapper may still retain a timed-out native stop ID.
+            # Keep retrying that producer even after both stream handles vanish.
             source_owns_partial_open = bool(
-                source is not None
-                and (self.stream is None or source_stream is self.stream)
-                and (source_stream is not None or self.stream is not None)
+                source is not None and (self.stream is None or source_stream is self.stream)
             )
             if source_owns_partial_open:
                 stop_error: Exception | None = None
