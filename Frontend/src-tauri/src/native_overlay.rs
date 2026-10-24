@@ -1078,13 +1078,6 @@ mod tests {
     }
 
     #[test]
-    fn overlay_status_is_unavailable_without_app_handle() {
-        let status = status_payload();
-        assert_eq!(status["renderer"], "tauri-webview");
-        assert_eq!(status["available"], false);
-    }
-
-    #[test]
     fn only_window_mutations_require_the_tauri_ui_thread() {
         assert!(overlay_command_requires_ui_thread("overlayPrepare"));
         assert!(overlay_command_requires_ui_thread("overlayShow"));

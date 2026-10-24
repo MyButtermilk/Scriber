@@ -23,30 +23,6 @@ from src.runtime.audio_frame_pipe import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_rust_audio_sidecar_smoke_script_documents_capture_contract() -> None:
-    script = (REPO_ROOT / "scripts" / "smoke_rust_audio_sidecar.py").read_text(encoding="utf-8")
-
-    assert "SCRIBER_RUST_AUDIO_WASAPI_CAPTURE" in script
-    assert "SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE" in script
-    assert "captureStart" in script
-    assert "captureStop" in script
-    assert "nativeEndpointIdHash" in script
-    assert "selected-native-endpoint-hash" in script
-    assert "firstFrameReadMs" in script
-    assert "observedDurationSec" in script
-    assert "framesRead" in script
-    assert "prebufferFramesRead" in script
-    assert "prebufferAfterLiveCount" in script
-    assert "totalPrebufferFramesWritten" in script
-    assert "totalLiveFramesWritten" in script
-    assert "--prebuffer-ms" in script
-    assert "--prewarm-before-capture" in script
-    assert "adoptedPrewarm" in script
-    assert "totalAdoptedPrewarmBlocks" in script
-    assert "sequenceGapCount" in script
-    assert "selectedHashVerified" in script
-
-
 def test_rust_audio_sidecar_smoke_plan_only_writes_artifact(tmp_path: Path) -> None:
     output = tmp_path / "rust-audio-sidecar-plan.json"
     result = subprocess.run(

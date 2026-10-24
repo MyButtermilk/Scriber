@@ -638,11 +638,6 @@ async def test_recovery_retranscribes_when_prepared_audio_identity_changes(monke
 
 
 @pytest.mark.asyncio
-async def test_finalizer_creates_canonical_segments_and_cited_analysis(monkeypatch, tmp_path):
-    database._close_all_connections()
-
-
-@pytest.mark.asyncio
 async def test_finalizer_recovery_reuses_completed_track_without_second_provider_call(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "track-recovery.db")

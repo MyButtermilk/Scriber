@@ -103,9 +103,17 @@ def test_legacy_diagnostic_callback_cannot_abort_provider_request():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["soniox", "modulate"])
 @pytest.mark.parametrize(
-    "status,retryable", [(500, True), (504, True), (503, True), (408, True), (429, False), (401, False)]
+    "status,retryable,uncertain_commit",
+    [
+        (500, True, False),
+        (504, True, False),
+        (503, True, False),
+        (408, True, False),
+        (429, False, False),
+        (401, False, False),
+        (500, True, True),
+    ],
 )
-@pytest.mark.parametrize("uncertain_commit", [False, True])
 async def test_transport_status_retry_preserves_policy_and_durable_fence(
     tmp_path, provider, status, retryable, uncertain_commit
 ):

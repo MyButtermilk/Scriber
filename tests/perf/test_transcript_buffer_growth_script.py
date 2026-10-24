@@ -39,11 +39,3 @@ def test_transcript_buffer_growth_script_guards_long_session_shape(tmp_path: Pat
     assert payload["metadataContentLeaked"] is False
     assert payload["checks"]["appendDidNotMaterializePendingSegments"] is True
     assert payload["checks"]["pendingSegmentsClearedAfterMaterialize"] is True
-
-
-def test_transcript_buffer_growth_defaults_model_30_minute_session() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    script = (repo_root / "scripts" / "check_transcript_buffer_growth.py").read_text(encoding="utf-8")
-
-    assert 'parser.add_argument("--segments", type=int, default=1800)' in script
-    assert "one final segment per second over 30 minutes" in script

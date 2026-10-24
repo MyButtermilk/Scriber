@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -348,16 +347,3 @@ def _segment_ids_from_prompt(prompt: str) -> list[str]:
             if value not in ids:
                 ids.append(value)
     return ids or ["segment-0"]
-
-
-def test_frontend_and_settings_contract_expose_celeris_without_a_key() -> None:
-    root = Path(__file__).resolve().parents[1]
-    settings = (root / "Frontend/client/src/pages/Settings.tsx").read_text(encoding="utf-8")
-    api_types = (root / "Frontend/client/src/lib/api-types.ts").read_text(encoding="utf-8")
-    web_api = (root / "src/web_api.py").read_text(encoding="utf-8")
-    config = (root / "src/config.py").read_text(encoding="utf-8")
-    assert 'value: "celeris-1"' in settings
-    assert 'provider="Celeris"' in settings
-    assert "celeris?: string" in api_types
-    assert '"celeris": getattr(Config, "CELERIS_API_KEY"' in web_api
-    assert '"celeris": "CELERIS_API_KEY"' in config

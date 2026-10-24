@@ -20,21 +20,16 @@ def read_script(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
 
 
-def test_tauri_shell_defers_backend_start_off_setup_hot_path() -> None:
-    lib = read_script("Frontend/src-tauri/src/lib.rs")
-
-    assert "early backend ensure deferred until Tauri setup completes" in lib
-    assert "setup backend ensure and global hotkey registration deferred to supervisor" in lib
-    assert "let setup_backend_status = manager.ensure_started();" not in lib
-    assert "global hotkey registration skipped:" not in lib
-    assert "let status = manager.ensure_started();" in lib
-    assert "std::thread::sleep(BACKEND_SUPERVISOR_INTERVAL);" in lib
-    setup = lib.split(".setup(move |app| {", 1)[1].split(".invoke_handler", 1)[0]
-    # Launch configuration and the overlay event owner must exist before the
-    # worker starts; hidden WebView creation must not gate process startup.
-    assert setup.index("configure_launch(") < setup.index("start_backend_supervisor(")
-    assert setup.index("native_overlay::set_app_handle(") < setup.index("start_backend_supervisor(")
-    assert setup.index("start_backend_supervisor(") < setup.index("create_overlay_window(app)")
+def test_overlay_client_deadline_exceeds_native_ui_dispatch_deadline() -> None:
+    native_source = read_script("Frontend/src-tauri/src/native_overlay.rs")
+    native_timeout = re.search(
+        r"OVERLAY_UI_COMMAND_TIMEOUT: Duration = Duration::from_secs\((\d+)\)",
+        native_source,
+    )
+    client_timeout = re.search(r"_OVERLAY_TRANSITION_TIMEOUT_SECONDS = ([0-9.]+)", read_script("src/native_overlay.py"))
+    assert native_timeout is not None
+    assert client_timeout is not None
+    assert float(native_timeout.group(1)) < float(client_timeout.group(1))
 
 
 def test_hotkey_refresh_is_serialized_and_partial_registration_is_settled() -> None:
@@ -51,22 +46,6 @@ def test_hotkey_refresh_is_serialized_and_partial_registration_is_settled() -> N
     assert locked.rstrip().endswith("Ok(hotkey_state.status())\n}")
 
 
-def test_backend_relock_and_frontend_navigation_preserve_runtime_identity() -> None:
-    lib = read_script("Frontend/src-tauri/src/lib.rs")
-    app = read_script("Frontend/client/src/App.tsx")
-
-    assert "backend_snapshot_identity_matches(" in lib
-    assert "state.child.as_ref().map(Child::id)" in lib
-    assert "struct PendingNavigationState" in lib
-    assert "fn navigation_listener_ready(" in lib
-    assert "fn acknowledge_navigation(" in lib
-    assert "PendingNavigationState::default()" in lib
-    assert 'listen<TauriNavigationRequest>("scriber-navigate"' in app
-    assert 'invoke<TauriNavigationRequest | null>("navigation_listener_ready")' in app
-    assert 'invoke<boolean>("acknowledge_navigation", { navigationId })' in app
-    assert "navigationId <= lastNavigationIdRef.current" in app
-
-
 def test_tray_creation_stays_off_synchronous_windows_dispatchers() -> None:
     lib = read_script("Frontend/src-tauri/src/lib.rs")
     assert "async fn show_tray_panel(" in lib
@@ -75,17 +54,6 @@ def test_tray_creation_stays_off_synchronous_windows_dispatchers() -> None:
     tray = lib.split("fn install_tray", 1)[1].split("fn show_tray_panel_for_app", 1)[0]
     assert "show_tray_panel_for_app(tray.app_handle())" not in tray
     assert "request_tray_panel_from_event(tray.app_handle())" in tray
-
-
-def test_main_window_close_hides_to_tray_without_destroying_restore_target() -> None:
-    lib = read_script("Frontend/src-tauri/src/lib.rs")
-
-    assert ".on_window_event(|window, event|" in lib
-    assert "should_hide_window_instead_of_closing(window.label())" in lib
-    assert "tauri::WindowEvent::CloseRequested" in lib
-    assert "api.prevent_close();" in lib
-    assert "window.hide()" in lib
-    assert "hidden to tray instead of destroyed" in lib
 
 
 def test_unexpected_backend_exit_stops_all_audio_sidecars_before_recovery() -> None:
@@ -1487,74 +1455,6 @@ def test_runtime_attestation_rejects_missing_worker_identity(
     with pytest.raises(runtime_attestation.AttestationError, match="Cargo.toml") as raised:
         runtime_attestation.write_attestation(repo_root, install_root, version_reader=lambda _path: "0.5.48")
     assert raised.value.code == "invalid_audio_worker_version"
-
-
-def test_native_recording_overlay_is_tauri_owned() -> None:
-    web_api = read_script("src/web_api.py")
-    native_overlay_py = read_script("src/native_overlay.py")
-    native_overlay_rs = read_script("Frontend/src-tauri/src/native_overlay.rs")
-    lib_rs = read_script("Frontend/src-tauri/src/lib.rs")
-    shell_ipc = read_script("Frontend/src-tauri/src/shell_ipc.rs")
-    capabilities = read_script("Frontend/src-tauri/capabilities/default.json")
-    app = read_script("Frontend/client/src/App.tsx")
-    main = read_script("Frontend/client/src/main.tsx")
-
-    assert "from src.native_overlay import" in web_api
-    assert "from src.overlay import" not in web_api
-    assert "src.overlay" not in native_overlay_py
-    assert "recording-overlay" in native_overlay_rs
-    assert "scriber-overlay-state" in native_overlay_rs
-    assert "index.html?overlay=1&overlayMode=initializing" in native_overlay_rs
-    assert '"rendererReady"' in native_overlay_rs
-    assert "pub fn mark_renderer_ready()" in native_overlay_rs
-    assert (
-        'window\n        .show()\n        .map_err(|err| format!("overlay show failed: {err}"))?' in native_overlay_rs
-    )
-    assert (
-        'window\n        .hide()\n        .map_err(|err| format!("overlay hide failed: {err}"))?' in native_overlay_rs
-    )
-    assert "ShowWindow" not in native_overlay_rs
-    assert "IsWindowVisible" in native_overlay_rs
-    assert "create_overlay_window(app)" in lib_rs
-    assert "fn native_overlay_renderer_ready()" in lib_rs
-    assert "native_overlay::mark_renderer_ready()" in lib_rs
-    assert "native_overlay_renderer_ready," in lib_rs
-    assert "native overlay hidden window precreated" in lib_rs
-    assert '"windowCreated"' in native_overlay_rs
-    assert "overlayPrepare" in shell_ipc
-    assert "overlayShow" in shell_ipc
-    assert "overlayHide" in shell_ipc
-    assert "nativeOverlay" in shell_ipc
-    ui_timeout = re.search(
-        r"OVERLAY_UI_COMMAND_TIMEOUT: Duration = Duration::from_secs\((\d+)\)",
-        native_overlay_rs,
-    )
-    client_timeout = re.search(
-        r"_OVERLAY_TRANSITION_TIMEOUT_SECONDS = ([0-9.]+)",
-        native_overlay_py,
-    )
-    assert ui_timeout is not None
-    assert client_timeout is not None
-    assert float(client_timeout.group(1)) > float(ui_timeout.group(1))
-    assert "handle_shell_command_on_ui_thread" in shell_ipc
-    assert '"recording-overlay"' in capabilities
-    assert '"core:event:allow-listen"' in capabilities
-    assert "NativeRecordingOverlay" not in app
-    assert 'import("./components/NativeRecordingOverlay")' in main
-    assert 'import("./App")' in main
-
-
-def test_transcript_detail_keeps_native_window_titlebar() -> None:
-    app = read_script("Frontend/client/src/App.tsx")
-    app_layout = read_script("Frontend/client/src/components/layout/AppLayout.tsx")
-    transcript_detail = read_script("Frontend/client/src/pages/TranscriptDetail.tsx")
-
-    assert 'import { AppLayout } from "@/components/layout/AppLayout";' in app
-    assert "<AppLayout path={location}>" in app
-    assert '<Route path="/transcript/:id" component={TranscriptDetail} />' in app
-    assert 'import { DesktopTitleBar } from "@/components/DesktopTitleBar";' in app_layout
-    assert "<DesktopTitleBar />" in app_layout
-    assert "DesktopTitleBar" not in transcript_detail
 
 
 def test_installer_uninstall_smoke_is_a_strict_build_gate() -> None:

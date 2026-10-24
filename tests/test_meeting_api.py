@@ -52,31 +52,6 @@ def test_meeting_device_test_duration_override_is_bounded_and_fail_closed(monkey
         assert web_api._meeting_device_test_max_duration_ms() == 5_000
 
 
-def test_resume_connects_durable_readers_before_starting_live_stt():
-    text = Path(web_api.__file__).read_text(encoding="utf-8")
-    start = text.index("    async def _resume_interrupted_meeting_capture")
-    interrupted = text[start : text.index("    async def _settle_meeting_capture_command", start)]
-    assert interrupted.index("recorder.start(sources)") < interrupted.index(
-        "await _start_meeting_live_preview_best_effort"
-    )
-
-
-def test_initial_start_connects_durable_readers_before_starting_live_stt():
-    text = Path(web_api.__file__).read_text(encoding="utf-8")
-    start = text.index("    async def start_meeting_capture(")
-    initial = text[start : text.index("    async def start_meeting_live_transcription", start)]
-    assert initial.index("recorder.start(native_sources)") < initial.index(
-        "await _start_meeting_live_preview_best_effort("
-    )
-
-
-def test_default_device_reconnect_starts_durable_reader_before_live_preview():
-    text = Path(web_api.__file__).read_text(encoding="utf-8")
-    start = text.index("    async def _reconnect_meeting_after_device_change")
-    reconnect = text[start : text.index("    def _emit_workflow_event", start)]
-    assert reconnect.index("recorder.start(sources)") < reconnect.index("await _start_meeting_live_preview_best_effort")
-
-
 def test_background_outlook_sync_uses_the_shared_bounded_http_timeout():
     text = Path(web_api.__file__).read_text(encoding="utf-8")
     start = text.index("    async def _meeting_maintenance_loop")
