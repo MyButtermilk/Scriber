@@ -87,10 +87,10 @@ _PROVIDER_INGRESS_DRAIN_SERVICES = frozenset(
 )
 _PROVIDER_INGRESS_DRAIN_TIMEOUT_SECONDS = 2.0
 _PROVIDER_INGRESS_ABORT_TIMEOUT_SECONDS = 2.0
-# Realtime services that transcribe only audio a VAD stop commits. A file has
-# no local VAD, so its pipeline closes commit segments itself.
+# Services that transcribe only audio a VAD stop closes (realtime commits and
+# segmented uploads). A file has no local VAD, so its pipeline closes segments.
 _FILE_COMMIT_PERIODIC_SERVICES = frozenset({"openai", "elevenlabs"})
-_FILE_COMMIT_SERVICES = _FILE_COMMIT_PERIODIC_SERVICES | {"deepgram"}
+_FILE_COMMIT_FINALIZED_SERVICES = frozenset({"deepgram"})
 # ElevenLabs commits on its own after about 36 s and recommends 20-30 s.
 _FILE_COMMIT_MIN_SEGMENT_SECONDS = 20.0
 _FILE_COMMIT_MAX_SEGMENT_SECONDS = 30.0
@@ -2102,13 +2102,13 @@ class _FileCommitFlushFrame(SystemFrame):
 
 
 class _FileCommitSegmenter(FrameProcessor):
-    """Close commit segments for realtime services that transcribe on a VAD stop.
+    """Close segments for services that transcribe only on a VAD stop.
 
-    The file pipeline has no local VAD, so OpenAI never transcribed a file,
-    ElevenLabs only what it committed on its own, and Deepgram lost the results
-    EndFrame cut off. With ``periodic`` a segment closes at the first pause
-    after the minimum length, or at the maximum; the flush fence closes the
-    last segment behind every audio frame.
+    The file pipeline has no local VAD, so OpenAI and segmented uploads such as
+    Groq never transcribed a file, ElevenLabs only what it committed on its
+    own, and Deepgram lost the results EndFrame cut off. With ``periodic`` a
+    segment closes at the first pause after the minimum length, or at the
+    maximum; the flush fence closes the last segment behind every audio frame.
     """
 
     def __init__(self, *, periodic: bool):
@@ -4724,9 +4724,12 @@ class ScriberPipeline:
                     if self.on_transcription
                     else None
                 )
+                periodic_commits = self.service_name in _FILE_COMMIT_PERIODIC_SERVICES or isinstance(
+                    stt_service, SegmentedSTTService
+                )
                 commit_segmenter = (
-                    _FileCommitSegmenter(periodic=self.service_name in _FILE_COMMIT_PERIODIC_SERVICES)
-                    if self.service_name in _FILE_COMMIT_SERVICES
+                    _FileCommitSegmenter(periodic=periodic_commits)
+                    if periodic_commits or self.service_name in _FILE_COMMIT_FINALIZED_SERVICES
                     else None
                 )
                 steps = [file_input]

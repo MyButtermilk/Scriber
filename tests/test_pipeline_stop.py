@@ -1151,6 +1151,30 @@ async def test_realtime_file_commits_cut_continuous_speech_at_the_maximum(monkey
     assert texts == ["segment 1", "segment 2"]
 
 
+class _RecordingSegmentedProvider(SegmentedSTTService):
+    def __init__(self):
+        super().__init__(sample_rate=16_000)
+        self.segments: list[int] = []
+
+    async def run_stt(self, audio):
+        self.segments.append(len(audio))
+        yield TranscriptionFrame(f"segment {len(self.segments)}", "user", "now")
+
+
+@pytest.mark.asyncio
+async def test_segmented_file_uploads_close_at_pauses_instead_of_keeping_one_second(monkeypatch):
+    # Without VAD frames a segmented service kept only the last second and
+    # uploaded nothing.
+    levels = _blocks(25, 8000) + _blocks(0.5, 0) + _blocks(10, 8000)
+    provider = _RecordingSegmentedProvider()
+    pipeline, texts = _file_pipeline_with(monkeypatch, provider, _BlocksFileInput(levels), service_name="groq")
+
+    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=10.0)
+
+    assert len(provider.segments) == 2
+    assert texts == ["segment 1", "segment 2"]
+
+
 @pytest.mark.asyncio
 async def test_deepgram_file_finalizes_once_after_the_last_audio(monkeypatch):
     levels = _blocks(35, 8000) + _blocks(1, 0)

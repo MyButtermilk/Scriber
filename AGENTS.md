@@ -1511,10 +1511,10 @@ Packaging and scripts:
   `on_pipeline_error` handler, including downstream errors through
   `_FileProviderErrorProcessor`. Cancel unfinished input immediately rather
   than waiting for EOF, and never report a pipeline that ended before its
-  `EndFrame` as a complete transcript. A file has no local VAD, so realtime
-  services that transcribe only committed audio get commit boundaries from
-  `_FileCommitSegmenter`: OpenAI and ElevenLabs every 20-30 s at a pause,
-  Deepgram one Finalize after the last audio. Before `EndFrame` the file path
+  `EndFrame` as a complete transcript. A file has no local VAD, so services
+  that transcribe only audio a VAD stop closes get boundaries from
+  `_FileCommitSegmenter`: OpenAI, ElevenLabs and segmented uploads such as
+  Groq every 20-30 s at a pause, Deepgram one Finalize after the last audio. Before `EndFrame` the file path
   waits, idle-bounded, for one provider result per commit. Pipecat queues a
   worker cancellation behind the EndFrame it waits for without a bound, and a
   processor that raises on that EndFrame never forwards it. Error, abort and
