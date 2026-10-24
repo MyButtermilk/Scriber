@@ -2,6 +2,9 @@ import type { ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { translateNow } from "@/i18n";
 
 type RecordingErrorMessage = Extract<ScriberWebSocketMessage, { type: "error" }>;
+type SessionFinishedMessage = Extract<ScriberWebSocketMessage, { type: "session_finished" }>;
+
+const MAX_REPORTED_ERROR_SESSIONS = 32;
 export type RecordingErrorToastMessage = Partial<Omit<RecordingErrorMessage, "message">> & {
   message?: unknown;
 };
@@ -42,6 +45,44 @@ export function recordingErrorToastMessageFromPayload(
     retryable: typeof record.retryable === "boolean" ? record.retryable : undefined,
     sessionId: cleanText(record.sessionId) || undefined,
   };
+}
+
+/** Remember a session whose specific `error` event has already been shown. */
+export function rememberReportedErrorSession(reportedSessionIds: Set<string>, sessionId: unknown): void {
+  const id = cleanText(sessionId);
+  if (!id) return;
+  reportedSessionIds.delete(id);
+  reportedSessionIds.add(id);
+  while (reportedSessionIds.size > MAX_REPORTED_ERROR_SESSIONS) {
+    const oldest = reportedSessionIds.values().next().value;
+    if (oldest === undefined) break;
+    reportedSessionIds.delete(oldest);
+  }
+}
+
+/**
+ * Toast for a failed `session_finished`, unless its `error` event already
+ * reported the session. Only one toast is visible at a time, so a generic
+ * fallback here would replace the actionable provider message.
+ */
+export function failedSessionToastMessage(
+  msg: SessionFinishedMessage,
+  reportedSessionIds: Set<string>,
+  fallback: { title: string; message: string },
+): RecordingErrorToastMessage | null {
+  if (cleanText(msg.session?.status).toLowerCase() !== "failed") return null;
+  const sessionId = cleanText(msg.sessionId) || (msg.session?.id != null ? String(msg.session.id) : "");
+  if (sessionId && reportedSessionIds.delete(sessionId)) return null;
+  // Failed Live Mic records keep their safe failure in `step`; older
+  // records embedded it in the content as `[Error] ...`.
+  const legacyError = String(msg.session?.content || "").match(/\[Error\]\s*([^\n]+)/i);
+  return recordingErrorToastMessageFromPayload({
+    type: "error",
+    apiVersion: msg.apiVersion,
+    message: cleanText(msg.session?.step) || legacyError?.[1]?.trim() || fallback.message,
+    title: fallback.title,
+    sessionId: sessionId || undefined,
+  });
 }
 
 export function showRecordingErrorToast(toast: ToastFn, msg: RecordingErrorToastMessage): void {

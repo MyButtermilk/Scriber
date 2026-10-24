@@ -13,6 +13,7 @@ from typing import Any
 from loguru import logger
 
 from src.runtime.paths import database_path
+from src.runtime.sqlite_guard import GuardedConnection
 from src.summary_html import summary_visible_text
 
 _DB_PATH = database_path()
@@ -100,7 +101,7 @@ def _get_connection() -> sqlite3.Connection:
         or getattr(_thread_local, "connection_generation", -1) != _connection_generation
     ):
         _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(_DB_PATH, check_same_thread=False, timeout=30.0)
+        conn = sqlite3.connect(_DB_PATH, check_same_thread=False, timeout=30.0, factory=GuardedConnection)
         conn.row_factory = sqlite3.Row
         # Enable WAL mode for better concurrent read performance
         conn.execute("PRAGMA journal_mode=WAL")

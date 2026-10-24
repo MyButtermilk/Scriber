@@ -3582,6 +3582,57 @@ async def test_on_pipeline_done_persists_failed_live_session(failure):
     assert rec.step == expected_message
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["returned", "cancelled"])
+async def test_on_pipeline_done_without_error_fails_session_and_unblocks_next_start(ending):
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    session_id = "unrequested-end-session"
+    rec = _make_record(session_id)
+    rec.append_final_text("partial speech")
+    ctl._current = rec
+    ctl._session_id = session_id
+    ctl._is_listening = True
+    ctl._active_provider = "soniox"
+    ctl._set_recording_state(web_api.RecordingState.INITIALIZING, context="test")
+    ctl._set_recording_state(web_api.RecordingState.RECORDING, context="test")
+
+    async def _run():
+        if ending == "cancelled":
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(_run())
+    ctl._pipeline_task = task
+    await asyncio.sleep(0)
+    if ending == "cancelled":
+        task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    with (
+        patch.object(ctl, "broadcast", new=AsyncMock()) as broadcast_mock,
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()) as save_mock,
+        patch("src.web_api.hide_recording_overlay"),
+    ):
+        ctl._on_pipeline_done(task, session_id=session_id)
+        await asyncio.sleep(0.05)
+
+    assert ctl._recording_state_machine.state is web_api.RecordingState.IDLE
+    assert (ctl._current, ctl._session_id, ctl._is_listening) == (None, None, False)
+    assert rec.status == "failed"
+    assert rec.content_text() == "partial speech"
+    assert rec.step == ctl._provider_user_error(RuntimeError("ended"), provider="soniox").message
+    save_mock.assert_awaited_once_with(rec)
+    errors = [call.args[0] for call in broadcast_mock.await_args_list if call.args[0].get("type") == "error"]
+    assert [event.get("sessionId") for event in errors] == [session_id]
+
+    # The next session must still enter INITIALIZING so its on_mic_ready edge
+    # is accepted instead of being discarded as stale.
+    ctl._set_recording_state(web_api.RecordingState.INITIALIZING, context="test")
+    assert ctl._recording_state_machine.state is web_api.RecordingState.INITIALIZING
+
+
 class _StopOkPipeline:
     def __init__(self):
         self.stopped = False
@@ -3657,6 +3708,41 @@ async def test_emergency_stop_clears_state_before_resuming_idle_prewarm(monkeypa
     assert ctl._session_id is None
     assert ctl._current is None
     assert resume_states == [(False, None)]
+
+
+@pytest.mark.asyncio
+async def test_emergency_stop_retains_partial_speech_as_failed_record():
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
+
+    session_id = "emergency-partial-session"
+    rec = _make_record(session_id)
+    rec.append_final_text("words before the outage")
+    ctl._current = rec
+    ctl._session_id = session_id
+    ctl._is_listening = True
+    ctl._active_provider = "soniox"
+    ctl._pipeline = _StopOkPipeline()
+
+    with (
+        patch.object(ctl, "broadcast", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()) as history_mock,
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()) as save_mock,
+        patch.object(ctl, "_resume_idle_mic_prewarm_after_capture"),
+    ):
+        stopped = await ctl._emergency_stop_pipeline(
+            session_id=session_id,
+            failure_message="Soniox connection timed out.",
+        )
+
+    assert stopped is True
+    assert ctl._current is None
+    assert rec.status == "failed"
+    assert rec.content_text() == "words before the outage"
+    assert rec.step == "Soniox connection timed out."
+    assert ctl._history[0] is rec
+    save_mock.assert_awaited_once_with(rec)
+    history_mock.assert_awaited_once_with(record=rec, reason="pipeline_failed")
 
 
 @pytest.mark.asyncio
@@ -4098,10 +4184,10 @@ async def test_pipeline_error_diagnostics_never_prevent_notification_and_emergen
         await asyncio.sleep(0)
         await asyncio.sleep(0)
 
-        emergency_stop.assert_awaited_once_with(session_id=session_id)
         errors = [call.args[0] for call in broadcast.await_args_list if call.args[0].get("type") == "error"]
         assert len(errors) == 1
         assert errors[0]["title"] == "Microphone error"
+        emergency_stop.assert_awaited_once_with(session_id=session_id, failure_message=errors[0]["message"])
         event = next(
             call.kwargs for call in emit_event.call_args_list if call.kwargs["event"] == "pipeline.audio.failed"
         )

@@ -269,6 +269,13 @@ Backend and runtime:
   maintenance task before persistence-store close even after the general drain
   timeout or repeated cancellation. Synchronous shutdown retains its task
   reference until that join can finish.
+- `src/runtime/sqlite_guard.py`: every thread-local SQLite store
+  (`database.py`, job, latency-metrics, Meeting-import, and transcript-artifact
+  stores) opens `GuardedConnection`. Its `close()` waits for a foreign thread's
+  running statement step or `with connection:` transaction before freeing the
+  native handle; an orphaned `to_thread` read otherwise crashed shutdown with a
+  Windows access violation. A close that cannot wait leaves the retired handle
+  to its owner. Keep new store connections on this factory.
 - `src/runtime/task_supervisor.py`: event-loop-local ownership for intentionally
   concurrent asyncio work. It retains tasks, observes every result, reports
   failures through the loop handler, reserves thread-safe submissions before
@@ -1712,7 +1719,13 @@ Packaging and scripts:
   only recognized speech in transcript content. Preserve partial speech and
   empty failed history entries. Transcript Detail shows the failure separately
   and excludes legacy error-only content from word counts and copy/export
-  actions; never add an error string as a transcript segment.
+  actions; never add an error string as a transcript segment. This includes
+  provider-error emergency stops and a pipeline task that ends without a stop
+  request; the latter must move INITIALIZING/RECORDING through FAILED before
+  IDLE, or the next start ignores its microphone-ready edge. The app-global
+  toast bridge suppresses a failed `session_finished` already reported by its
+  session's `error` event, because one visible toast would otherwise replace
+  the actionable provider message with the generic fallback.
 - Meta language-model choices are `muse-spark-1.3` and
   `muse-spark-1.3-contributor`; exact persisted 1.2 built-in selections migrate
   to their matching 1.3 tier without rewriting custom model codes. This also
