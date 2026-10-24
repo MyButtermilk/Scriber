@@ -509,7 +509,7 @@ from Settings.
 
 - Windows 10 or newer for the primary desktop runtime
 - Python 3.14.7
-- Node.js 26.5.0 and npm
+- Node.js 26.12.1 and npm
 - Stable Rust toolchain
 - Git
 

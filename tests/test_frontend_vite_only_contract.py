@@ -48,7 +48,7 @@ def test_frontend_package_is_vite_only() -> None:
     dev_dependencies = package["devDependencies"]
 
     assert package["name"] == "scriber"
-    assert (REPO_ROOT / ".node-version").read_text(encoding="utf-8").strip() == "26.5.0"
+    assert (REPO_ROOT / ".node-version").read_text(encoding="utf-8").strip() == "26.12.1"
     assert package["engines"] == {"node": ">=26.5.0 <27"}
     assert scripts["dev:client"] == "vite dev --port 5000"
     assert scripts["dev:tauri"] == (

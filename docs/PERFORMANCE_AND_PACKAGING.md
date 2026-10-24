@@ -119,7 +119,7 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 The current frontend verification path uses Bun 1.4.3 for both type projects
 and isolated logic tests, Node Vitest/jsdom for component tests, and ESLint's
-content cache. Node 26.5.0 remains the Vite build runtime, and npm owns the
+content cache. Node 26.12.1 remains the Vite build runtime, and npm owns the
 canonical dependency lock. Bun is installed by `npm ci`; no global Bun
 installation is required. The TypeScript 6 compatibility package preserves
 the JavaScript compiler API used by other development tools. These changes

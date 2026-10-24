@@ -263,7 +263,7 @@ npm run build
 ```
 
 `npm ci` installs the pinned Bun 1.4.3 package locally; these npm scripts do
-not require a global Bun installation. Node.js 26.5.0 remains the runtime for
+not require a global Bun installation. Node.js 26.12.1 remains the runtime for
 Vite and npm command orchestration. `package-lock.json` remains the canonical
 dependency lock, and an exact release `node_modules` cache hit already skips
 installation. Bun and pnpm are faster installers in the separate comparisons;
@@ -445,7 +445,7 @@ existing authenticated YouTube job request, including a query-only handoff
 while the already-running app is still on `/youtube` and deferred consumption
 while an earlier start request is in flight.
 
-Use the exact Node.js 26.5.0 version from `.node-version`; CI and release builds
+Use the exact Node.js 26.12.1 version from `.node-version`; CI and release builds
 consume that pin, while `Frontend/package.json` declares the supported
 `>=26.5.0 <27` range for local tooling. The frontend is a Vite-only WebView
 build, so these commands do not start or produce a legacy Express server bundle.
