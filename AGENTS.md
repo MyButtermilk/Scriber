@@ -920,8 +920,14 @@ Packaging and scripts:
   waits, pre-delays, Office COM, and typing fallbacks otherwise stall
   WebSocket delivery and a successor recording. Cancellation withdraws an
   insertion still queued behind another (focus may have moved) and waits for a
-  started dispatch. The synchronous `flush()` remains only for the benchmark
-  visible-text contract. Keystroke typing is the last fallback: an interrupted
+  started dispatch. Immediate realtime finals are owned by `TextInjector`, not
+  by Pipecat's process task: the Soniox manual stop ends the pipeline with
+  CancelFrame, so finals that already arrived are still inserted, and
+  End/Stop/Cancel frames, flush, and cleanup wait for them. Finals arriving
+  while an insertion runs (for example behind the previous paste's clipboard
+  lease) are coalesced into one insertion instead of one lease wait each.
+  The synchronous `flush()` remains only for the benchmark visible-text
+  contract. Keystroke typing is the last fallback: an interrupted
   `keyboard.write` is terminal, never retyped through pyautogui, and injector
   failures log exception types only. Log FFmpeg upload-encoding failures by
   exit code and error type only; its stderr names temporary paths under the

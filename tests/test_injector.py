@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pipecat.frames.frames import (
+    CancelFrame,
     EndFrame,
     InterimTranscriptionFrame,
     TranscriptionFrame,
@@ -128,6 +129,7 @@ def test_immediate_injection_keeps_the_event_loop_responsive_and_ordered():
         beat = asyncio.create_task(heartbeat())
         for text in ("first", "second", "third"):
             await injector.process_frame(_final(text), MagicMock())
+        await injector.process_frame(EndFrame(), MagicMock())
         done.set()
         await beat
         return ticks
@@ -138,10 +140,98 @@ def test_immediate_injection_keeps_the_event_loop_responsive_and_ordered():
     ):
         ticks = asyncio.run(run())
 
-    assert [text for text, _thread in injected] == ["first ", "second ", "third "]
+    # Finals that arrive before the worker picks them up are inserted together.
+    assert [text for text, _thread in injected] == ["first second third "]
     assert all(thread.startswith("scriber-text-injection") for _text, thread in injected)
-    # Three 150 ms insertions on the loop would have allowed no heartbeat.
+    # Insertions on the loop would have allowed no heartbeat.
     assert ticks >= 10
+
+
+def test_immediate_finals_behind_a_busy_insertion_are_coalesced_in_order():
+    injector = TextInjector(inject_immediately=True)
+    first_started = threading.Event()
+    release_first = threading.Event()
+    injected: list[str] = []
+
+    def lease_bound_injection(text: str) -> None:
+        if not injected:
+            # A clipboard paste waits for the previous paste's lease.
+            first_started.set()
+            release_first.wait(5)
+        injected.append(text)
+
+    async def run() -> None:
+        await injector.process_frame(_final("Erster Satz."), MagicMock())
+        await asyncio.to_thread(first_started.wait, 5)
+        for text in ("Zweiter Satz.", "Dritter Satz.", "Vierter Satz."):
+            # Finals no longer wait behind the busy worker one by one.
+            await asyncio.wait_for(injector.process_frame(_final(text), MagicMock()), timeout=0.5)
+        release_first.set()
+        await injector.process_frame(EndFrame(), MagicMock())
+
+    with (
+        patch.object(injector, "_inject_text", side_effect=lease_bound_injection),
+        patch.object(injector, "push_frame", new=AsyncMock()),
+    ):
+        asyncio.run(run())
+
+    # One lease wait for the backlog instead of one per final.
+    assert injected == ["Erster Satz. ", "Zweiter Satz. Dritter Satz. Vierter Satz. "]
+
+
+def test_cancelled_process_task_still_inserts_finals_that_arrived():
+    injector = TextInjector(inject_immediately=True)
+    occupied = threading.Event()
+    release = threading.Event()
+    injected: list[str] = []
+
+    def occupy_worker() -> bool:
+        occupied.set()
+        release.wait(5)
+        return True
+
+    async def run() -> None:
+        earlier = asyncio.create_task(injector_module._run_text_injection(occupy_worker))
+        await asyncio.to_thread(occupied.wait, 5)
+        # The Soniox manual stop ends the pipeline with CancelFrame, which
+        # cancels the processor's in-flight process_frame.
+        processing = asyncio.create_task(injector.process_frame(_final("letzte Worte"), MagicMock()))
+        await asyncio.sleep(0.05)
+        processing.cancel()
+        await asyncio.gather(processing, return_exceptions=True)
+        release.set()
+        await earlier
+        await injector.process_frame(CancelFrame(), MagicMock())
+
+    with (
+        patch.object(injector, "_inject_text", side_effect=injected.append),
+        patch.object(injector, "push_frame", new=AsyncMock()),
+    ):
+        asyncio.run(run())
+
+    assert injected == ["letzte Worte "]
+
+
+def test_cleanup_waits_for_pending_immediate_insertions():
+    injector = TextInjector(inject_immediately=True)
+    injected: list[str] = []
+
+    def slow_injection(text: str) -> None:
+        time.sleep(0.1)
+        injected.append(text)
+
+    async def run() -> None:
+        await injector.process_frame(_final("tail"), MagicMock())
+        await injector.cleanup()
+
+    with (
+        patch.object(injector, "_inject_text", side_effect=slow_injection),
+        patch.object(injector, "push_frame", new=AsyncMock()),
+    ):
+        asyncio.run(run())
+
+    # The pipeline task finishes only after its finals reached the target.
+    assert injected == ["tail "]
 
 
 def test_cancelled_flush_still_finishes_the_started_insertion():

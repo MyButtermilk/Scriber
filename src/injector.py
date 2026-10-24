@@ -1220,6 +1220,11 @@ class TextInjector(FrameProcessor):
         self.injection_method = str(injection_method or "").strip().lower() or None
         self._buffer = []
         self._last_injected = ""
+        # Immediate finals are owned here, not by Pipecat's process task: the
+        # Soniox manual stop ends the pipeline with CancelFrame, which cancels
+        # an in-flight process_frame and would withdraw a queued insertion.
+        self._pending_immediate: list[str] = []
+        self._immediate_drain: asyncio.Task[None] | None = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -1233,7 +1238,7 @@ class TextInjector(FrameProcessor):
                 if not self.enabled:
                     pass
                 elif self.inject_immediately:
-                    await self._inject_text_async(frame.text.strip() + " ")
+                    self._queue_immediate(frame.text.strip() + " ")
                 else:
                     # Buffer finalized transcript segments; inject as one block at end of utterance.
                     self._buffer.append(frame.text.strip())
@@ -1267,9 +1272,40 @@ class TextInjector(FrameProcessor):
             self._inject_text_safely(text)
 
     async def flush_async(self) -> None:
+        await self._wait_for_immediate_insertions()
         text = self._take_flush_text()
         if text:
             await self._inject_text_async(text)
+
+    def _queue_immediate(self, text: str) -> None:
+        self._pending_immediate.append(text)
+        drain = self._immediate_drain
+        if drain is None or drain.done():
+            self._immediate_drain = asyncio.get_running_loop().create_task(
+                self._drain_immediate(),
+                name="scriber-immediate-text-injection",
+            )
+
+    async def _drain_immediate(self) -> None:
+        # Each clipboard paste can wait for the previous paste's lease (up to
+        # its restore delay). Finals arriving meanwhile are inserted together
+        # instead of queueing one lease wait each.
+        while self._pending_immediate:
+            text = "".join(self._pending_immediate)
+            self._pending_immediate.clear()
+            await self._inject_text_async(text)
+
+    async def _wait_for_immediate_insertions(self) -> None:
+        drain = self._immediate_drain
+        if drain is not None and not drain.done():
+            # A cancelled waiter must not cancel speech that already arrived.
+            await asyncio.shield(drain)
+
+    async def cleanup(self):
+        try:
+            await self._wait_for_immediate_insertions()
+        finally:
+            await super().cleanup()
 
     async def _inject_text_async(self, text: str) -> bool:
         return await _run_text_injection(self._inject_text_safely, text)
