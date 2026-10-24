@@ -1183,17 +1183,22 @@ def _text_injection_executor() -> ThreadPoolExecutor:
 
 
 async def _run_text_injection(function: Callable[..., bool], /, *args: Any, **kwargs: Any) -> bool:
-    """Insert on the injection worker; cancellation waits for the dispatch to finish.
+    """Insert on the injection worker, honoring cancellation only before dispatch.
 
-    A started paste cannot be withdrawn, so the caller observes its outcome and
+    Cancellation withdraws an insertion still queued behind another one: by the
+    time the worker frees up, focus may belong to an unrelated application. A
+    started paste cannot be withdrawn, so the caller observes its outcome and
     callbacks before unwinding, exactly as the former synchronous call did.
     """
-    loop = asyncio.get_running_loop()
-    worker = loop.run_in_executor(_text_injection_executor(), functools.partial(function, *args, **kwargs))
-    result, pending_cancel = await await_with_delayed_cancellation(worker)
-    if pending_cancel is not None:
-        raise pending_cancel
-    return bool(result)
+    queued = _text_injection_executor().submit(functools.partial(function, *args, **kwargs))
+    worker = asyncio.wrap_future(queued)
+    try:
+        await asyncio.wait((worker,))
+    except asyncio.CancelledError:
+        if not queued.cancel():
+            await await_with_delayed_cancellation(worker)
+        raise
+    return bool(worker.result())
 
 
 class TextInjector(FrameProcessor):

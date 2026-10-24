@@ -190,3 +190,38 @@ def test_inject_text_once_async_uses_the_injection_worker(monkeypatch):
     assert asyncio.run(injector_module.inject_text_once_async("hello ", injection_method="paste")) is True
     assert calls[0][0] == "hello "
     assert calls[0][1].startswith("scriber-text-injection")
+
+
+def test_cancelled_queued_insertion_is_withdrawn_before_dispatch():
+    occupied = threading.Event()
+    release = threading.Event()
+    dispatched: list[str] = []
+
+    def occupy_worker() -> bool:
+        occupied.set()
+        release.wait(5)
+        dispatched.append("earlier session")
+        return True
+
+    def stale_insertion() -> bool:
+        dispatched.append("cancelled session")
+        return True
+
+    async def run() -> None:
+        earlier = asyncio.create_task(injector_module._run_text_injection(occupy_worker))
+        await asyncio.to_thread(occupied.wait, 5)
+        queued = asyncio.create_task(injector_module._run_text_injection(stale_insertion))
+        await asyncio.sleep(0.05)
+        queued.cancel()
+        # Withdrawn work must not wait for the busy worker.
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(queued, timeout=1)
+        release.set()
+        assert await earlier is True
+        # A later insertion still runs, proving the stale one was skipped.
+        assert await injector_module._run_text_injection(lambda: True) is True
+
+    asyncio.run(run())
+
+    # By the time the worker frees up, focus may belong to another application.
+    assert dispatched == ["earlier session"]
