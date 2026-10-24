@@ -1342,6 +1342,10 @@ Packaging and scripts:
   Completion is event-driven with no fixed settle sleep: capture the final
   generation before issuing the commit, continue immediately when a newer
   final arrives, and do not let a stale earlier final satisfy the last commit.
+  OpenAI, ElevenLabs and Deepgram count one answer per commit; an answer
+  without new text (silence, or Deepgram's empty reply to a Finalize after its
+  endpointing already finalized the words) also completes the wait instead of
+  failing the recording. Count answers right before the commit is issued.
   A real `SegmentedSTTService` completes synchronously inside its awaited flush;
   only asynchronous VAD-commit providers use the short failure deadline.
   Terminal-buffered

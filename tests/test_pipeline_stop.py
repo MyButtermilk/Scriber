@@ -1091,7 +1091,7 @@ class _BlocksFileInput(FrameProcessor):
 class _CommittingProvider(FrameProcessor):
     """Transcribes each committed segment shortly after its VAD stop."""
 
-    reports_file_commit_results = True
+    reports_provider_commit_results = True
 
     def __init__(self, *, answers: bool = True):
         super().__init__()
@@ -1110,13 +1110,13 @@ class _CommittingProvider(FrameProcessor):
             if self.answers:
                 self._answer_tasks.append(asyncio.create_task(self._answer(len(self.commit_points))))
         elif isinstance(frame, EndFrame):
-            self.settled_at_end = pipeline_module._file_commit_results(self).settled
+            self.settled_at_end = pipeline_module._provider_commit_results(self).settled
         await self.push_frame(frame, direction)
 
     async def _answer(self, number: int) -> None:
         await asyncio.sleep(0.05)
         await self.push_frame(TranscriptionFrame(f"segment {number}", "user", "now"))
-        pipeline_module._file_commit_results(self).settle()
+        pipeline_module._provider_commit_results(self).settle()
 
 
 def _blocks(seconds: float, level: int) -> list[int]:
@@ -1205,8 +1205,8 @@ async def test_realtime_services_report_one_result_per_commit(monkeypatch):
     await deepgram._on_message(SimpleNamespace(is_final=True, from_finalize=False))
 
     for service in (openai, elevenlabs, deepgram):
-        assert service.reports_file_commit_results is True
-        assert pipeline_module._file_commit_results(service).settled == 1
+        assert service.reports_provider_commit_results is True
+        assert pipeline_module._provider_commit_results(service).settled == 1
 
 
 @pytest.mark.asyncio
@@ -3301,6 +3301,53 @@ async def test_gate_committing_realtime_provider_flushes_before_endframe(monkeyp
     assert events.index("capture_stop") < events.index("gate_commit")
     assert events.index("gate_commit") < events.index("provider_final")
     assert events.index("provider_final") < events.index("task_stop_when_done")
+
+
+@pytest.mark.asyncio
+async def test_live_stop_accepts_a_commit_answered_without_new_text(monkeypatch):
+    # Deepgram answers the stop's Finalize with an empty result when its
+    # endpointing already finalized the last words; silence does the same.
+    monkeypatch.setenv("SCRIBER_LIVE_STT_FINAL_FAILURE_TIMEOUT_SECONDS", "1")
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", False, raising=False)
+    events: list[str] = []
+    pipeline = ScriberPipeline(service_name="deepgram", on_status_change=None)
+    pipeline.is_active = True
+    pipeline._start_done.clear()
+    pipeline.task = _RecordingStopTask(pipeline._start_done, events)
+    pipeline.audio_input = _SegmentedFinalizationAudioInput(events)
+
+    class _AnsweringService:
+        reports_commit_results = True
+
+    service = _AnsweringService()
+
+    class _CommittingGate(SegmentedSTTRecordingGate):
+        async def flush_segment(self, *, direction=FrameDirection.DOWNSTREAM) -> bool:
+            events.append("gate_commit")
+
+            async def _answer():
+                await asyncio.sleep(0.05)
+                events.append("empty_answer")
+                pipeline_module._provider_commit_results(service).settle()
+
+            self._answer_task = asyncio.create_task(_answer())
+            return True
+
+    pipeline.pipeline = _DummyRuntimePipelineGraph(
+        [
+            _CommittingGate(vad_segmentation_enabled=False, stop_strategy=LIVE_STT_STOP_VAD_FLUSH_BEFORE_END),
+            service,
+        ]
+    )
+    # Answers to earlier commits must not satisfy the stop's commit.
+    pipeline_module._provider_commit_results(service).settle()
+    pipeline._mark_final_transcription_received()
+
+    await pipeline.stop(timeout_secs=1.0)
+
+    assert pipeline._terminal_error is None
+    assert events.index("gate_commit") < events.index("empty_answer")
+    assert events.index("empty_answer") < events.index("task_stop_when_done")
 
 
 @pytest.mark.asyncio

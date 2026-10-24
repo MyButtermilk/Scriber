@@ -2068,11 +2068,11 @@ class _ProviderCommitResults:
         return True
 
 
-def _file_commit_results(service: Any) -> _ProviderCommitResults:
-    results = getattr(service, "_scriber_file_commit_results", None)
+def _provider_commit_results(service: Any) -> _ProviderCommitResults:
+    results = getattr(service, "_scriber_provider_commit_results", None)
     if results is None:
         results = _ProviderCommitResults()
-        service._scriber_file_commit_results = results
+        service._scriber_provider_commit_results = results
     return results
 
 
@@ -3159,15 +3159,22 @@ class ScriberPipeline:
         *,
         after_generation: int,
         timeout_seconds: float,
+        commit_results: _ProviderCommitResults | None = None,
+        settled_before: int = 0,
     ) -> str:
         if self._final_transcription_generation > after_generation:
             return "final"
         self._final_transcription_received.clear()
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(0.0, timeout_seconds)
+        # An answered commit without text produces no final frame, so poll its
+        # counter more often than the final event.
+        poll_seconds = 0.25 if commit_results is None else 0.05
         while True:
             if self._final_transcription_generation > after_generation:
                 return "final"
+            if commit_results is not None and commit_results.settled > settled_before:
+                return "settled"
             if self._terminal_error:
                 return "error"
             if self.task and self.task.has_finished():
@@ -3178,7 +3185,7 @@ class ScriberPipeline:
             try:
                 await asyncio.wait_for(
                     self._final_transcription_received.wait(),
-                    timeout=min(0.25, remaining),
+                    timeout=min(poll_seconds, remaining),
                 )
             except TimeoutError:
                 continue
@@ -3191,6 +3198,8 @@ class ScriberPipeline:
         *,
         after_generation: int,
         final_response_pending: bool,
+        commit_results: _ProviderCommitResults | None = None,
+        settled_before: int = 0,
     ) -> str:
         if not final_response_pending or not self._uses_async_vad_commit_finalization():
             return "not_required"
@@ -3198,9 +3207,15 @@ class ScriberPipeline:
         result = await self._wait_for_new_final_transcription_or_done(
             after_generation=after_generation,
             timeout_seconds=timeout_seconds,
+            commit_results=commit_results,
+            settled_before=settled_before,
         )
         if result == "final":
             logger.debug("Committed live STT final received; continuing immediately")
+        elif result == "settled":
+            # Silence, or speech the provider had already finalized (Deepgram
+            # answers Finalize with an empty result then), is a valid answer.
+            logger.debug("Committed live STT result answered without new text; continuing immediately")
         elif result == "timeout":
             message = (
                 "The live transcription provider did not return its committed "
@@ -3263,6 +3278,13 @@ class ScriberPipeline:
                 max_callback_gap_seconds=max_callback_gap_seconds,
             )
         )
+
+    def _stt_commit_results(self) -> _ProviderCommitResults | None:
+        """Result counter of a realtime service that answers each commit once."""
+        for processor in self._iter_pipeline_processors():
+            if getattr(processor, "reports_commit_results", False):
+                return _provider_commit_results(processor)
+        return None
 
     def _iter_pipeline_processors(self) -> list[Any]:
         pipeline = self.pipeline
@@ -3724,13 +3746,13 @@ class ScriberPipeline:
 
             class ScriberElevenLabsRealtimeSTTService(realtime_cls):
                 # The server answers every commit with one committed_transcript.
-                reports_file_commit_results = True
+                reports_provider_commit_results = True
 
                 async def _on_committed_transcript(self, data):
                     try:
                         await super()._on_committed_transcript(data)
                     finally:
-                        _file_commit_results(self).settle()
+                        _provider_commit_results(self).settle()
 
             return ScriberElevenLabsRealtimeSTTService(
                 **_filter_supported_kwargs(
@@ -3783,7 +3805,7 @@ class ScriberPipeline:
             pipeline_ref = self
 
             class ScriberDeepgramSTTService(DeepgramSTTService):
-                reports_file_commit_results = True
+                reports_provider_commit_results = True
 
                 async def push_error(self, error_msg: str, exception=None, fatal: bool = False, **kwargs):
                     safe_error = _redact_provider_error_text(error_msg)
@@ -3800,7 +3822,7 @@ class ScriberPipeline:
                     await super()._on_message(message)
                     # Deepgram answers each Finalize with one from_finalize result.
                     if getattr(message, "is_final", False) and getattr(message, "from_finalize", False):
-                        _file_commit_results(self).settle()
+                        _provider_commit_results(self).settle()
 
             return ScriberDeepgramSTTService(
                 api_key=_get_api_key("deepgram"),
@@ -3848,19 +3870,19 @@ class ScriberPipeline:
 
             class ScriberOpenAIRealtimeSTTService(OpenAIRealtimeSTTService):
                 # Every commit ends in exactly one completed or failed event.
-                reports_file_commit_results = True
+                reports_provider_commit_results = True
 
                 async def _handle_transcription_completed(self, evt):
                     try:
                         await super()._handle_transcription_completed(evt)
                     finally:
-                        _file_commit_results(self).settle()
+                        _provider_commit_results(self).settle()
 
                 async def _handle_transcription_failed(self, evt):
                     try:
                         await super()._handle_transcription_failed(evt)
                     finally:
-                        _file_commit_results(self).settle()
+                        _provider_commit_results(self).settle()
 
             return ScriberOpenAIRealtimeSTTService(
                 api_key=_get_api_key("openai"),
@@ -4659,10 +4681,10 @@ class ScriberPipeline:
         if not flush.acknowledged:
             logger.warning("File commit segmenter did not close the last segment")
             return
-        if not getattr(stt_service, "reports_file_commit_results", False):
+        if not getattr(stt_service, "reports_provider_commit_results", False):
             return
 
-        results = _file_commit_results(stt_service)
+        results = _provider_commit_results(stt_service)
         settled = asyncio.ensure_future(
             results.wait_for(segmenter.commits, idle_timeout=_FILE_COMMIT_RESULT_IDLE_TIMEOUT_SECONDS)
         )
@@ -5825,16 +5847,21 @@ class ScriberPipeline:
 
         requires_pre_endframe_finalization = self._requires_pre_endframe_stt_finalization()
         provider_ingress_audio_input = self.audio_input
+        # Counted right before each commit, so only its own answer ends the wait.
+        commit_results = self._stt_commit_results()
         if requires_pre_endframe_finalization:
             final_generation_before_commit = self._final_transcription_generation
             await self._stop_audio_capture_for_segmented_finalization()
             await self._abort_if_capture_stop_failed()
             await self._await_provider_ingress_audio_drain(provider_ingress_audio_input)
             await self._notify_capture_stopped()
+            settled_before_commit = commit_results.settled if commit_results is not None else 0
             boundary_flushed = await self._flush_segmented_stt_buffers()
             await self._await_async_vad_commit_final(
                 after_generation=final_generation_before_commit,
                 final_response_pending=boundary_flushed,
+                commit_results=commit_results,
+                settled_before=settled_before_commit,
             )
             await self._cleanup_audio_input()
         else:
@@ -5848,10 +5875,13 @@ class ScriberPipeline:
             await self._abort_if_capture_stop_failed()
             await self._await_provider_ingress_audio_drain(provider_ingress_audio_input)
             await self._notify_capture_stopped()
+            settled_before_commit = commit_results.settled if commit_results is not None else 0
             boundary_flushed = await self._flush_live_vad_finalization_turn()
             await self._await_async_vad_commit_final(
                 after_generation=final_generation_before_commit,
                 final_response_pending=(final_response_pending or boundary_flushed),
+                commit_results=commit_results,
+                settled_before=settled_before_commit,
             )
 
         # For Soniox real-time: send stop_recording and wait for final tokens BEFORE pipeline shutdown.
