@@ -13405,6 +13405,7 @@ class ScriberWebController:
         output_cleanup_ready = asyncio.Event()
         output_finalizer: asyncio.Future[None] | None = None
         output_session_id: str | None = None
+        output_predecessor: asyncio.Future[None] | None = None
 
         async def finish_output() -> None:
             try:
@@ -13414,6 +13415,19 @@ class ScriberWebController:
                 injector = getattr(pipeline, "text_injector", None)
                 if injector is not None:
                     await injector.flush_async()
+                if output_predecessor is not None and failed_record is not None:
+                    # A successor's injector stays disabled for its whole
+                    # capture when earlier output was pending at admission.
+                    # Preserve its recognized speech in that same order even
+                    # after a provider failure, without polishing failed text.
+                    await asyncio.shield(output_predecessor)
+                    await self._inject_live_transcript_text(
+                        failed_record.content_text(),
+                        record=failed_record,
+                        session_id=output_session_id,
+                        provider=provider_used,
+                        post_processed=False,
+                    )
             finally:
                 task = asyncio.current_task()
                 if output_session_id is not None and task is not None:
@@ -13455,6 +13469,7 @@ class ScriberWebController:
                 provider_used = self._active_provider
                 output_session_id = self._session_id
                 if output_session_id is not None:
+                    output_predecessor = self._live_mic_injection_predecessors.get(output_session_id)
                     # Publish the output barrier before releasing native capture.
                     # A slow old clipboard drain must precede a new recording's
                     # text even after the emergency stop's bounded runner join.

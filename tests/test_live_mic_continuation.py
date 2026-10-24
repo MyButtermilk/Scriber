@@ -1209,6 +1209,8 @@ async def test_emergency_stop_orders_real_injector_drain_before_successor_and_sh
         async with asyncio.timeout(2):
             while injector._pending_immediate != ["A2 "]:
                 await asyncio.sleep(0)
+        record.append_final_text("A1")
+        record.append_final_text("A2")
         # Exercise ScriberPipeline.stop and Pipecat's actual cancellation path.
         # The native capture is free even though its first paste is still held.
         assert await ctl._emergency_stop_pipeline(session_id=record.id)
@@ -1235,3 +1237,59 @@ async def test_emergency_stop_orders_real_injector_drain_before_successor_and_sh
         release_insert.set()
         await asyncio.wait_for(asyncio.gather(old_task, return_exceptions=True), 5)
         await injector.flush_async()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "post_process, injection_disabled, predecessor_finished",
+    [(False, False, False), (True, False, False), (False, True, False), (False, False, True)],
+    ids=["raw", "failed-polishing-uses-raw", "injection-disabled", "predecessor-already-finished"],
+)
+async def test_failed_deferred_successor_inserts_raw_speech_in_order(
+    continuation, monkeypatch, post_process, injection_disabled, predecessor_finished
+):
+    from src import injector
+
+    ctl = continuation.controller
+    first, _ = await continuation.start("A")
+    first_stop = continuation.stop()
+    await asyncio.wait_for(first.capture_stopped.wait(), 2)
+    second, second_record = await continuation.start("B", post_process=post_process)
+    assert not second.text_injection_enabled
+    # Speech arrived during capture, before the provider failed. It was held
+    # for insertion because the preceding session still owns the output lane.
+    second.callbacks["on_transcription"]("B", True)
+    second.text = ""
+    second.provider_gate.set()
+    polish = AsyncMock()
+    monkeypatch.setattr(ctl, "_post_process_and_inject_live_transcript", polish)
+    # Exercise the real controller/injector guard, replacing only OS typing.
+    monkeypatch.setattr(
+        ctl, "_inject_live_transcript_text", web_api.ScriberWebController._inject_live_transcript_text.__get__(ctl)
+    )
+    monkeypatch.setattr(web_api.Config, "DISABLE_TEXT_INJECTION", injection_disabled)
+    monkeypatch.setattr(web_api.Config, "INJECT_METHOD", "type")
+    monkeypatch.setattr(injector, "HAS_GUI", True)
+    monkeypatch.setattr(injector, "_ensure_gui_modules", lambda: True)
+    monkeypatch.setattr(injector, "_foreground_target_guard_allows_dispatch", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        injector, "keyboard", MagicMock(write=lambda text, **_kwargs: continuation.injected.append(text.strip()))
+    )
+    if predecessor_finished:
+        first.provider_gate.set()
+        await asyncio.wait_for(first_stop, 2)
+    assert await ctl._emergency_stop_pipeline(session_id=second_record.id)
+    assert second_record.status == "failed"
+    assert second_record.content_text() == "B"
+    third, _ = await continuation.start("C")
+    if not predecessor_finished:
+        assert not third.text_injection_enabled
+    third_stop = continuation.stop()
+    third.provider_gate.set()
+    await asyncio.wait_for(third.provider_completed.wait(), 2)
+    if not predecessor_finished:
+        assert continuation.injected == []
+    first.provider_gate.set()
+    await asyncio.wait_for(asyncio.gather(first_stop, third_stop), 2)
+    assert continuation.injected == (["A"] if injection_disabled else ["A", "B", "C"])
+    polish.assert_not_awaited()

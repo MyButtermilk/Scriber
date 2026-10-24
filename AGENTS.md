@@ -932,6 +932,8 @@ Packaging and scripts:
   remaining output settles, even after native capture is released. A later
   recording may capture immediately but must not insert ahead of older text;
   shutdown must retain and join the owning finalizer.
+  If that deferred recording fails, insert its retained raw speech after the
+  predecessor, respecting disabled text injection and skipping LLM polishing.
   The synchronous `flush()` remains only for the benchmark visible-text
   contract. Keystroke typing is the last fallback: an interrupted
   `keyboard.write` is terminal, never retyped through pyautogui, and injector
