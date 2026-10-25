@@ -299,6 +299,44 @@ describe("Podcasts", () => {
     );
   });
 
+  it("keeps an episode and its player open after listening moved it out of the unread view", async () => {
+    const ready = episode({ status: "completed", transcriptId: "d".repeat(32), downloadedBytes: 500, isUnread: true });
+    let played = false;
+    request.mockImplementation(async (method: string, path: string) => {
+      if (method === "PATCH") played = true;
+      return {
+        json: async () =>
+          path.includes("view=unread")
+            ? { items: played ? [] : [ready], total: played ? 0 : 1 }
+            : path.includes("/episodes?")
+              ? { items: [ready], total: 1 }
+              : { ok: true },
+      };
+    });
+    const { container } = mount([subscription({ unreadCount: 1, attentionCount: 1 })]);
+    fireEvent.click(await screen.findByRole("button", { name: "Unread (1)" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Listen" }));
+    fireEvent.play(container.querySelector("audio")!);
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        "GET",
+        `/api/podcasts/subscriptions/${"a".repeat(32)}/episodes?offset=0&view=unread`,
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        request.mock.calls.filter(([method, path]) => method === "GET" && String(path).includes("view=unread")),
+      ).toHaveLength(2),
+    );
+    const row = (await screen.findByText("Listened")).closest("article");
+    expect(within(row!).getByText("Understanding tomorrow")).toBeVisible();
+    expect(container.querySelector("audio")).not.toBeNull();
+    expect(request.mock.calls.filter(([method]) => method === "PATCH")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close player" }));
+    expect(await screen.findByText(/You're all caught up/)).toBeVisible();
+  });
+
   it("marks a whole podcast as read", async () => {
     const sub = subscription({ newCount: 1, unreadCount: 1, attentionCount: 2 });
     request.mockImplementation(async (_method: string, path: string) => ({

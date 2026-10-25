@@ -75,6 +75,16 @@ function usePageVisible(): boolean {
   return visible;
 }
 
+type EpisodeProgress = { read?: boolean; played?: boolean };
+
+/** Applies a confirmed read/played change to a locally retained episode. */
+function withProgress(episode: PodcastEpisode, body: EpisodeProgress): PodcastEpisode {
+  const stamp = new Date().toISOString();
+  const readAt = body.read === undefined ? episode.readAt : body.read ? episode.readAt || stamp : "";
+  const playedAt = body.played === undefined ? episode.playedAt : body.played ? episode.playedAt || stamp : "";
+  return { ...episode, readAt, playedAt, isUnread: episode.status === "completed" && !readAt && !playedAt };
+}
+
 function PodcastMark({ small = false }: { small?: boolean }) {
   return (
     <div
@@ -122,7 +132,10 @@ export default function Podcasts() {
   const [showFeed, setShowFeed] = useState(false);
   const [offset, setOffset] = useState(0);
   const [view, setView] = useState<PodcastEpisodeView>("all");
-  const [playingId, setPlayingId] = useState<string | null>(null);
+  // The episode being listened to stays listed while its player is open, even
+  // after playing it moved it out of the unread view.
+  const [player, setPlayer] = useState<{ episode: PodcastEpisode; index: number } | null>(null);
+  const playingId = player?.episode.id ?? null;
   const [removeId, setRemoveId] = useState<string | null>(null);
   // Episodes stay marked "New" for this visit after the server records them as seen.
   const [newThisVisit, setNewThisVisit] = useState<ReadonlySet<string>>(() => new Set());
@@ -162,7 +175,7 @@ export default function Podcasts() {
       setSelectedId(requestedSubscription);
       setOffset(0);
       setView("all");
-      setPlayingId(null);
+      setPlayer(null);
     }
     navigate("/podcasts", { replace: true });
   }, [navigate, requestedSubscription]);
@@ -200,12 +213,22 @@ export default function Podcasts() {
     void queryClient.invalidateQueries({ queryKey: [PODCAST_EPISODES_KEY] });
   };
   const progress = useMutation({
-    mutationFn: async ({ id, body }: { id: string; body: { read?: boolean; played?: boolean } }) =>
+    mutationFn: async ({ id, body }: { id: string; body: EpisodeProgress }) =>
       (await apiRequest("PATCH", `/api/podcasts/episodes/${id}`, body)).json(),
-    onSuccess: refreshData,
+    onSuccess: (_result, { id, body }) => {
+      setPlayer((current) =>
+        current?.episode.id === id ? { ...current, episode: withProgress(current.episode, body) } : current,
+      );
+      refreshData();
+    },
     onError: (error) =>
       toast({ title: t("Podcast action failed"), description: t(error.message), variant: "destructive" }),
   });
+  const listedEpisodes = episodes.data?.items ?? [];
+  const shownEpisodes =
+    player && !listedEpisodes.some((item) => item.id === player.episode.id)
+      ? [...listedEpisodes.slice(0, player.index), player.episode, ...listedEpisodes.slice(player.index)]
+      : listedEpisodes;
   const markPlayed = (episode: PodcastEpisode) => {
     if (!episode.playedAt && !progress.isPending) progress.mutate({ id: episode.id, body: { played: true } });
   };
@@ -223,7 +246,7 @@ export default function Podcasts() {
       if (variables.method === "DELETE" && variables.path.includes("/subscriptions/")) {
         setSelectedId("");
         setOffset(0);
-        setPlayingId(null);
+        setPlayer(null);
       }
       refreshData();
     },
@@ -241,15 +264,15 @@ export default function Podcasts() {
     setSelectedId(id);
     setOffset(0);
     setView("all");
-    setPlayingId(null);
+    setPlayer(null);
   };
   const viewChange = (next: PodcastEpisodeView) => {
     setView(next);
     setOffset(0);
-    setPlayingId(null);
+    setPlayer(null);
   };
 
-  const renderEpisode = (episode: PodcastEpisode) => {
+  const renderEpisode = (episode: PodcastEpisode, index: number) => {
     const busy = podcastEpisodeIsBusy(episode.status);
     const isNew = episode.isNew || newThisVisit.has(episode.id);
     const consumedLabel = episode.readAt ? "Read" : episode.playedAt ? "Listened" : "";
@@ -367,7 +390,7 @@ export default function Podcasts() {
                   variant="ghost"
                   size="sm"
                   className="h-8 gap-1.5 text-xs"
-                  onClick={() => setPlayingId(playingId === episode.id ? null : episode.id)}
+                  onClick={() => setPlayer(playingId === episode.id ? null : { episode, index })}
                 >
                   {playingId === episode.id ? <X className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
                   {t(playingId === episode.id ? "Close player" : "Listen")}
@@ -400,7 +423,7 @@ export default function Podcasts() {
                       <DropdownMenuItem
                         disabled={mutation.isPending}
                         onClick={() => {
-                          setPlayingId(null);
+                          setPlayer(null);
                           mutation.mutate({ method: "DELETE", path: `/api/podcasts/episodes/${episode.id}/audio` });
                         }}
                       >
@@ -769,8 +792,8 @@ export default function Podcasts() {
               <p role="alert" className="py-6 text-sm text-muted-foreground">
                 {t("Episodes could not be loaded. Try again.")}
               </p>
-            ) : episodes.data?.items.length ? (
-              episodes.data.items.map(renderEpisode)
+            ) : shownEpisodes.length ? (
+              shownEpisodes.map(renderEpisode)
             ) : (
               <p className="py-8 text-sm text-muted-foreground">
                 {view === "unread"
@@ -789,7 +812,10 @@ export default function Podcasts() {
                     variant="outline"
                     className="h-8 w-8"
                     disabled={offset === 0}
-                    onClick={() => setOffset(Math.max(0, offset - 50))}
+                    onClick={() => {
+                      setOffset(Math.max(0, offset - 50));
+                      setPlayer(null);
+                    }}
                     aria-label={t("Previous page")}
                   >
                     <ChevronLeft className="h-4 w-4" />
@@ -799,7 +825,10 @@ export default function Podcasts() {
                     variant="outline"
                     className="h-8 w-8"
                     disabled={offset + 50 >= (episodes.data?.total ?? 0)}
-                    onClick={() => setOffset(offset + 50)}
+                    onClick={() => {
+                      setOffset(offset + 50);
+                      setPlayer(null);
+                    }}
                     aria-label={t("Next page")}
                   >
                     <ChevronRight className="h-4 w-4" />
