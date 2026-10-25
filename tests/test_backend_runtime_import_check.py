@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from backend_runtime.contract import RUNTIME_CONTRACT_REVISION, RUNTIME_REQUIRED_IMPORTS
+from backend_runtime.launcher import check_imports as check_frozen_imports
 from scripts import check_backend_runtime_imports as runtime_import_checks
 from scripts.check_backend_runtime_imports import (
     BLOCKED_FROZEN_BUILD_ONLY_IMPORTS,
@@ -126,6 +127,23 @@ def test_backend_worker_startup_timeout_simulation_is_once(monkeypatch, tmp_path
     assert backend_worker.should_simulate_startup_timeout_once() is False
 
 
+def test_runtime_import_gates_reject_missing_meeting_tone_dependencies():
+    # These stdlib modules are imported only inside the application tone path;
+    # PyInstaller analyzes the separate frozen launcher instead of that source.
+    # Both the build-time and frozen checks must reject an incomplete payload.
+    for missing_module in ("wave", "winsound"):
+
+        def import_without_tone_dependency(module_name: str, missing: str = missing_module) -> object:
+            if module_name == missing:
+                raise ModuleNotFoundError(f"No module named '{module_name}'")
+            return object()
+
+        for gate in (check_imports, check_frozen_imports):
+            missing = gate(import_module=import_without_tone_dependency)
+            assert [item["module"] for item in missing] == [missing_module]
+            assert missing[0]["error"] == f"ModuleNotFoundError: No module named '{missing_module}'"
+
+
 def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     required_modules = {module for module, _reason in REQUIRED_IMPORTS}
 
@@ -169,7 +187,7 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
 def test_frozen_runtime_contract_covers_direct_pipecat_pipeline_imports():
     frozen_modules = {module for module, _reason in RUNTIME_REQUIRED_IMPORTS}
 
-    assert RUNTIME_CONTRACT_REVISION == 9
+    assert RUNTIME_CONTRACT_REVISION == 10
     assert {
         "pipecat.pipeline.pipeline",
         "pipecat.pipeline.worker",

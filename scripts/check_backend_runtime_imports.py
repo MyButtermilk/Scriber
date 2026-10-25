@@ -24,6 +24,8 @@ CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("audioop", "PCM16 RMS runtime supplied by audioop-lts"),
     ("loudness", "Pipecat ITU-R BS.1770 loudness dependency"),
     ("sentencex", "Pipecat sentence segmentation dependency"),
+    ("wave", "Meeting device-test in-memory WAV construction"),
+    ("winsound", "Windows Meeting device-test tone playback"),
     ("onnxruntime", "Silero VAD native runtime dependency"),
     ("onnx_asr", "bundled local ONNX speech-to-text runtime dependency"),
     ("yt_dlp", "YouTube media extraction dependency"),

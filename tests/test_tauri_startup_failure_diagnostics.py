@@ -79,3 +79,84 @@ def test_failure_evidence_is_collected_and_written_before_cleanup() -> None:
     assert "-RedirectStandardError (Join-Path $shellOutputDir 'smoke-shell.stderr.log')" in SOURCE
     cleanup_failure = SOURCE[SOURCE.index("    if ($cleanupFailure) {") :]
     assert cleanup_failure.index("Write-SmokeJson") < cleanup_failure.index("throw $cleanupFailure")
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected_error"),
+    [
+        ("", None),
+        ("backend exited with code 1; restarting\ncontrolled shutdown completed\n", None),
+        ("diagnostic: thread 'example' panicked at is a sample error message\n", None),
+        (
+            "thread 'reqwest-internal-sync-runtime' (21248) panicked at C:\\private\\sentinel-token.rs:12:7:\n"
+            "sentinel-secret-payload\n",
+            "Tauri shell reported an unexpected Rust panic.",
+        ),
+        (
+            "thread 'shell-ipc-client' panicked at 'event loop thread panicked', sentinel-private.rs:1:2\n",
+            "Tauri shell reported an unexpected Rust panic.",
+        ),
+        (
+            "thread 'first' panicked at sentinel-secret.rs:1:2:\n" + "ordinary later output\n" * 2000,
+            "Tauri shell reported an unexpected Rust panic.",
+        ),
+        ("thread caused non-unwinding panic. aborting.\n", "Tauri shell reported an unexpected Rust panic."),
+        (None, "Tauri shell stderr could not be verified."),
+        ("x" * (8 * 1024 * 1024 + 1), "Tauri shell stderr could not be verified."),
+    ],
+    ids=[
+        "empty",
+        "backend-recovery",
+        "quoted-example",
+        "rust-thread-id",
+        "rust-legacy",
+        "panic-before-tail",
+        "abort",
+        "missing",
+        "oversized",
+    ],
+)
+def test_shell_panic_gate_checks_real_headers_without_disclosing_stderr(
+    tmp_path: Path, stderr: str | None, expected_error: str | None
+) -> None:
+    shell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if shell is None:
+        pytest.skip("PowerShell is unavailable")
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    if stderr is not None:
+        (logs / "smoke-shell.stderr.log").write_text(stderr, encoding="utf-8")
+    script = ROOT / "tests/powershell/test_tauri_startup_diagnostics.ps1"
+    command = [
+        shell,
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        str(script),
+        "-RuntimeDataDir",
+        str(tmp_path),
+        "-CheckShellPanic",
+    ]
+    if stderr is not None:
+        command.append("-HoldShellLogOpen")
+    result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=30)
+    combined = result.stdout + result.stderr
+    assert "sentinel-" not in combined
+    if expected_error is None:
+        assert result.returncode == 0, combined
+        evidence = json.loads(result.stdout)
+        assert evidence["verified"] is True
+        assert evidence["panicDetected"] is False
+    else:
+        assert result.returncode != 0
+        assert expected_error in combined
+
+
+def test_shell_panic_gate_runs_before_success_and_after_cleanup() -> None:
+    check = "Assert-SmokeShellNoPanic -RuntimeDataDir $DataDir"
+    assert SOURCE.index(check) < SOURCE.index("        ok = $true\n", SOURCE.index(check))
+    cleanup = SOURCE.index("} finally {\n    $cleanupFailure")
+    final_check = SOURCE.index(check, cleanup)
+    assert final_check < SOURCE.index(
+        "Write-SmokeJson -Payload $result -Path $OutputPath -Root $RepoRoot\n", final_check
+    )

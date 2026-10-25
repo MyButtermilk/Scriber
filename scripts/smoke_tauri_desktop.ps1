@@ -3906,6 +3906,7 @@ try {
             -QuitBarrierPath $shellMenuSmokeQuitBarrierPath `
             -MeasurementGatePath $FrontendPerformanceGatePath
     }
+    $shellPanicCheck = Assert-SmokeShellNoPanic -RuntimeDataDir $DataDir
     $result = [pscustomobject]@{
         ok = $true
         appPid = $app.Id
@@ -3934,6 +3935,7 @@ try {
         liveRecording = $liveRecording
         stability = $stability
         shellMenuSmoke = $shellMenuSmoke
+        shellPanicCheck = $shellPanicCheck
         failureDiagnostics = $null
         cleanupVerified = $false
     }
@@ -4114,6 +4116,16 @@ try {
     }
 }
 
+if ($result.ok) {
+    try {
+        # Include stderr flushed during shutdown before reporting a clean run.
+        $result.shellPanicCheck = Assert-SmokeShellNoPanic -RuntimeDataDir $DataDir
+    } catch {
+        $failure = $_
+        $result.ok = $false
+        $result | Add-Member -NotePropertyName error -NotePropertyValue $_.Exception.Message -Force
+    }
+}
 Write-SmokeJson -Payload $result -Path $OutputPath -Root $RepoRoot
 if ($failure) {
     throw $failure

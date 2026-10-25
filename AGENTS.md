@@ -523,6 +523,9 @@ Frontend and shell:
   strictly parsed `scriber://` browser handoff. A second Windows instance must
   queue only a validated, expiring YouTube request for the primary instance and
   must not log raw video metadata.
+  Initialize Rustls's existing Ring provider before starting Shell IPC or Tauri
+  threads. Reqwest uses `rustls-no-provider`; an updater check must never be
+  required before another shell client can construct its TLS transport.
   Bind the backend's package version and resource directory atomically at the
   start of desktop setup. Tauri can create WebViews before the setup callback;
   early backend commands must defer until configured, without probing or

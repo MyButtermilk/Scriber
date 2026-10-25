@@ -78,9 +78,15 @@ stable runtime cache instead of reusing an incomplete packaged interpreter.
 Revision 8 additionally binds the RSS parser's standard-library dependencies
 (`html`, `email.utils`, `ipaddress`, and `xml.etree.ElementTree`), with an offline
 feed/DTD-rejection probe in the frozen-runtime import check.
+Revision 10 explicitly freezes and probes `wave` and Windows `winsound` for the
+Meeting device-test tone; standard-library modules used only by the application
+overlay still need this runtime dependency contract.
 
 The installed app is local-first. The backend binds to loopback, and the Tauri
 supervisor injects a per-run session token for local control endpoints.
+The shell initializes Rustls's existing Ring provider before starting its IPC
+or Tauri threads. Both blocking and asynchronous Reqwest clients must be usable
+before any updater check; updater initialization is not a transport prerequisite.
 
 Backend launch remains disabled until the first desktop setup action atomically
 binds Tauri's package version and resource directory. Tauri may create WebViews

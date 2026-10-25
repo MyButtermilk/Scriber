@@ -1982,7 +1982,15 @@ fn queue_youtube_deep_link_navigation<R: Runtime>(
     }
 }
 
+fn initialize_tls_crypto_provider() {
+    // Reqwest's rustls-no-provider mode requires a process default before any
+    // client is built, including Outlook refreshes on shell IPC worker threads.
+    // Keep an existing provider if initialization has already happened.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 pub fn run() {
+    initialize_tls_crypto_provider();
     let initial_youtube_deep_link = youtube_deep_link_request_from_args(env::args());
     let single_instance_guard = match acquire_single_instance_guard_with_youtube_request(
         SINGLE_INSTANCE_MUTEX_NAME,
@@ -5870,6 +5878,30 @@ mod tests {
     };
     use tauri::tray::{MouseButton, MouseButtonState};
     use tauri_plugin_global_shortcut::ShortcutState;
+
+    #[test]
+    fn tls_startup_supports_blocking_and_async_clients_on_worker_threads() {
+        super::initialize_tls_crypto_provider();
+        let provider = rustls::crypto::CryptoProvider::get_default()
+            .expect("TLS provider installed before worker startup")
+            .clone();
+        super::initialize_tls_crypto_provider();
+        assert!(std::sync::Arc::ptr_eq(
+            &provider,
+            rustls::crypto::CryptoProvider::get_default().expect("TLS provider remains installed")
+        ));
+
+        thread::spawn(|| {
+            let _blocking_client = reqwest::blocking::Client::builder()
+                .build()
+                .expect("Outlook blocking client initializes without a crypto-provider panic");
+            let _async_client = reqwest::Client::builder()
+                .build()
+                .expect("Updater async client initializes without a crypto-provider panic");
+        })
+        .join()
+        .expect("HTTP client initialization worker must not panic");
+    }
 
     #[test]
     fn backend_launch_waits_for_setup_without_probing_or_spawning() {

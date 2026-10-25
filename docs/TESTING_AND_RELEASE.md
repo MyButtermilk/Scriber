@@ -844,6 +844,12 @@ Frontend\src-tauri\target\release\backend\scriber-backend.exe `
   --runtime-import-check
 ```
 
+The frozen import gate includes `wave` and Windows `winsound`, which are needed
+for the bounded Meeting device-test tone even though they are standard-library
+modules. The installed desktop smoke also rejects Rust panic headers in its own
+shell stderr, including panics from background IPC clients while backend health
+still reports ready.
+
 ## Python 3.14 runtime selection
 
 The shipping fallback and current production default are the official Windows

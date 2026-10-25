@@ -84,4 +84,38 @@ function Get-SmokeStartupFailureDiagnostics {
     }
 }
 
-Export-ModuleMember -Function Get-SmokeStartupFailureDiagnostics
+function Assert-SmokeShellNoPanic {
+    param([Parameter(Mandatory = $true)][string]$RuntimeDataDir)
+
+    $stream = $null
+    try {
+        $path = Join-Path (Join-Path $RuntimeDataDir 'logs') 'smoke-shell.stderr.log'
+        # Inspect this launch's complete stderr, not just the diagnostic tail.
+        # A bounded snapshot also prevents a flooding process from extending the
+        # read indefinitely. Missing/unreadable/truncated evidence fails closed.
+        $stream = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite, Delete')
+        $length = $stream.Length
+        if ($length -gt 8MB) { throw 'shell_log_exceeds_verification_bound' }
+        $buffer = New-Object byte[] ([int]$length)
+        $read = 0
+        while ($read -lt $buffer.Length) {
+            $count = $stream.Read($buffer, $read, $buffer.Length - $read)
+            if ($count -eq 0) { throw 'shell_log_truncated_during_verification' }
+            $read += $count
+        }
+        $text = [System.Text.Encoding]::UTF8.GetString($buffer).TrimStart([char]0xFEFF)
+    } catch {
+        throw 'Tauri shell stderr could not be verified.'
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+    # Match Rust's actual panic headers, including newer thread IDs. An ordinary
+    # log mentioning a panic or an intentionally killed backend is not a panic.
+    if ($text -match '(?m)^thread ''[^\r\n]+''(?: \(\d+\))? panicked at(?:\s|:)' -or
+        $text -match '(?m)^thread (?:caused non-unwinding panic|panicked while processing panic)\. aborting\.') {
+        throw 'Tauri shell reported an unexpected Rust panic.'
+    }
+    return [pscustomobject]@{ verified = $true; panicDetected = $false; inspectedBytes = $length }
+}
+
+Export-ModuleMember -Function Get-SmokeStartupFailureDiagnostics, Assert-SmokeShellNoPanic
