@@ -11,14 +11,13 @@ describe("markPodcastTranscriptRead", () => {
     request.mockReset();
   });
 
-  it("marks a podcast transcript once and refreshes the podcast library only when it changed", async () => {
+  it("coalesces concurrent read marks and refreshes the podcast library only when it changed", async () => {
     const client = new QueryClient();
     const invalidate = vi.spyOn(client, "invalidateQueries");
     request.mockResolvedValue({ json: async () => ({ updated: true }) });
     const id = "c".repeat(32);
 
-    await markPodcastTranscriptRead(client, id);
-    await markPodcastTranscriptRead(client, id);
+    await Promise.all([markPodcastTranscriptRead(client, id), markPodcastTranscriptRead(client, id)]);
 
     expect(request).toHaveBeenCalledTimes(1);
     expect(request).toHaveBeenCalledWith("POST", `/api/podcasts/transcripts/${id}/read`);
@@ -28,6 +27,29 @@ describe("markPodcastTranscriptRead", () => {
     request.mockResolvedValue({ json: async () => ({ updated: false }) });
     await markPodcastTranscriptRead(client, "d".repeat(32));
     expect(invalidate).not.toHaveBeenCalled();
+  });
+
+  it("marks a transcript read again when it is reopened after being marked unread", async () => {
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    let isRead = false;
+    request.mockImplementation(async () => {
+      const updated = !isRead;
+      isRead = true;
+      return { json: async () => ({ updated }) };
+    });
+    const id = "c".repeat(32);
+
+    await markPodcastTranscriptRead(client, id);
+    expect(isRead).toBe(true);
+    isRead = false;
+    invalidate.mockClear();
+
+    await markPodcastTranscriptRead(client, id);
+
+    expect(isRead).toBe(true);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/podcasts"] });
   });
 
   it("skips transcripts that cannot belong to a podcast and retries after a failure", async () => {

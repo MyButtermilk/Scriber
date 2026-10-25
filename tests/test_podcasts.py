@@ -733,6 +733,66 @@ async def test_service_recovers_download_renamed_before_its_metadata_commit(tmp_
 
 
 @pytest.mark.asyncio
+async def test_completed_download_releases_media_ownership_before_notification(tmp_path: Path) -> None:
+    notifying = asyncio.Event()
+    release_notification = asyncio.Event()
+    notification_returned = asyncio.Event()
+    downloading_again = asyncio.Event()
+    release_download = asyncio.Event()
+
+    async def notify(_payload: dict) -> None:
+        notifying.set()
+        await release_notification.wait()
+        notification_returned.set()
+
+    controller = FakeController(tmp_path)
+    transport = FakeTransport()
+    original_download = transport.download
+
+    async def download(url, target, *, max_bytes):
+        if transport.downloads:
+            downloading_again.set()
+            await release_download.wait()
+        return await original_download(url, target, max_bytes=max_bytes)
+
+    transport.download = download
+    service = PodcastService(
+        tmp_path / "podcasts", PodcastProcessor(controller), transport=transport, startup_delay=0, notify=notify
+    )
+    subscription = await service.subscribe("https://example.com/feed")
+    service.start()
+    try:
+        await asyncio.wait_for(notifying.wait(), 10)
+        episode = (await service.episodes(subscription))["items"][0]
+        assert episode["status"] == "completed"
+        assert (await service.library())["activeCount"] == 0
+        assert await service.remove_download(episode["id"])
+        assert await service.queue(episode["id"])
+        await asyncio.wait_for(downloading_again.wait(), 10)
+
+        # Completing the old notification must not clear the new download's
+        # ownership, even though both attempts refer to the same episode.
+        release_notification.set()
+        await asyncio.wait_for(notification_returned.wait(), 10)
+        assert (await service.library())["activeCount"] == 1
+        with pytest.raises(PodcastError):
+            await service.remove_download(episode["id"])
+        with pytest.raises(PodcastError):
+            await service.unsubscribe(subscription)
+
+        release_download.set()
+        async with asyncio.timeout(10):
+            while (await service.library())["activeCount"]:
+                await asyncio.sleep(0.01)
+        assert len(controller.started) == len(controller.summaries) == 1
+        assert await service.unsubscribe(subscription)
+    finally:
+        release_notification.set()
+        release_download.set()
+        await service.close()
+
+
+@pytest.mark.asyncio
 async def test_removed_download_can_be_retried_without_any_new_transcription_or_summary(tmp_path: Path) -> None:
     controller = FakeController(tmp_path)
     transport = FakeTransport()

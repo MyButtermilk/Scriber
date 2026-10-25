@@ -99,6 +99,32 @@ describe("failed transcript", () => {
     await waitFor(() => expect(markPodcastTranscriptRead).toHaveBeenCalledWith(client, "c".repeat(32)));
   });
 
+  it("marks a podcast transcript on each visit without repeating the mark on a data refresh", async () => {
+    const id = "c".repeat(32);
+    const firstVisit = mount("Transcript text.", "", "Saved summary.", "file", {
+      id,
+      status: "completed",
+      summaryStatus: "completed",
+    });
+    await screen.findByText("Transcript text.");
+    await waitFor(() => expect(markPodcastTranscriptRead).toHaveBeenCalledTimes(1));
+
+    firstVisit.client.setQueryData<TranscriptDetailResponse>(["/api/transcripts", "failed-mic"], (current) =>
+      current ? { ...current, content: "Refreshed transcript text." } : current,
+    );
+    await screen.findByText("Refreshed transcript text.");
+    expect(markPodcastTranscriptRead).toHaveBeenCalledTimes(1);
+    firstVisit.unmount();
+
+    const secondVisit = mount("Transcript text.", "", "Saved summary.", "file", {
+      id,
+      status: "completed",
+      summaryStatus: "completed",
+    });
+    await waitFor(() => expect(markPodcastTranscriptRead).toHaveBeenCalledTimes(2));
+    expect(markPodcastTranscriptRead).toHaveBeenLastCalledWith(secondVisit.client, id);
+  });
+
   it("does not mark failed transcripts as read", async () => {
     mount("", "Podcast processing failed.", "", "file", { id: "c".repeat(32) });
     await screen.findByText("Podcast processing failed.");

@@ -2156,6 +2156,14 @@ the controller and text injector append only final `TranscriptionFrame` values.
 Consequently ElevenLabs manual-commit previews are neither persisted nor
 inserted; only the committed transcript is durable output.
 
+Streaming File/YouTube transcription commits the final audio before sending
+`EndFrame` and requires an answer for every committed segment. A missing tail
+fence or timed-out provider answer fails the job instead of publishing partial
+text as complete; an answered empty transcript remains valid for silence.
+Short, nonempty tails are padded with at most 250 ms of silence to satisfy the
+provider's minimum commit size without discarding the last part of a word.
+Empty input never creates a padding-only commit.
+
 Pipecat/Silero VAD is opt-in through `SCRIBER_SEGMENT_SPEECH_WITH_VAD` and the
 Settings toggle for segmented and async Live Mic routes. Native provider
 realtime streams never load, attach, or replenish Silero, regardless of the

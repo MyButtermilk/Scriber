@@ -334,6 +334,17 @@ class PodcastService:
         return sum(path.stat().st_size for path in self._audio.iterdir() if path.is_file() and not path.is_symlink())
 
     async def _process(self, episode: dict[str, Any]) -> None:
+        try:
+            notification = await self._process_episode(episode)
+        finally:
+            # The source is no longer in use once processing has finished.
+            # Notifications must not retain media ownership or later clear a
+            # successor's claim when the completed download is retried.
+            self._active_episodes.discard(episode["id"])
+        if notification is not None:
+            await self._publish(notification)
+
+    async def _process_episode(self, episode: dict[str, Any]) -> dict[str, Any] | None:
         identifier = episode["id"]
         transcript_id = episode["transcript_id"] or uuid5(NAMESPACE_URL, f"scriber:podcast:{identifier}").hex
         started = time.monotonic()
@@ -409,7 +420,11 @@ class PodcastService:
             )
             if not download_only:
                 await self._processor.process(target, episode["title"], transcript_id, plan, stage)
-            await to_thread_cancellation_barrier(self._store.update, identifier, status="completed")
+            completed = None if download_only else await asyncio.to_thread(self._store.episode, identifier)
+            # Removal shares this lock and cannot observe a terminal row until
+            # the worker has resumed and can release its in-memory ownership.
+            async with self._subscription_lock:
+                await to_thread_cancellation_barrier(self._store.update, identifier, status="completed")
             self._event(
                 "episode_completed",
                 outcome="success",
@@ -445,23 +460,17 @@ class PodcastService:
                 error=exc,
                 meta={"from_status": current_stage, "to_status": "failed"},
             )
-            return
-        if download_only:
-            return
-        # Outside the processing block: a cancellation here must not move the
-        # already completed episode back to the queue.
-        completed = await asyncio.to_thread(self._store.episode, identifier)
+            return None
         if completed is not None:
-            await self._publish(
-                podcast_episode_ready_event(
-                    uuid4().hex,
-                    episode_id=identifier,
-                    subscription_id=completed["subscription_id"],
-                    transcript_id=transcript_id,
-                    title=completed["title"],
-                    podcast_title=completed["podcast_title"],
-                )
+            return podcast_episode_ready_event(
+                uuid4().hex,
+                episode_id=identifier,
+                subscription_id=completed["subscription_id"],
+                transcript_id=transcript_id,
+                title=completed["title"],
+                podcast_title=completed["podcast_title"],
             )
+        return None
 
     async def _run(self) -> None:
         if self._startup_delay:
@@ -475,10 +484,7 @@ class PodcastService:
                     if episode:
                         self._active_episodes.add(episode["id"])
                 if episode is not None:
-                    try:
-                        await self._process(episode)
-                    finally:
-                        self._active_episodes.discard(episode["id"])
+                    await self._process(episode)
                     continue
                 await self._wake.wait()
             except asyncio.CancelledError:

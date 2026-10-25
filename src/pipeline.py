@@ -2116,6 +2116,7 @@ class _FileCommitSegmenter(FrameProcessor):
         self._periodic = periodic
         self.commits = 0
         self._sample_rate = 0
+        self._channels = 1
         self._segment_samples = 0
         self._segment_peak = 0.0
         self._quiet_samples = 0
@@ -2128,7 +2129,24 @@ class _FileCommitSegmenter(FrameProcessor):
             return
 
         if isinstance(frame, _FileCommitFlushFrame):
-            if self._sample_rate and self._segment_samples >= _FILE_COMMIT_MIN_TAIL_SECONDS * self._sample_rate:
+            if self._sample_rate and self._segment_samples:
+                # A forced periodic cut may leave only the end of a word. Keep
+                # that audio and pad it to the provider's minimum commit size
+                # instead of silently discarding a short final segment.
+                padding_samples = 0
+                if self._periodic:
+                    padding_samples = max(
+                        0, math.ceil(_FILE_COMMIT_MIN_TAIL_SECONDS * self._sample_rate) - self._segment_samples
+                    )
+                if padding_samples:
+                    await self.push_frame(
+                        InputAudioRawFrame(
+                            audio=b"\x00\x00" * padding_samples * self._channels,
+                            sample_rate=self._sample_rate,
+                            num_channels=self._channels,
+                        ),
+                        direction,
+                    )
                 await self._close_segment(direction)
             frame.acknowledge()
             return
@@ -2141,7 +2159,8 @@ class _FileCommitSegmenter(FrameProcessor):
             await self.push_frame(VADUserStartedSpeakingFrame(), direction)
 
     def _segment_ends_after(self, frame: InputAudioRawFrame) -> bool:
-        samples = len(frame.audio) // (2 * max(1, int(frame.num_channels or 1)))
+        self._channels = max(1, int(frame.num_channels or 1))
+        samples = len(frame.audio) // (2 * self._channels)
         self._sample_rate = int(frame.sample_rate or self._sample_rate or Config.SAMPLE_RATE)
         self._segment_samples += samples
         if not self._periodic:
@@ -4675,11 +4694,11 @@ class ScriberPipeline:
             )
         finally:
             flushed.cancel()
+            await asyncio.gather(flushed, return_exceptions=True)
         if run_task.done():
             return
         if not flush.acknowledged:
-            logger.warning("File commit segmenter did not close the last segment")
-            return
+            raise RuntimeError("File transcription did not confirm that its last audio segment was committed.")
         if not getattr(stt_service, "reports_provider_commit_results", False):
             return
 
@@ -4694,10 +4713,9 @@ class ScriberPipeline:
                 settled.cancel()
             await asyncio.gather(settled, return_exceptions=True)
         if not settled.cancelled() and settled.result() is False:
-            logger.warning(
-                "Realtime provider returned {} of {} committed file segments",
-                results.settled,
-                segmenter.commits,
+            raise RuntimeError(
+                "The transcription provider did not return every committed file segment "
+                f"({results.settled} of {segmenter.commits} results received)."
             )
 
     async def _wait_for_file_input_or_pipeline_end(

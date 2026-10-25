@@ -241,8 +241,11 @@ Backend and runtime:
 - `src/podcasts/`: public-only RSS/directory transport, durable subscription and
   episode state, retained downloads, independent feed refresh, and three concurrent
   processing workers. Downloads serialize their capacity check and write to preserve
-  the shared cache limit. Its processor alone adapts to File admission and Transcript
-  summaries. Commit the transcript ID before admission and resume that identity;
+  the shared cache limit. Terminal completion and media-ownership release precede
+  best-effort ready notifications; a delayed notification must not block download
+  removal or clear a successor retry's ownership. Its processor alone adapts to
+  File admission and Transcript summaries. Commit the transcript ID before
+  admission and resume that identity;
   only explicit retry may allocate a new attempt after failure. The first
   subscription queues its latest episode, subsequent new episodes queue while
   the app runs. Preserve the per-episode/cache limits and cancellation barriers.

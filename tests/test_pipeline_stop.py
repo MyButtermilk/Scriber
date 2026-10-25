@@ -1151,6 +1151,36 @@ async def test_realtime_file_commits_cut_continuous_speech_at_the_maximum(monkey
     assert texts == ["segment 1", "segment 2"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seconds", [0.064, 30.1])
+async def test_realtime_file_preserves_a_short_tail_by_padding_its_commit(monkeypatch, seconds):
+    levels = _blocks(seconds, 8000)
+    provider = _CommittingProvider()
+    pipeline, texts = _file_pipeline_with(monkeypatch, provider, _BlocksFileInput(levels), service_name="openai")
+
+    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    forced_cut = -(-30 * 16_000 // _FILE_BLOCK) * _FILE_BLOCK if seconds > 30 else 0
+    expected_commits = ([forced_cut] if forced_cut else []) + [forced_cut + 4000]
+    assert provider.commit_points == expected_commits
+    assert len(levels) * _FILE_BLOCK < provider.samples <= len(levels) * _FILE_BLOCK + 4000
+    assert texts == [f"segment {number}" for number in range(1, len(expected_commits) + 1)]
+    assert provider.settled_at_end == len(expected_commits)
+
+
+@pytest.mark.asyncio
+async def test_realtime_file_without_audio_does_not_commit_padding(monkeypatch):
+    provider = _CommittingProvider()
+    pipeline, texts = _file_pipeline_with(monkeypatch, provider, _BlocksFileInput([]), service_name="openai")
+
+    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert provider.commit_points == []
+    assert provider.samples == 0
+    assert texts == []
+    assert pipeline._provider_request_state == "result_received"
+
+
 class _RecordingSegmentedProvider(SegmentedSTTService):
     def __init__(self):
         super().__init__(sample_rate=16_000)
@@ -1210,18 +1240,83 @@ async def test_realtime_services_report_one_result_per_commit(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_realtime_file_without_a_commit_result_finishes_after_the_idle_timeout(monkeypatch):
+async def test_realtime_file_without_a_commit_result_fails_after_the_idle_timeout(monkeypatch):
     monkeypatch.setattr(pipeline_module, "_FILE_COMMIT_RESULT_IDLE_TIMEOUT_SECONDS", 0.1)
     provider = _CommittingProvider(answers=False)
     pipeline, texts = _file_pipeline_with(
         monkeypatch, provider, _BlocksFileInput(_blocks(2, 8000)), service_name="openai"
     )
 
-    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+    with pytest.raises(RuntimeError, match="0 of 1 results received"):
+        await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
 
     assert provider.commit_points == [len(_blocks(2, 8000)) * _FILE_BLOCK]
     assert texts == []
-    assert provider.settled_at_end == 0
+    assert provider.settled_at_end is None
+    assert pipeline.task.has_finished()
+    assert pipeline._provider_request_state != "result_received"
+
+
+@pytest.mark.asyncio
+async def test_realtime_file_missing_its_tail_result_fails_with_partial_text_retained(monkeypatch):
+    class _MissingTailProvider(_CommittingProvider):
+        async def _answer(self, number: int) -> None:
+            if number == 1:
+                await super()._answer(number)
+
+    monkeypatch.setattr(pipeline_module, "_FILE_COMMIT_RESULT_IDLE_TIMEOUT_SECONDS", 0.1)
+    provider = _MissingTailProvider()
+    pipeline, texts = _file_pipeline_with(
+        monkeypatch, provider, _BlocksFileInput(_blocks(35, 8000)), service_name="openai"
+    )
+
+    with pytest.raises(RuntimeError, match="1 of 2 results received"):
+        await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert texts == ["segment 1"]
+    assert provider.settled_at_end is None
+    assert pipeline.task.has_finished()
+    assert pipeline._provider_request_state != "result_received"
+
+
+@pytest.mark.asyncio
+async def test_realtime_file_unacknowledged_tail_fence_fails(monkeypatch):
+    class _LostFenceFileInput(_BlocksFileInput):
+        async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
+            if isinstance(frame, pipeline_module._FileCommitFlushFrame):
+                return
+            await super().push_frame(frame, direction)
+
+    monkeypatch.setattr(pipeline_module, "_FILE_COMMIT_FLUSH_TIMEOUT_SECONDS", 0.1)
+    provider = _CommittingProvider()
+    pipeline, texts = _file_pipeline_with(
+        monkeypatch, provider, _LostFenceFileInput(_blocks(2, 8000)), service_name="openai"
+    )
+
+    with pytest.raises(RuntimeError, match="last audio segment was committed"):
+        await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert provider.commit_points == []
+    assert texts == []
+    assert provider.settled_at_end is None
+    assert pipeline.task.has_finished()
+    assert pipeline._provider_request_state != "result_received"
+
+
+@pytest.mark.asyncio
+async def test_realtime_silent_file_accepts_an_answered_commit_without_text(monkeypatch):
+    class _EmptyAnswerProvider(_CommittingProvider):
+        async def _answer(self, number: int) -> None:
+            pipeline_module._provider_commit_results(self).settle()
+
+    provider = _EmptyAnswerProvider()
+    pipeline, texts = _file_pipeline_with(monkeypatch, provider, _BlocksFileInput(_blocks(2, 0)), service_name="openai")
+
+    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert texts == []
+    assert provider.settled_at_end == 1
+    assert pipeline._provider_request_state == "result_received"
 
 
 @pytest.mark.asyncio
