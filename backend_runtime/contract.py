@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 RUNTIME_CONTRACT_NAME = "scriber-frozen-python-runtime"
-RUNTIME_CONTRACT_REVISION = 9
+RUNTIME_CONTRACT_REVISION = 10
 APPLICATION_LAYER_SCHEMA_VERSION = 1
 RUNTIME_LAYER_SCHEMA_VERSION = 1
 APPLICATION_ENTRY_POINT = "src.backend_worker:main"
@@ -16,7 +16,7 @@ PYTHON_RUNTIME_POLICY_MANIFEST_NAME = "python-runtime-manifest.json"
 PYTHON_RUNTIME_POLICY_ENV = "SCRIBER_PYTHON_RUNTIME_MANIFEST"
 PYTHON_RUNTIME_LOCK_SHA256_ENV = "SCRIBER_PYTHON_RUNTIME_LOCK_SHA256"
 
-# These imports are the third-party boundary required by Scriber.  The frozen
+# These imports are the packaged runtime boundary required by Scriber.  The frozen
 # runtime check imports every entry without importing application code.  Keep
 # the list credential-free and update the contract revision when its meaning
 # changes incompatibly.
@@ -82,7 +82,9 @@ RUNTIME_REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
     ("sqlite3", "CPython SQLite persistence runtime"),
     ("ssl", "CPython OpenSSL transport runtime"),
     ("tqdm", "model download progress runtime"),
+    ("wave", "Meeting device-test in-memory WAV construction"),
     ("websockets.asyncio.client", "provider WebSocket client runtime"),
+    ("winsound", "Windows Meeting device-test tone playback"),
     ("xml.etree.ElementTree", "bounded RSS podcast parser with DTD rejection"),
     ("yt_dlp", "YouTube media extraction runtime"),
     ("yt_dlp_ejs", "YouTube JavaScript challenge runtime"),

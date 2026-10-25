@@ -1,6 +1,8 @@
 param(
     [string]$RuntimeDataDir,
-    [switch]$ExitFixture
+    [switch]$ExitFixture,
+    [switch]$CheckShellPanic,
+    [switch]$HoldShellLogOpen
 )
 
 $ErrorActionPreference = 'Stop'
@@ -8,6 +10,20 @@ if ($ExitFixture) { exit 7 }
 if (-not $RuntimeDataDir) { throw 'RuntimeDataDir is required.' }
 
 Import-Module (Join-Path $PSScriptRoot '..\..\scripts\SmokeStartupDiagnostics.psm1') -Force
+if ($CheckShellPanic) {
+    $writer = $null
+    try {
+        if ($HoldShellLogOpen) {
+            $writer = [System.IO.File]::Open(
+                (Join-Path $RuntimeDataDir 'logs/smoke-shell.stderr.log'), 'Open', 'Write', 'ReadWrite'
+            )
+        }
+        Assert-SmokeShellNoPanic -RuntimeDataDir $RuntimeDataDir | ConvertTo-Json -Compress
+    } finally {
+        if ($null -ne $writer) { $writer.Dispose() }
+    }
+    exit 0
+}
 $env:SCRIBER_TEST_API_KEY = 'sentinel-env-key'
 $env:SCRIBER_OTHER_API_KEY = 'sentinel-oth-key'
 $current = Get-Process -Id $PID

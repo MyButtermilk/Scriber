@@ -136,8 +136,14 @@ def test_installer_orchestration_retains_both_launches_and_stops_on_first_failur
     scripts = []
     fixtures = []
     for failed_stage in [None, "clean-install", "upgrade"]:
-        first = _passing_report() | {"launchMarker": "clean-install"}
-        second = _passing_report() | {"launchMarker": "upgrade"}
+        first = _passing_report() | {
+            "launchMarker": "clean-install",
+            "shellPanicCheck": {"verified": True, "panicDetected": False, "inspectedBytes": 3},
+        }
+        second = _passing_report() | {
+            "launchMarker": "upgrade",
+            "shellPanicCheck": {"verified": True, "panicDetected": False, "inspectedBytes": 7},
+        }
         if failed_stage == "clean-install":
             first["ok"] = False
             first["failureDiagnostics"] = {"marker": "first-failure"}
@@ -214,3 +220,5 @@ try {
                 assert result["report"]["ok"] is True
                 assert result["report"]["desktopSmokeExitCode"] == 0
                 assert result["report"]["upgrade"]["verified"] is True
+                assert result["report"]["shellPanicCheck"] == second["shellPanicCheck"]
+                assert result["report"]["upgrade"]["shellPanicCheck"] == second["shellPanicCheck"]

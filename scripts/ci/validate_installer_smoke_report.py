@@ -85,6 +85,16 @@ def _support_bundle(report: dict[str, Any], prefix: str) -> None:
     _require(report, prefix + "meetingPrivacy.sensitiveFindingCount", 0)
 
 
+def _shell_panic_check(report: dict[str, Any], prefix: str) -> None:
+    _require(report, prefix + "verified", True)
+    _require(report, prefix + "panicDetected", False)
+    count_path = prefix + "inspectedBytes"
+    count = _field(report, count_path)
+    # Assert-SmokeShellNoPanic accepts an empty stderr and caps reads at 8 MiB.
+    if type(count) is not int or not 0 <= count <= 8 * 1024 * 1024:
+        raise ReportValidationError(f"Invalid required smoke field: {count_path}")
+
+
 def validate_report(report: Any, *, installer: Path) -> None:
     if not isinstance(report, dict):
         raise ReportValidationError("Smoke report must be a JSON object")
@@ -101,6 +111,7 @@ def validate_report(report: Any, *, installer: Path) -> None:
         _true(report, prefix, ("ok", "ready", "cleanupVerified"))
         _require(report, prefix + "runtimeMode", "tauri-supervised")
         _require(report, prefix + "launchKind", "sidecar")
+        _shell_panic_check(report, prefix + "shellPanicCheck.")
     _require(report, "desktopSmokeExitCode", 0)
     _require(report, "cleanInstall.processExitCode", 0)
     _frontend(report, "cleanInstall.frontend.")
@@ -112,6 +123,7 @@ def validate_report(report: Any, *, installer: Path) -> None:
     )
     _require(report, "upgrade.secondRuntimeMode", "tauri-supervised")
     _require(report, "upgrade.secondLaunchKind", "sidecar")
+    _shell_panic_check(report, "upgrade.shellPanicCheck.")
     for prefix in ("", "upgrade."):
         _frontend(report, prefix + "frontend.")
         _support_bundle(report, prefix + "supportBundle.")
