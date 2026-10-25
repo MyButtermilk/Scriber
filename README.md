@@ -160,9 +160,15 @@ Privacy details are documented in the
 Search podcasts without another account or API key, or paste a public RSS feed.
 Subscribing with automatic processing starts the latest episode; older episodes
 remain available for manual processing. Scriber checks feeds every 30 minutes
-while running and processes new episodes one at a time using the transcription
-provider and summary model selected in Settings. Those providers' normal usage
-charges still apply.
+while running and processes up to three new episodes at a time using the
+transcription provider and summary model selected in Settings. Those providers'
+normal usage charges still apply.
+
+New episodes are marked **New** until you have seen them, and ready episodes stay
+**Unread** until you open the transcript or play the audio. The Podcasts tab
+counts both, an **Unread** filter lists what is left to read, and you can mark an
+episode or a whole podcast as read. A notification announces newly found episodes
+and every episode that becomes ready to read, with a direct link to it.
 
 Pause automatic processing for an individual subscription, play downloaded
 audio, open transcripts and summaries, retry a failed step, or remove downloads.
@@ -508,8 +514,8 @@ from Settings.
 ### Requirements
 
 - Windows 10 or newer for the primary desktop runtime
-- Python 3.14.7
-- Node.js 26.5.0 and npm
+- Python 3.14.9
+- Node.js 26.12.1 and npm
 - Stable Rust toolchain
 - Git
 
@@ -552,7 +558,7 @@ The NSIS installer is written to:
 Frontend\src-tauri\target\release\bundle\nsis\
 ```
 
-Windows releases use exact CPython 3.14.7. The conservative product default is
+Windows releases use exact CPython 3.14.9. The conservative product default is
 the official runtime with JIT disabled; JIT and custom Clang/PGO/tail-call
 variants remain internal, installed-performance experiments and are not user
 settings. The stock PyInstaller 6.20 frozen interpreter currently ignores

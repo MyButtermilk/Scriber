@@ -478,6 +478,60 @@ def meeting_detected_event(
     return version_event_payload(payload)
 
 
+PODCAST_EVENT_TITLE_MAX_CHARS = 300
+PODCAST_EVENT_MAX_PODCASTS = 5
+
+
+def _bounded_title(value: Any) -> str:
+    return " ".join(str(value or "").split())[:PODCAST_EVENT_TITLE_MAX_CHARS]
+
+
+def podcast_episodes_discovered_event(
+    event_id: str, podcasts: list[dict[str, Any]], *, queued_count: int
+) -> dict[str, Any]:
+    """New episodes found by one feed refresh, grouped per podcast."""
+    entries = [
+        {
+            "subscriptionId": str(item["subscriptionId"]),
+            "title": _bounded_title(item["title"]),
+            "count": max(1, int(item["count"])),
+        }
+        for item in podcasts
+    ]
+    return version_event_payload(
+        {
+            "type": "podcast_episodes_discovered",
+            "eventId": str(event_id),
+            "count": sum(entry["count"] for entry in entries),
+            "queuedCount": max(0, int(queued_count)),
+            "podcasts": entries[:PODCAST_EVENT_MAX_PODCASTS],
+        }
+    )
+
+
+def podcast_episode_ready_event(
+    event_id: str,
+    *,
+    episode_id: str,
+    subscription_id: str,
+    transcript_id: str,
+    title: str,
+    podcast_title: str,
+) -> dict[str, Any]:
+    """An episode's transcript and summary have just become readable."""
+    return version_event_payload(
+        {
+            "type": "podcast_episode_ready",
+            "eventId": str(event_id),
+            "episodeId": str(episode_id),
+            "subscriptionId": str(subscription_id),
+            "transcriptId": str(transcript_id),
+            "title": _bounded_title(title),
+            "podcastTitle": _bounded_title(podcast_title),
+        }
+    )
+
+
 def _require_string(payload: dict[str, Any], field: str, event_type: str) -> None:
     if not isinstance(payload.get(field), str):
         raise WSContractError(f"{event_type} event requires string '{field}'")
@@ -737,6 +791,28 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
         _require_string(payload, "meetingId", event_type)
         if not isinstance(payload.get("delivery"), dict):
             raise WSContractError("meeting_delivery_updated event requires object 'delivery'")
+    elif event_type == "podcast_episodes_discovered":
+        _require_string(payload, "eventId", event_type)
+        for field in ("count", "queuedCount"):
+            value = payload.get(field)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise WSContractError(f"{event_type} event requires non-negative int '{field}'")
+        podcasts = payload.get("podcasts")
+        if not isinstance(podcasts, list) or not podcasts or len(podcasts) > PODCAST_EVENT_MAX_PODCASTS:
+            raise WSContractError(f"{event_type} event requires a bounded non-empty list 'podcasts'")
+        for podcast in podcasts:
+            if not isinstance(podcast, dict):
+                raise WSContractError(f"{event_type} podcasts must be objects")
+            _require_string(podcast, "subscriptionId", event_type)
+            _require_string(podcast, "title", event_type)
+            count = podcast.get("count")
+            if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+                raise WSContractError(f"{event_type} podcast requires positive int 'count'")
+    elif event_type == "podcast_episode_ready":
+        for field in ("eventId", "episodeId", "subscriptionId", "transcriptId", "title", "podcastTitle"):
+            _require_string(payload, field, event_type)
+        if not payload["transcriptId"]:
+            raise WSContractError(f"{event_type} event requires non-empty 'transcriptId'")
     else:
         raise WSContractError(f"Unknown WebSocket event type: {event_type}")
 

@@ -87,7 +87,7 @@ def test_all_python_quality_lanes_run_independently_and_remain_required() -> Non
         assert job["steps"][0]["with"]["ref"] == "${{ github.sha }}"
         setup = job["steps"][1]
         assert setup["uses"] == "./.github/actions/setup-python-quality"
-        assert setup["with"]["python-version"] == "3.14.7"
+        assert setup["with"]["python-version"] == "3.14.9"
         assert setup["with"].get("publish-cache", "false") == ("true" if job_id == "python-full-suite" else "false")
         for step in job["steps"]:
             assert "continue-on-error" not in step
@@ -109,9 +109,22 @@ def test_pytest_lane_keeps_all_tests_and_file_isolation_without_browser_setup() 
     ]
     assert all("setup-node" not in step.get("uses", "") for step in job["steps"])
     assert all("smoke_real_file_upload_browser" not in step.get("run", "") for step in job["steps"])
+    host_profile = steps["Verify real Windows host profile serially"]
+    assert host_profile["env"] == {"SCRIBER_RUN_HOST_PROFILE_SMOKE": "1"}
+    assert _pwsh_logical_commands(host_profile["run"]) == [
+        ".\\venv\\Scripts\\python.exe -m pytest -q "
+        "tests/perf/test_windows_autoresearch_contract.py::test_profile_script_writes_profile_json "
+        "--junitxml build/test-results/windows-host-profile.xml"
+    ]
+    assert list(steps).index("Run complete Python test suite") < list(steps).index(
+        "Verify real Windows host profile serially"
+    )
     upload = steps["Upload Python test results"]
     assert upload["if"] == "always()"
-    assert upload["with"]["path"] == "build/test-results/python-full-suite.xml"
+    assert upload["with"]["path"].splitlines() == [
+        "build/test-results/python-full-suite.xml",
+        "build/test-results/windows-host-profile.xml",
+    ]
     assert upload["with"]["if-no-files-found"] == "warn"
 
 

@@ -151,6 +151,51 @@ def test_concurrent_model_loads_reuse_one_session(monkeypatch):
     onnx_stt.unload_model()
 
 
+@pytest.mark.asyncio
+async def test_preload_loads_a_downloaded_model_that_transcription_reuses(monkeypatch):
+    loads = 0
+
+    class FakeModel:
+        @staticmethod
+        def recognize(_audio, **_kwargs):
+            return "hallo welt"
+
+    class FakeOnnxAsr:
+        @staticmethod
+        def load_model(*_args, **_kwargs):
+            nonlocal loads
+            loads += 1
+            return FakeModel()
+
+    monkeypatch.setattr(onnx_stt, "_get_onnx_asr", lambda: FakeOnnxAsr)
+    monkeypatch.setattr(onnx_stt, "get_model_cache_dir", lambda: None)
+    monkeypatch.setattr(onnx_stt, "is_model_downloaded", lambda *_args: True)
+    onnx_stt.unload_model()
+
+    assert await onnx_stt.start_model_preload("nemo-canary-1b-v2", "int8") is True
+    text = await onnx_stt.transcribe_audio_bytes(
+        bytes(3200),
+        model_name="nemo-canary-1b-v2",
+        quantization="int8",
+        use_vad=False,
+    )
+
+    assert text == "hallo welt"
+    assert loads == 1
+    onnx_stt.unload_model()
+
+
+@pytest.mark.asyncio
+async def test_preload_never_downloads_a_missing_model(monkeypatch):
+    def unexpected_load(*_args, **_kwargs):
+        raise AssertionError("a preload must not download or load a missing model")
+
+    monkeypatch.setattr(onnx_stt, "load_model", unexpected_load)
+    monkeypatch.setattr(onnx_stt, "is_model_downloaded", lambda *_args: False)
+
+    assert await onnx_stt.start_model_preload("nemo-canary-1b-v2", "int8") is False
+
+
 def test_model_cache_normalizes_fp32_aliases(monkeypatch):
     calls = 0
 

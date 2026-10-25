@@ -1,4 +1,5 @@
-import { render, within } from "@testing-library/react";
+import { render, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
@@ -31,6 +32,33 @@ vi.mock("@/components/ui/sheet", () => ({
   SheetTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
+function renderLayout(path: string, attentionCount = 0) {
+  const location = memoryLocation({ path });
+  const client = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+        queryFn: async ({ queryKey }) => {
+          if (queryKey[0] !== "/api/podcasts") throw new Error(`Unexpected query ${String(queryKey[0])}`);
+          return { subscriptions: [], attentionCount };
+        },
+      },
+    },
+  });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <Router hook={location.hook}>
+        <LocaleProvider>
+          <AppLayout>
+            <p>Page</p>
+          </AppLayout>
+        </LocaleProvider>
+      </Router>
+    </QueryClientProvider>,
+  );
+  return { ...view, client };
+}
+
 describe("AppLayout navigation", () => {
   beforeEach(() => {
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, "en");
@@ -41,16 +69,7 @@ describe("AppLayout navigation", () => {
   });
 
   it("restores the raised active state, keeps settings in the main tabs, and exposes the current page", () => {
-    const location = memoryLocation({ path: "/meetings/42" });
-    const { container, getAllByRole } = render(
-      <Router hook={location.hook}>
-        <LocaleProvider>
-          <AppLayout>
-            <p>Meeting</p>
-          </AppLayout>
-        </LocaleProvider>
-      </Router>,
-    );
+    const { container, getAllByRole } = renderLayout("/meetings/42");
 
     const navigations = getAllByRole("navigation", { name: "Main navigation" });
     expect(navigations).toHaveLength(2);
@@ -74,5 +93,22 @@ describe("AppLayout navigation", () => {
       expect(settingsLink.closest("ul")).toBe(meetingLink.closest("ul"));
       expect(settingsLink.closest("ul")).not.toBe(consoleLink.closest("ul"));
     }
+  });
+
+  it("counts new or unread podcast episodes on the Podcasts tab", async () => {
+    const { findAllByLabelText, getAllByRole } = renderLayout("/file", 3);
+    const badges = await findAllByLabelText("3 new or unread podcast episodes");
+    expect(badges).toHaveLength(2);
+    for (const navigation of getAllByRole("navigation", { name: "Main navigation" })) {
+      const podcastsLink = within(navigation).getByRole("link", { name: /^Podcasts/ });
+      expect(within(podcastsLink).getByText("3")).toBeVisible();
+    }
+  });
+
+  it("keeps the Podcasts tab quiet when nothing needs attention", async () => {
+    const { client, getAllByRole, queryByLabelText } = renderLayout("/file", 0);
+    await waitFor(() => expect(client.getQueryData(["/api/podcasts"])).toBeDefined());
+    expect(getAllByRole("link", { name: "Podcasts" })).toHaveLength(2);
+    expect(queryByLabelText(/new or unread podcast/)).toBeNull();
   });
 });

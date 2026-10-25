@@ -60,7 +60,6 @@ def isolated_release_source(tmp_path: Path) -> Path:
                 "backend_runtime",
                 "native",
                 "packaging",
-                "pyloudnorm",
                 "scripts",
                 "src",
             ],

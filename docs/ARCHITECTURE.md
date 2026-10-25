@@ -49,7 +49,7 @@ Scriber is a hybrid desktop app:
 
 - Tauri 2 shell for installed Windows desktop runtime.
 - React 19/Vite 8 frontend rendered inside the Tauri WebView or browser dev
-  server. Its build is Vite-only and uses the repository-pinned Node.js 26.5.0;
+  server. Its build is Vite-only and uses the repository-pinned Node.js 26.12.1;
   no Express server, database scaffold, or server-side bundle participates in
   the desktop runtime.
 - Python `aiohttp` backend for local REST, WebSocket, mic recording, provider
@@ -65,10 +65,12 @@ then imports `src.backend_worker`. The runtime cache therefore contains no
 `src` package and can survive ordinary backend-code changes; the complete
 composed sidecar remains independently cacheable for exact hits.
 
-The runtime contract pins Pipecat 1.5 and enumerates the exact direct
+The runtime contract pins Pipecat 1.14 and enumerates the exact direct
 `pipecat.*` modules used by `src`. An AST parity gate prevents application code
-from importing a module that PyInstaller did not freeze. Contract revision 5
-uses Pipecat 1.5's canonical `PipelineWorker` and `WorkerRunner` modules and
+from importing a module that PyInstaller did not freeze. Contract revision 9
+moves to Pipecat 1.14: it adds the `loudness` and `sentencex` runtimes and
+`pipecat.utils.types`, and drops the local `pyloudnorm` compatibility package.
+Contract revision 5 introduced Pipecat's canonical `PipelineWorker` and `WorkerRunner` modules and
 freezes the `audioop-lts` PCM RMS runtime, while preserving the revision-4
 bounded installer-research YouTube holdout probe and revision-3
 `pipecat.transports.base_input` addition. Changing that revision invalidates the
@@ -1170,6 +1172,22 @@ summary stages overlap across up to three episodes, with independent durable
 identities and active-removal guards. The controller-free `src/api/podcast_routes.py` maps strict bounded
 requests onto this domain; the frontend does not own its scheduler.
 
+Episode listening state is durable in the same store. `seen_at` records that a
+visible episode list showed the episode; only feed refreshes after subscribing
+create unseen episodes, so neither the initial back catalogue nor an upgraded
+library floods the user. `read_at` is set when the transcript is opened from any
+entry point, `played_at` when its downloaded audio starts; a ready episode
+without either is unread. The library and each subscription expose
+`newCount`, `unreadCount`, and `attentionCount`, the episode list accepts
+`?view=unread`, and explicit read/unread, seen, and mark-all routes are strict
+and bounded. One refresh pass publishes a single versioned
+`podcast_episodes_discovered` event, and every completed transcription publishes
+`podcast_episode_ready`; their bounded title fields go only to the authenticated
+WebSocket and never into logs. A failed notification never affects refresh or
+processing. The app-global `PodcastNotificationBridge` turns them into
+deduplicated toasts that open the podcast or transcript, and the Podcasts tab
+shows the attention count.
+
 Diagnostic collection and writing have separate owners. `operation_diagnostics`
 times authenticated mutations using registered route templates, never concrete
 path parameters, request bodies, query strings, or exception messages. HTTP
@@ -2138,6 +2156,14 @@ the controller and text injector append only final `TranscriptionFrame` values.
 Consequently ElevenLabs manual-commit previews are neither persisted nor
 inserted; only the committed transcript is durable output.
 
+Streaming File/YouTube transcription commits the final audio before sending
+`EndFrame` and requires an answer for every committed segment. A missing tail
+fence or timed-out provider answer fails the job instead of publishing partial
+text as complete; an answered empty transcript remains valid for silence.
+Short, nonempty tails are padded with at most 250 ms of silence to satisfy the
+provider's minimum commit size without discarding the last part of a word.
+Empty input never creates a padding-only commit.
+
 Pipecat/Silero VAD is opt-in through `SCRIBER_SEGMENT_SPEECH_WITH_VAD` and the
 Settings toggle for segmented and async Live Mic routes. Native provider
 realtime streams never load, attach, or replenish Silero, regardless of the
@@ -2169,16 +2195,21 @@ AssemblyAI is exposed as both a direct async/batch provider and a realtime
 Pipecat provider. Both default to Universal-3.5-Pro. The async adapter sends
 the configured model through AssemblyAI's `speech_models` field; the realtime
 path uses Pipecat `AssemblyAISTTService.Settings` when available, filters
-settings by the Pipecat 1.5 signature, and fails visibly if an older runtime is
+settings by the Pipecat 1.14 signature, and fails visibly if an older runtime is
 present. Soniox, ElevenLabs, Deepgram, Gladia, OpenAI, and Speechmatics live
-factories use the same Pipecat 1.5 `Settings` contract instead of deprecated
-`InputParams` or `LiveOptions` compatibility paths.
-Custom buffered STT services use Pipecat 1.5 `STTUpdateSettingsFrame.delta`
+factories use the same Pipecat `Settings` contract instead of deprecated
+`InputParams` or `LiveOptions` compatibility paths. Speechmatics live runs on
+Speechmatics Agent STT (`wss://eu2.rt.speechmatics.com/v2/agent`, model
+`linden-1`), the only realtime endpoint Pipecat 1.10+ supports. Scriber sets
+server-side turn detection (`TurnDetectionMode.VAD`) because it attaches no
+local VAD to native streams, and keeps the speaker template plain (`{text}`)
+unless a diarized file run asks for labels.
+Custom buffered STT services use Pipecat `STTUpdateSettingsFrame.delta`
 objects, initialize complete `STTSettings` (`model` and `language` included),
 and use the explicit `AIService` lifecycle so terminal audio is flushed before
 an `EndFrame` is forwarded. This contract also applies to Scriber's Mistral,
 Azure MAI, and ONNX service implementations; leaving those fields `NOT_GIVEN`
-creates Pipecat 1.5 runtime warnings and ambiguous updates.
+creates Pipecat runtime warnings and ambiguous updates.
 Modulate realtime sends raw binary audio and the provider-defined empty text
 frame at EOS, accepts only finalized `utterance` messages, and waits for
 `done`. Its aiohttp connection intentionally has no client heartbeat, matching
@@ -2192,7 +2223,7 @@ Pipecat's `local-smart-turn` extra is intentionally not installed because its
 Torch/Torchaudio/Transformers dependency chain conflicts with the standard
 ONNX-only local-runtime footprint. The lightweight bundled ONNX
 `LocalSmartTurnAnalyzerV3` import stays available without the removed
-`UserIdleProcessor`; Silero remains the bundled VAD path. Pipecat 1.5 analyzers
+`UserIdleProcessor`; Silero remains the bundled VAD path. Pipecat analyzers
 are processors rather than transport parameters: live input runs through an
 explicit `VADProcessor`, the optional segmented-HTTP gate remains between VAD
 and STT, and native realtime providers do not attach local SmartTurn. Startup
@@ -2225,10 +2256,14 @@ standard build bundles the CPU ONNX local-ASR runtime through `onnx-asr`. ONNX
 is the only local STT provider exposed in Settings; full NeMo/Torch remains
 excluded from the standard sidecar because it would dominate installer size.
 ONNX file jobs decode media to mono PCM and feed the buffered service in
-bounded 30-second chunks. Each completed chunk emits a final transcript frame,
-and the terminal frame flushes the remainder. This path does not rely on the
-removed Pipecat transport-level VAD hook and does not discard earlier audio
-from long files when the buffer limit is reached.
+bounded 30-second chunks; Live Mic uses five-minute chunks. Each completed
+chunk ends in the quietest 100 ms of its last 10 seconds and emits a final
+transcript frame, and the terminal frame flushes the remainder. This path does
+not rely on the removed Pipecat transport-level VAD hook and does not discard
+earlier audio from long files or dictations when the buffer limit is reached.
+A cancelled or aborted session discards its buffer without inference. Live Mic
+loads an already downloaded model while the user speaks, so the first
+dictation after startup does not pay the model load after stop.
 The German Primeline Parakeet model is offered through prepared ONNX artifacts
 instead of exporting `primeline/parakeet-primeline` on user machines. The
 `fp32` option uses the prepared `geier/deskscribe-parakeet-primeline-onnx`
@@ -2322,7 +2357,8 @@ authoritative. The migration persists `settings.json` only and cannot rewrite
 OpenAI live STT uses Pipecat's OpenAI Realtime STT service plus the explicit
 `openai` SDK and `websockets` dependencies; OpenAI async/batch uses the direct
 Audio Transcriptions HTTP adapter. Groq STT uses Pipecat's `groq` SDK
-dependency, and Pipecat provider imports require `nltk` at runtime.
+dependency. Since Pipecat 1.12 sentence boundaries come from the embedded
+`sentencex` rules, so the backend no longer bundles NLTK or Punkt data.
 Gladia live transcription still uses Pipecat's Gladia service with a small
 Scriber stop wrapper that runs the base STT stop hook without disconnecting,
 sends `stop_recording`, waits briefly for a final transcript, and only then
@@ -2336,7 +2372,7 @@ adding the separate `speechmatics-batch` SDK to the standard sidecar. Build-time
 runtime import checks cover the offered standard provider modules, and the
 footprint analyzer rejects unused provider SDKs if PyInstaller pulls them back
 in. The runtime import gate verifies both provider imports and the exact
-`pipecat-ai==1.5.0` distribution version so stale sidecar caches cannot pass.
+`pipecat-ai==1.14.0` distribution version so stale sidecar caches cannot pass.
 
 ## Media Boundary
 

@@ -36,7 +36,7 @@ AZURE_MAI_MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024
 # Retain the conservative serialized JSON budget for frozen WAV/FLAC jobs.
 OPENROUTER_STT_MAX_REQUEST_BYTES = 25_000_000
 SPEECHMATICS_BATCH_DEFAULT_BASE_URL = "https://asr.api.speechmatics.com/v2"
-SPEECHMATICS_REALTIME_DEFAULT_BASE_URL = "wss://eu2.rt.speechmatics.com/v2"
+SPEECHMATICS_REALTIME_DEFAULT_BASE_URL = "wss://eu2.rt.speechmatics.com/v2/agent"
 
 
 def speechmatics_batch_endpoint_is_custom(value: str | None) -> bool:
@@ -47,7 +47,7 @@ def speechmatics_batch_endpoint_is_custom(value: str | None) -> bool:
 
 
 def speechmatics_realtime_base_url(value: str | None = None) -> str:
-    """Resolve the exact realtime endpoint using Pipecat 1.5 semantics."""
+    """Resolve the exact realtime endpoint using Pipecat 1.14 semantics."""
 
     configured = str(value or "").strip() or SPEECHMATICS_REALTIME_DEFAULT_BASE_URL
     return configured.rstrip("/")
@@ -693,8 +693,8 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
     ),
     _capability(
         "speechmatics",
-        "realtime_v2",
-        "enhanced",
+        "agent_v2",
+        "linden-1",
         ProviderAudioRouteKind.REALTIME,
         realtime_formats=(
             AudioInputFormat.RAW_PCM16,
@@ -702,7 +702,11 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
             AudioInputFormat.MULAW,
         ),
         preferred_lossless_format=AudioInputFormat.RAW_PCM16,
-        evidence_reference=("https://legacy.docs.speechmatics.com/en/real-time-appliance/api-v2/"),
+        # Pipecat 1.10+ reaches Speechmatics live only through Agent STT
+        # (`/v2/agent`); its SDK accepts the same RT audio encodings.
+        evidence_kind=CapabilityEvidenceKind.OFFICIAL_SDK_SCHEMA,
+        evidence_reference="https://pypi.org/project/speechmatics-agent-stt/0.3.0/",
+        verified_at=date(2026, 10, 24),
     ),
     *(
         _capability(
@@ -866,7 +870,7 @@ _REALTIME_ROUTE_BY_PROVIDER = {
     "openai": "realtime_transcription",
     "google": "cloud_streaming_v2",
     "gladia": "v2_live",
-    "speechmatics": "realtime_v2",
+    "speechmatics": "agent_v2",
     "modulate": "velma_2_streaming",
     "meta_stt": "asr_realtime",
     "elevenlabs": "scribe_v2_realtime",
@@ -879,7 +883,7 @@ _REALTIME_PCM_PREPARATION_IMPLEMENTATION_BY_PROVIDER = {
     "openai": "pipecat_openai_realtime_pcm16_24khz",
     "google": "pipecat_google_speech_v2_raw_pcm16",
     "elevenlabs": "pipecat_elevenlabs_scribe_v2_realtime_raw_pcm16",
-    "speechmatics": "pipecat_speechmatics_realtime_v2_raw_pcm16",
+    "speechmatics": "pipecat_speechmatics_agent_v2_raw_pcm16",
     "gemini_realtime": "scriber_gemini_live_raw_pcm16",
 }
 

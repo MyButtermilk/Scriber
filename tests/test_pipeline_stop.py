@@ -849,6 +849,476 @@ async def test_gemini_file_pipeline_fences_delayed_last_system_audio_before_endf
         await asyncio.gather(transcription, return_exceptions=True)
 
 
+class _SingleFrameFileInput(FrameProcessor):
+    """File input that feeds one audio block and optionally never finishes."""
+
+    def __init__(self, *_args, finishes: bool = True, **_kwargs):
+        super().__init__()
+        self.done = asyncio.Event()
+        self.error = None
+        self.finishes = finishes
+        self.stopped = False
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        await self.push_frame(frame, direction)
+        if isinstance(frame, StartFrame):
+            await self.push_frame(
+                InputAudioRawFrame(audio=b"\x01\x00" * 256, sample_rate=16_000, num_channels=1),
+                direction,
+            )
+            if self.finishes:
+                self.done.set()
+
+    async def stop(self, _frame):
+        self.stopped = True
+
+
+class _FailingFileProvider(FrameProcessor):
+    def __init__(self, *, permanent: bool = False, downstream: bool = False):
+        super().__init__()
+        self.permanent = permanent
+        self.downstream = downstream
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InputAudioRawFrame):
+            await self.push_frame(TranscriptionFrame("partial", "user", "now"), direction)
+            if self.downstream:
+                await self.push_frame(pipeline_module.ErrorFrame(error="provider rejected the file"), direction)
+            else:
+                await self.push_error("provider rejected the file", force_treat_as_permanent=self.permanent)
+            return
+        await self.push_frame(frame, direction)
+
+
+def _file_pipeline_with(monkeypatch, provider, file_input, *, service_name="deepgram"):
+    monkeypatch.setattr(pipeline_module, "FfmpegAudioFileInput", lambda *_a, **_k: file_input)
+    texts = []
+    pipeline = ScriberPipeline(
+        service_name=service_name,
+        on_status_change=None,
+        on_transcription=lambda text, *_a, **_k: texts.append(text),
+    )
+    monkeypatch.setattr(pipeline, "_create_stt_service", lambda _session, for_file=False: provider)
+    return pipeline, texts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("permanent", "downstream"), [(False, False), (True, False), (False, True)])
+async def test_file_pipeline_provider_error_fails_instead_of_returning_partial_text(monkeypatch, permanent, downstream):
+    file_input = _SingleFrameFileInput()
+    pipeline, texts = _file_pipeline_with(
+        monkeypatch,
+        _FailingFileProvider(permanent=permanent, downstream=downstream),
+        file_input,
+    )
+
+    with pytest.raises(RuntimeError, match="provider rejected the file"):
+        await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert texts == ["partial"]
+    assert pipeline._provider_request_state != "result_received"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("downstream", [False, True])
+async def test_file_pipeline_cancelled_by_provider_error_does_not_wait_for_unfinished_input(monkeypatch, downstream):
+    # FfmpegAudioFileInput signals `done` only after its queue drains, which a
+    # cancelled pipeline never does; the error must still end the call.
+    file_input = _SingleFrameFileInput(finishes=False)
+    pipeline, _texts = _file_pipeline_with(monkeypatch, _FailingFileProvider(downstream=downstream), file_input)
+
+    with pytest.raises(RuntimeError, match="provider rejected the file"):
+        await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert file_input.stopped is True
+    assert pipeline.is_active is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["start", "audio"])
+async def test_gemini_file_provider_failure_aborts_unfinished_input(monkeypatch, failure_stage):
+    from src.gemini_realtime_stt import GeminiTranscribeLiveSTTService
+
+    file_input = _SingleFrameFileInput(finishes=False)
+    provider = GeminiTranscribeLiveSTTService(api_key="inert-test-key")
+    connection_attempts = 0
+
+    async def reject_connection():
+        nonlocal connection_attempts
+        connection_attempts += 1
+        if failure_stage == "start" or connection_attempts > 1:
+            # Exercise the actual adapter's downstream fatal ErrorFrame at
+            # startup and after StartFrame has already passed the provider.
+            await provider._fail("connection", "synthetic provider refusal", close_connection=False)
+            return False
+        return True
+
+    monkeypatch.setattr(provider, "_connect", reject_connection)
+    pipeline, _texts = _file_pipeline_with(monkeypatch, provider, file_input, service_name="gemini_realtime")
+
+    with pytest.raises(RuntimeError, match="synthetic provider refusal"):
+        await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert not file_input.done.is_set()
+    assert file_input.stopped is True
+    assert pipeline.is_active is False
+    assert pipeline.task.has_finished()
+    assert pipeline._provider_request_state != "result_received"
+
+
+@pytest.mark.asyncio
+async def test_file_pipeline_disables_pipecat_idle_cancellation(monkeypatch):
+    worker_kwargs = []
+
+    def _worker(*args, **kwargs):
+        worker_kwargs.append(kwargs)
+        return PipelineWorker(*args, **kwargs)
+
+    class _PassthroughProvider(FrameProcessor):
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            await self.push_frame(frame, direction)
+
+    monkeypatch.setattr(pipeline_module, "PipelineWorker", _worker)
+    pipeline, _texts = _file_pipeline_with(monkeypatch, _PassthroughProvider(), _SingleFrameFileInput())
+
+    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert worker_kwargs and worker_kwargs[0]["idle_timeout_secs"] is None
+    assert pipeline._provider_request_state == "result_received"
+
+
+class _EndFrameFailingProvider(FrameProcessor):
+    """A provider whose stop fails, so the EndFrame never reaches the sink."""
+
+    def __init__(self, *, blocks: bool = False):
+        super().__init__()
+        self.blocks = blocks
+        self.end_received = asyncio.Event()
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, EndFrame):
+            self.end_received.set()
+            if self.blocks:
+                await asyncio.Event().wait()
+            raise RuntimeError("provider stop failed")
+        await self.push_frame(frame, direction)
+
+
+@pytest.mark.asyncio
+async def test_file_pipeline_fails_instead_of_hanging_when_the_provider_swallows_end_frame(monkeypatch):
+    pipeline, _texts = _file_pipeline_with(
+        monkeypatch, _EndFrameFailingProvider(), _SingleFrameFileInput(), service_name="groq"
+    )
+
+    with pytest.raises(RuntimeError, match="provider stop failed"):
+        await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert pipeline.task.has_finished()
+    assert pipeline.is_active is False
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_file_stuck_on_its_end_frame_finishes(monkeypatch):
+    provider = _EndFrameFailingProvider(blocks=True)
+    pipeline, _texts = _file_pipeline_with(monkeypatch, provider, _SingleFrameFileInput(), service_name="groq")
+    transcription = asyncio.create_task(pipeline.transcribe_file("synthetic.wav"))
+    await asyncio.wait_for(provider.end_received.wait(), timeout=5.0)
+
+    transcription.cancel()
+    await asyncio.wait_for(asyncio.gather(transcription, return_exceptions=True), timeout=5.0)
+
+    assert pipeline.task.has_finished()
+    assert pipeline.is_active is False
+
+
+@pytest.mark.asyncio
+async def test_worker_cancel_reaches_a_worker_waiting_for_a_swallowed_end_frame():
+    provider = _EndFrameFailingProvider()
+    pipeline = ScriberPipeline(service_name="groq", on_status_change=None)
+    pipeline.pipeline = Pipeline([provider])
+    task = PipelineWorker(pipeline.pipeline, params=PipelineParams(), idle_timeout_secs=None)
+    pipeline.task = task
+    runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
+    await runner.add_workers(task)
+    run_task = asyncio.create_task(runner.run())
+    try:
+        await task.stop_when_done()
+        await asyncio.wait_for(provider.end_received.wait(), timeout=5.0)
+        await task.cancel(reason="plain cancel")
+        await asyncio.sleep(0.2)
+        assert not task.has_finished()  # Pipecat holds the cancel behind the EndFrame.
+
+        await pipeline._cancel_worker_past_end_frame(task, reason="stop timeout")
+
+        await asyncio.wait_for(task.wait(), timeout=5.0)
+        await runner.cancel()
+        await asyncio.wait_for(run_task, timeout=5.0)
+    finally:
+        if not run_task.done():
+            run_task.cancel()
+        await asyncio.gather(run_task, return_exceptions=True)
+
+
+_FILE_BLOCK = 1024
+
+
+class _BlocksFileInput(FrameProcessor):
+    """File input that feeds 1024-sample blocks of the given levels."""
+
+    def __init__(self, levels):
+        super().__init__()
+        self.levels = levels
+        self.done = asyncio.Event()
+        self.error = None
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        await self.push_frame(frame, direction)
+        if isinstance(frame, StartFrame):
+            for level in self.levels:
+                audio = int(level).to_bytes(2, "little", signed=True) * _FILE_BLOCK
+                await self.push_frame(InputAudioRawFrame(audio=audio, sample_rate=16_000, num_channels=1), direction)
+            self.done.set()
+
+    async def stop(self, _frame):
+        return None
+
+
+class _CommittingProvider(FrameProcessor):
+    """Transcribes each committed segment shortly after its VAD stop."""
+
+    reports_provider_commit_results = True
+
+    def __init__(self, *, answers: bool = True):
+        super().__init__()
+        self.answers = answers
+        self.samples = 0
+        self.commit_points: list[int] = []
+        self.settled_at_end: int | None = None
+        self._answer_tasks: list[asyncio.Task] = []
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InputAudioRawFrame):
+            self.samples += len(frame.audio) // 2
+        elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            self.commit_points.append(self.samples)
+            if self.answers:
+                self._answer_tasks.append(asyncio.create_task(self._answer(len(self.commit_points))))
+        elif isinstance(frame, EndFrame):
+            self.settled_at_end = pipeline_module._provider_commit_results(self).settled
+        await self.push_frame(frame, direction)
+
+    async def _answer(self, number: int) -> None:
+        await asyncio.sleep(0.05)
+        await self.push_frame(TranscriptionFrame(f"segment {number}", "user", "now"))
+        pipeline_module._provider_commit_results(self).settle()
+
+
+def _blocks(seconds: float, level: int) -> list[int]:
+    return [level] * round(seconds * 16_000 / _FILE_BLOCK)
+
+
+@pytest.mark.asyncio
+async def test_realtime_file_commits_close_at_pauses_and_wait_for_every_result(monkeypatch):
+    # 25 s speech, 0.5 s pause, 10 s speech: one cut in the pause, one tail.
+    levels = _blocks(25, 8000) + _blocks(0.5, 0) + _blocks(10, 8000)
+    provider = _CommittingProvider()
+    pipeline, texts = _file_pipeline_with(monkeypatch, provider, _BlocksFileInput(levels), service_name="openai")
+
+    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    pause_cut = (len(_blocks(25, 8000)) + 4) * _FILE_BLOCK  # 0.2 s of quiet blocks
+    assert provider.commit_points == [pause_cut, len(levels) * _FILE_BLOCK]
+    assert texts == ["segment 1", "segment 2"]
+    assert provider.settled_at_end == 2
+
+
+@pytest.mark.asyncio
+async def test_realtime_file_commits_cut_continuous_speech_at_the_maximum(monkeypatch):
+    levels = _blocks(35, 8000)
+    provider = _CommittingProvider()
+    pipeline, texts = _file_pipeline_with(monkeypatch, provider, _BlocksFileInput(levels), service_name="elevenlabs")
+
+    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    forced_cut = -(-30 * 16_000 // _FILE_BLOCK) * _FILE_BLOCK
+    assert provider.commit_points == [forced_cut, len(levels) * _FILE_BLOCK]
+    assert texts == ["segment 1", "segment 2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seconds", [0.064, 30.1])
+async def test_realtime_file_preserves_a_short_tail_by_padding_its_commit(monkeypatch, seconds):
+    levels = _blocks(seconds, 8000)
+    provider = _CommittingProvider()
+    pipeline, texts = _file_pipeline_with(monkeypatch, provider, _BlocksFileInput(levels), service_name="openai")
+
+    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    forced_cut = -(-30 * 16_000 // _FILE_BLOCK) * _FILE_BLOCK if seconds > 30 else 0
+    expected_commits = ([forced_cut] if forced_cut else []) + [forced_cut + 4000]
+    assert provider.commit_points == expected_commits
+    assert len(levels) * _FILE_BLOCK < provider.samples <= len(levels) * _FILE_BLOCK + 4000
+    assert texts == [f"segment {number}" for number in range(1, len(expected_commits) + 1)]
+    assert provider.settled_at_end == len(expected_commits)
+
+
+@pytest.mark.asyncio
+async def test_realtime_file_without_audio_does_not_commit_padding(monkeypatch):
+    provider = _CommittingProvider()
+    pipeline, texts = _file_pipeline_with(monkeypatch, provider, _BlocksFileInput([]), service_name="openai")
+
+    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert provider.commit_points == []
+    assert provider.samples == 0
+    assert texts == []
+    assert pipeline._provider_request_state == "result_received"
+
+
+class _RecordingSegmentedProvider(SegmentedSTTService):
+    def __init__(self):
+        super().__init__(sample_rate=16_000)
+        self.segments: list[int] = []
+
+    async def run_stt(self, audio):
+        self.segments.append(len(audio))
+        yield TranscriptionFrame(f"segment {len(self.segments)}", "user", "now")
+
+
+@pytest.mark.asyncio
+async def test_segmented_file_uploads_close_at_pauses_instead_of_keeping_one_second(monkeypatch):
+    # Without VAD frames a segmented service kept only the last second and
+    # uploaded nothing.
+    levels = _blocks(25, 8000) + _blocks(0.5, 0) + _blocks(10, 8000)
+    provider = _RecordingSegmentedProvider()
+    pipeline, texts = _file_pipeline_with(monkeypatch, provider, _BlocksFileInput(levels), service_name="groq")
+
+    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=10.0)
+
+    assert len(provider.segments) == 2
+    assert texts == ["segment 1", "segment 2"]
+
+
+@pytest.mark.asyncio
+async def test_deepgram_file_finalizes_once_after_the_last_audio(monkeypatch):
+    levels = _blocks(35, 8000) + _blocks(1, 0)
+    provider = _CommittingProvider()
+    pipeline, texts = _file_pipeline_with(monkeypatch, provider, _BlocksFileInput(levels), service_name="deepgram")
+
+    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert provider.commit_points == [len(levels) * _FILE_BLOCK]
+    assert texts == ["segment 1"]
+    assert provider.settled_at_end == 1
+
+
+@pytest.mark.asyncio
+async def test_realtime_services_report_one_result_per_commit(monkeypatch):
+    for attribute in ("OPENAI_API_KEY", "ELEVENLABS_API_KEY", "DEEPGRAM_API_KEY"):
+        monkeypatch.setattr(Config, attribute, "key")
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "")
+    openai = ScriberPipeline(service_name="openai")._create_stt_service(object())
+    elevenlabs = ScriberPipeline(service_name="elevenlabs")._create_stt_service(object())
+    deepgram = ScriberPipeline(service_name="deepgram")._create_stt_service(object())
+
+    # Results without text still answer their commit.
+    await openai._handle_transcription_completed({"transcript": ""})
+    await elevenlabs._on_committed_transcript({"text": ""})
+    await deepgram._on_message(SimpleNamespace(is_final=True, from_finalize=True))
+    await deepgram._on_message(SimpleNamespace(is_final=True, from_finalize=False))
+
+    for service in (openai, elevenlabs, deepgram):
+        assert service.reports_provider_commit_results is True
+        assert pipeline_module._provider_commit_results(service).settled == 1
+
+
+@pytest.mark.asyncio
+async def test_realtime_file_without_a_commit_result_fails_after_the_idle_timeout(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "_FILE_COMMIT_RESULT_IDLE_TIMEOUT_SECONDS", 0.1)
+    provider = _CommittingProvider(answers=False)
+    pipeline, texts = _file_pipeline_with(
+        monkeypatch, provider, _BlocksFileInput(_blocks(2, 8000)), service_name="openai"
+    )
+
+    with pytest.raises(RuntimeError, match="0 of 1 results received"):
+        await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert provider.commit_points == [len(_blocks(2, 8000)) * _FILE_BLOCK]
+    assert texts == []
+    assert provider.settled_at_end is None
+    assert pipeline.task.has_finished()
+    assert pipeline._provider_request_state != "result_received"
+
+
+@pytest.mark.asyncio
+async def test_realtime_file_missing_its_tail_result_fails_with_partial_text_retained(monkeypatch):
+    class _MissingTailProvider(_CommittingProvider):
+        async def _answer(self, number: int) -> None:
+            if number == 1:
+                await super()._answer(number)
+
+    monkeypatch.setattr(pipeline_module, "_FILE_COMMIT_RESULT_IDLE_TIMEOUT_SECONDS", 0.1)
+    provider = _MissingTailProvider()
+    pipeline, texts = _file_pipeline_with(
+        monkeypatch, provider, _BlocksFileInput(_blocks(35, 8000)), service_name="openai"
+    )
+
+    with pytest.raises(RuntimeError, match="1 of 2 results received"):
+        await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert texts == ["segment 1"]
+    assert provider.settled_at_end is None
+    assert pipeline.task.has_finished()
+    assert pipeline._provider_request_state != "result_received"
+
+
+@pytest.mark.asyncio
+async def test_realtime_file_unacknowledged_tail_fence_fails(monkeypatch):
+    class _LostFenceFileInput(_BlocksFileInput):
+        async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
+            if isinstance(frame, pipeline_module._FileCommitFlushFrame):
+                return
+            await super().push_frame(frame, direction)
+
+    monkeypatch.setattr(pipeline_module, "_FILE_COMMIT_FLUSH_TIMEOUT_SECONDS", 0.1)
+    provider = _CommittingProvider()
+    pipeline, texts = _file_pipeline_with(
+        monkeypatch, provider, _LostFenceFileInput(_blocks(2, 8000)), service_name="openai"
+    )
+
+    with pytest.raises(RuntimeError, match="last audio segment was committed"):
+        await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert provider.commit_points == []
+    assert texts == []
+    assert provider.settled_at_end is None
+    assert pipeline.task.has_finished()
+    assert pipeline._provider_request_state != "result_received"
+
+
+@pytest.mark.asyncio
+async def test_realtime_silent_file_accepts_an_answered_commit_without_text(monkeypatch):
+    class _EmptyAnswerProvider(_CommittingProvider):
+        async def _answer(self, number: int) -> None:
+            pipeline_module._provider_commit_results(self).settle()
+
+    provider = _EmptyAnswerProvider()
+    pipeline, texts = _file_pipeline_with(monkeypatch, provider, _BlocksFileInput(_blocks(2, 0)), service_name="openai")
+
+    await asyncio.wait_for(pipeline.transcribe_file("synthetic.wav"), timeout=5.0)
+
+    assert texts == []
+    assert provider.settled_at_end == 1
+    assert pipeline._provider_request_state == "result_received"
+
+
 @pytest.mark.asyncio
 async def test_provider_ingress_drain_timeout_fails_closed_without_terminal_upload(
     monkeypatch,
@@ -971,12 +1441,16 @@ async def test_pipecat_owned_file_request_state_is_terminal_only_after_success(
     class _Task:
         def __init__(self, *_args, **_kwargs):
             self.finished = False
+            self.stop_requested = asyncio.Event()
+
+        def event_handler(self, _name):
+            return lambda handler: handler
 
         def has_finished(self):
             return self.finished
 
         async def stop_when_done(self):
-            return None
+            self.stop_requested.set()
 
         async def cancel(self, **_kwargs):
             self.finished = True
@@ -989,6 +1463,8 @@ async def test_pipecat_owned_file_request_state_is_terminal_only_after_success(
             self.workers = workers
 
         async def run(self):
+            # A real worker runs until the EndFrame queued by stop_when_done.
+            await self.workers[0].stop_requested.wait()
             self.workers[0].finished = True
             if runner_fails:
                 raise RuntimeError("synthetic provider failure")
@@ -1621,7 +2097,6 @@ def test_onnx_file_factory_uses_bounded_flushing_service(monkeypatch):
     assert type(service).__name__ == "OnnxLocalBufferedSTTService"
     assert service._quantization == "fp32"
     assert service._max_buffer_secs == 30
-    assert service._flush_on_limit is True
 
 
 def test_onnx_file_factory_uses_frozen_model_and_language(monkeypatch):
@@ -1657,16 +2132,16 @@ def test_mistral_segmented_live_uses_transcribe_model_when_rt_model_is_realtime_
     (
         ("soniox", "SONIOX_API_KEY", "SonioxSTTService"),
         ("assemblyai_realtime", "ASSEMBLYAI_API_KEY", "AssemblyAISTTService"),
-        ("elevenlabs", "ELEVENLABS_API_KEY", "ElevenLabsRealtimeSTTService"),
+        ("elevenlabs", "ELEVENLABS_API_KEY", "ScriberElevenLabsRealtimeSTTService"),
         ("deepgram", "DEEPGRAM_API_KEY", "ScriberDeepgramSTTService"),
         ("gladia", "GLADIA_API_KEY", "ScriberGladiaSTTService"),
         ("groq", "GROQ_API_KEY", "GroqSTTService"),
-        ("openai", "OPENAI_API_KEY", "OpenAIRealtimeSTTService"),
-        ("speechmatics", "SPEECHMATICS_API_KEY", "SpeechmaticsSTTService"),
+        ("openai", "OPENAI_API_KEY", "ScriberOpenAIRealtimeSTTService"),
+        ("speechmatics", "SPEECHMATICS_API_KEY", "ScriberSpeechmaticsSTTService"),
     ),
 )
 @pytest.mark.asyncio
-async def test_pipecat_1_5_live_factories_match_runtime_signatures(
+async def test_pipecat_live_factories_match_runtime_signatures(
     monkeypatch,
     service_name,
     api_key_attribute,
@@ -1687,10 +2162,177 @@ async def test_pipecat_1_5_live_factories_match_runtime_signatures(
             # Soniox Realtime uses native semantic endpoint detection. Local VAD
             # may support diagnostics, but must not force transcript commits.
             assert service._vad_force_turn_endpoint is False
+        if service_name == "speechmatics":
+            # Pipecat 1.14 reaches Speechmatics live only through Agent STT.
+            assert service._base_url == "wss://eu2.rt.speechmatics.com/v2/agent"
+            assert service._settings.model == "linden-1"
+            assert service._settings.turn_detection_mode == service.TurnDetectionMode.VAD
+            assert service._settings.speaker_active_format == "{text}"
+            assert [entry.content for entry in service._settings.additional_vocab] == ["Scriber", "Pipecat"]
     finally:
         cleanup = getattr(service, "cleanup", None)
         if callable(cleanup):
             await cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flushing", [True, False])
+async def test_speechmatics_stop_delivers_the_open_turn_before_teardown(monkeypatch, flushing):
+    from pipecat.utils.asyncio.task_manager import TaskManager
+
+    monkeypatch.setattr(Config, "SPEECHMATICS_API_KEY", "key")
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "")
+    if not flushing:
+        # Pipecat's own stop path, kept as the control for the regression.
+        monkeypatch.setattr(pipeline_module, "_speechmatics_stop_flushing_service_class", lambda base: base)
+    service = ScriberPipeline(service_name="speechmatics")._create_stt_service(object())
+    service._task_manager = TaskManager()
+
+    class _Client:
+        def __init__(self):
+            self.disconnects = 0
+
+        async def disconnect(self):
+            self.disconnects += 1
+            if self.disconnects == 1:
+                # The SDK flushes the open turn before EndOfTranscript arrives.
+                service._stt_msg_queue.put_nowait(
+                    {
+                        "message": "AddSegment",
+                        "segment": {"transcript": "der letzte Satz"},
+                        "metadata": {"start_time": 1.0, "end_time": 2.0},
+                    }
+                )
+                await asyncio.sleep(0)
+
+    pushed = []
+
+    async def _push_frame(frame, direction=FrameDirection.DOWNSTREAM):
+        pushed.append(frame)
+
+    monkeypatch.setattr(service, "push_frame", _push_frame)
+    client = _Client()
+    service._client = client
+    service._stt_msg_task = service.create_task(service._process_stt_messages())
+
+    await asyncio.wait_for(service.stop(EndFrame()), timeout=5.0)
+
+    finals = [frame.text for frame in pushed if isinstance(frame, TranscriptionFrame)]
+    assert finals == (["der letzte Satz"] if flushing else [])
+    assert service._client is None
+    assert service._stt_msg_task is None
+
+
+class _FakeGoogleStreams:
+    """Google streaming: the open utterance is finalized once requests end."""
+
+    def __init__(self):
+        self.streams: list[list[bytes]] = []
+        self.audio_received = asyncio.Event()
+
+    async def streaming_recognize(self, *, requests):
+        received: list[bytes] = []
+        self.streams.append(received)
+        half_closed = asyncio.Event()
+
+        async def _consume():
+            async for request in requests:
+                if request.audio:
+                    received.append(request.audio)
+                    self.audio_received.set()
+            half_closed.set()
+
+        consumer = asyncio.create_task(_consume())
+
+        async def _responses():
+            try:
+                await half_closed.wait()
+                result = SimpleNamespace(
+                    alternatives=[SimpleNamespace(transcript=b" ".join(received).decode())],
+                    is_final=True,
+                )
+                yield SimpleNamespace(results=[result])
+            finally:
+                consumer.cancel()
+
+        return _responses()
+
+
+def _google_service_with_fake_streams(monkeypatch, tmp_path, *, finalizing=True):
+    import pipecat.services.google.stt as google_stt
+    from pipecat.utils.asyncio.task_manager import TaskManager
+
+    credentials = tmp_path / "google.json"
+    credentials.write_text('{"project_id": "scriber-test"}', encoding="utf-8")
+    client = _FakeGoogleStreams()
+    monkeypatch.setattr(
+        google_stt.service_account.Credentials,
+        "from_service_account_file",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(google_stt.speech_v2, "SpeechAsyncClient", lambda **_kwargs: client)
+    monkeypatch.setattr(Config, "GOOGLE_APPLICATION_CREDENTIALS", str(credentials))
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    if not finalizing:
+        # Pipecat's own stop path, kept as the control for the regression.
+        monkeypatch.setattr(pipeline_module, "_google_finalizing_service_class", lambda base, _request: base)
+    service = ScriberPipeline(service_name="google")._create_stt_service(object())
+    service._task_manager = TaskManager()
+    pushed = []
+
+    async def _push_frame(frame, direction=FrameDirection.DOWNSTREAM):
+        pushed.append(frame)
+
+    monkeypatch.setattr(service, "push_frame", _push_frame)
+    return service, client, pushed
+
+
+async def _send_google_audio(service, *chunks: bytes) -> None:
+    for chunk in chunks:
+        async for _frame in service.run_stt(chunk):
+            pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finalizing", (True, False))
+async def test_google_stop_finalizes_the_open_utterance(monkeypatch, tmp_path, finalizing):
+    service, client, pushed = _google_service_with_fake_streams(monkeypatch, tmp_path, finalizing=finalizing)
+    await service._connect()
+    await _send_google_audio(service, b"der", b"letzte", b"Satz")
+    await asyncio.wait_for(client.audio_received.wait(), timeout=5.0)
+
+    await asyncio.wait_for(service.stop(EndFrame()), timeout=15.0)
+
+    finals = [frame.text for frame in pushed if isinstance(frame, TranscriptionFrame)]
+    assert finals == (["der letzte Satz"] if finalizing else [])
+    assert service._streaming_task is None
+
+
+@pytest.mark.asyncio
+async def test_google_rotation_finalizes_each_stream_in_audio_order(monkeypatch, tmp_path):
+    # Rotate before every later chunk so each stream carries exactly one.
+    monkeypatch.setattr(pipeline_module, "_GOOGLE_STREAM_ROTATION_SECONDS", -1.0)
+    service, client, pushed = _google_service_with_fake_streams(monkeypatch, tmp_path)
+    await service._connect()
+    await _send_google_audio(service, b"eins", b"zwei", b"drei")
+
+    await asyncio.wait_for(service.stop(EndFrame()), timeout=15.0)
+
+    assert client.streams == [[b"eins"], [b"zwei"], [b"drei"]]
+    finals = [frame.text for frame in pushed if isinstance(frame, TranscriptionFrame)]
+    assert finals == ["eins", "zwei", "drei"]
+
+
+@pytest.mark.asyncio
+async def test_google_stop_without_audio_opens_no_stream(monkeypatch, tmp_path):
+    service, client, pushed = _google_service_with_fake_streams(monkeypatch, tmp_path)
+    await service._connect()
+
+    await asyncio.wait_for(service.stop(EndFrame()), timeout=5.0)
+
+    assert client.streams == []
+    assert not [frame for frame in pushed if isinstance(frame, TranscriptionFrame)]
 
 
 @pytest.mark.asyncio
@@ -1778,6 +2420,7 @@ def test_google_cloud_factory_uses_pipecat_1_5_settings(monkeypatch):
     module = SimpleNamespace(
         GoogleSTTService=_GoogleSTTService,
         speech_v2=SimpleNamespace(__name__="google.cloud.speech_v2"),
+        cloud_speech=SimpleNamespace(StreamingRecognizeRequest=dict),
     )
     monkeypatch.setattr(Config, "GOOGLE_APPLICATION_CREDENTIALS", "C:\\keys\\google.json")
     monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
@@ -1785,6 +2428,8 @@ def test_google_cloud_factory_uses_pipecat_1_5_settings(monkeypatch):
 
     service = ScriberPipeline(service_name="google")._create_stt_service(object())
 
+    assert isinstance(service, _GoogleSTTService)
+    assert type(service).__name__ == "ScriberGoogleSTTService"
     assert service.credentials_path == "C:\\keys\\google.json"
     assert service.sample_rate == Config.SAMPLE_RATE
     assert service.settings.kwargs == {
@@ -1810,6 +2455,7 @@ def test_google_cloud_factory_omits_languages_for_auto_detection(monkeypatch):
     module = SimpleNamespace(
         GoogleSTTService=_GoogleSTTService,
         speech_v2=SimpleNamespace(__name__="google.cloud.speech_v2"),
+        cloud_speech=SimpleNamespace(StreamingRecognizeRequest=dict),
     )
     monkeypatch.setattr(Config, "GOOGLE_APPLICATION_CREDENTIALS", "C:\\keys\\google.json")
     monkeypatch.setattr(Config, "LANGUAGE", "auto")
@@ -1835,6 +2481,7 @@ def test_google_cloud_factory_requires_frozen_v2_route_and_model(monkeypatch):
     module = SimpleNamespace(
         GoogleSTTService=_GoogleSTTService,
         speech_v2=SimpleNamespace(__name__="google.cloud.speech_v2"),
+        cloud_speech=SimpleNamespace(StreamingRecognizeRequest=dict),
     )
     monkeypatch.setattr(Config, "GOOGLE_APPLICATION_CREDENTIALS", "C:\\keys\\google.json")
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
@@ -2111,7 +2758,7 @@ def test_assemblyai_realtime_factory_rejects_pre_1_5_pipecat(monkeypatch):
     monkeypatch.setattr(Config, "CUSTOM_VOCAB", "")
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
 
-    with pytest.raises(RuntimeError, match="Pipecat 1.5.0"):
+    with pytest.raises(RuntimeError, match="Pipecat 1.14.0"):
         ScriberPipeline(service_name="assemblyai_realtime")._create_stt_service(object())
 
 
@@ -2248,8 +2895,9 @@ def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatc
     class _SpeechmaticsSTTService:
         Settings = _Settings
 
-        class OperatingPoint(StrEnum):
-            ENHANCED = "enhanced"
+        class TurnDetectionMode(StrEnum):
+            EXTERNAL = "external"
+            VAD = "vad"
 
         class AdditionalVocabEntry:
             def __init__(self, *, content):
@@ -2272,11 +2920,11 @@ def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatc
     monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Scriber, Pipecat")
     monkeypatch.delenv("SPEECHMATICS_RT_URL", raising=False)
     monkeypatch.setattr("src.pipeline.import_provider_runtime_module", lambda *_args: module)
-    realtime_url = "wss://eu2.rt.speechmatics.com/v2"
+    realtime_url = "wss://eu2.rt.speechmatics.com/v2/agent"
     route = freeze_provider_route(
         workload="file",
         provider="speechmatics",
-        model="enhanced",
+        model="linden-1",
         language="de-DE",
         custom_vocab="Scriber, Pipecat",
         provider_endpoint_sha256=hashlib.sha256(realtime_url.encode("utf-8")).hexdigest(),
@@ -2292,12 +2940,11 @@ def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatc
     settings = dict(service.settings.kwargs)
     additional_vocab = settings.pop("additional_vocab")
     assert settings == {
-        "model": "enhanced",
+        "model": "linden-1",
         "enable_diarization": False,
         "language": Language.DE,
-        "operating_point": _SpeechmaticsSTTService.OperatingPoint.ENHANCED,
-        "speaker_active_format": "[Speaker {speaker_id}]: {text}",
-        "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
+        "turn_detection_mode": _SpeechmaticsSTTService.TurnDetectionMode.VAD,
+        "speaker_active_format": "{text}",
     }
     assert [entry.content for entry in additional_vocab] == ["Scriber", "Pipecat"]
     assert service.base_url == realtime_url
@@ -2311,17 +2958,16 @@ def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatc
     speaker_settings = dict(service_with_speakers.settings.kwargs)
     speaker_settings.pop("additional_vocab")
     assert speaker_settings == {
-        "model": "enhanced",
+        "model": "linden-1",
         "enable_diarization": False,
         "language": Language.DE,
-        "operating_point": _SpeechmaticsSTTService.OperatingPoint.ENHANCED,
-        "speaker_active_format": "[Speaker {speaker_id}]: {text}",
-        "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
+        "turn_detection_mode": _SpeechmaticsSTTService.TurnDetectionMode.VAD,
+        "speaker_active_format": "{text}",
     }
 
     monkeypatch.setenv(
         "SPEECHMATICS_RT_URL",
-        "wss://private.invalid/speechmatics/v2",
+        "wss://private.invalid/speechmatics/v2/agent",
     )
     with pytest.raises(RuntimeError, match="endpoint no longer matches"):
         ScriberPipeline(
@@ -2430,6 +3076,79 @@ async def test_gladia_stop_sends_finalization_before_disconnect(monkeypatch):
     assert events == ["stop_recording", "disconnect"]
 
 
+@pytest.mark.asyncio
+async def test_gladia_stop_delivers_the_last_utterance_after_an_earlier_final(monkeypatch):
+    import json
+
+    from pipecat.utils.asyncio.task_manager import TaskManager
+
+    monkeypatch.setattr(Config, "GLADIA_API_KEY", "key")
+    pipeline = ScriberPipeline(service_name="gladia")
+    service = pipeline._create_stt_service(object())
+    service._task_manager = TaskManager()
+    # An earlier sentence was already finalized in this session.
+    pipeline._final_transcription_received.set()
+
+    class _Socket:
+        state = State.OPEN
+
+        def __init__(self):
+            self.sent = []
+            self._messages: asyncio.Queue = asyncio.Queue()
+
+        async def send(self, message):
+            self.sent.append(json.loads(message))
+            # Gladia finalizes the remaining audio, then closes with 1000.
+            self._messages.put_nowait(
+                json.dumps(
+                    {
+                        "type": "transcript",
+                        "data": {"is_final": True, "utterance": {"language": "de", "text": "der letzte Satz"}},
+                    }
+                )
+            )
+            self._messages.put_nowait(None)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            message = await self._messages.get()
+            if message is None:
+                self.state = State.CLOSED
+                raise StopAsyncIteration
+            return message
+
+        async def close(self):
+            self.state = State.CLOSED
+
+    pushed = []
+
+    async def _push_frame(frame, direction=FrameDirection.DOWNSTREAM):
+        pushed.append(frame)
+
+    reconnects = []
+
+    async def _try_reconnect(**_kwargs):
+        reconnects.append(True)
+        return False
+
+    monkeypatch.setattr(service, "push_frame", _push_frame)
+    monkeypatch.setattr(service, "_try_reconnect", _try_reconnect)
+    socket = _Socket()
+    service._websocket = socket
+    service._connection_active = True
+    service._disconnecting = False
+    service._receive_task = service.create_task(service._receive_task_handler(service._report_error))
+
+    await asyncio.wait_for(service.stop(EndFrame()), timeout=5.0)
+
+    assert socket.sent == [{"type": "stop_recording"}]
+    assert [frame.text for frame in pushed if isinstance(frame, TranscriptionFrame)] == ["der letzte Satz"]
+    assert reconnects == []
+    assert service._receive_task is None
+
+
 def test_speechmatics_factory_enables_batch_labeled_diarization(monkeypatch):
     class _Settings:
         def __init__(self, **kwargs):
@@ -2438,8 +3157,9 @@ def test_speechmatics_factory_enables_batch_labeled_diarization(monkeypatch):
     class _SpeechmaticsSTTService:
         Settings = _Settings
 
-        class OperatingPoint(StrEnum):
-            ENHANCED = "enhanced"
+        class TurnDetectionMode(StrEnum):
+            EXTERNAL = "external"
+            VAD = "vad"
 
         class AdditionalVocabEntry:
             def __init__(self, *, content):
@@ -2469,14 +3189,23 @@ def test_speechmatics_factory_enables_batch_labeled_diarization(monkeypatch):
     )._create_stt_service(object())
 
     assert service.settings.kwargs == {
-        "model": "enhanced",
+        "model": "linden-1",
         "enable_diarization": False,
         "language": Language.DE,
         "additional_vocab": [],
-        "operating_point": _SpeechmaticsSTTService.OperatingPoint.ENHANCED,
-        "speaker_active_format": "[Speaker {speaker_id}]: {text}",
-        "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
+        "turn_detection_mode": _SpeechmaticsSTTService.TurnDetectionMode.VAD,
+        "speaker_active_format": "{text}",
     }
+
+    file_service = ScriberPipeline(
+        service_name="speechmatics",
+        enable_speaker_diarization=True,
+    )._create_stt_service(object(), for_file=True)
+
+    # Only diarized files carry speaker labels; Pipecat 1.14 applies the
+    # template to every final, so plain dictation must keep "{text}".
+    assert file_service.settings.kwargs["enable_diarization"] is True
+    assert file_service.settings.kwargs["speaker_active_format"] == "[Speaker {speaker_id}]: {text}"
 
 
 @pytest.mark.asyncio
@@ -2666,6 +3395,53 @@ async def test_gate_committing_realtime_provider_flushes_before_endframe(monkeyp
     assert events.index("capture_stop") < events.index("gate_commit")
     assert events.index("gate_commit") < events.index("provider_final")
     assert events.index("provider_final") < events.index("task_stop_when_done")
+
+
+@pytest.mark.asyncio
+async def test_live_stop_accepts_a_commit_answered_without_new_text(monkeypatch):
+    # Deepgram answers the stop's Finalize with an empty result when its
+    # endpointing already finalized the last words; silence does the same.
+    monkeypatch.setenv("SCRIBER_LIVE_STT_FINAL_FAILURE_TIMEOUT_SECONDS", "1")
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", False, raising=False)
+    events: list[str] = []
+    pipeline = ScriberPipeline(service_name="deepgram", on_status_change=None)
+    pipeline.is_active = True
+    pipeline._start_done.clear()
+    pipeline.task = _RecordingStopTask(pipeline._start_done, events)
+    pipeline.audio_input = _SegmentedFinalizationAudioInput(events)
+
+    class _AnsweringService:
+        reports_commit_results = True
+
+    service = _AnsweringService()
+
+    class _CommittingGate(SegmentedSTTRecordingGate):
+        async def flush_segment(self, *, direction=FrameDirection.DOWNSTREAM) -> bool:
+            events.append("gate_commit")
+
+            async def _answer():
+                await asyncio.sleep(0.05)
+                events.append("empty_answer")
+                pipeline_module._provider_commit_results(service).settle()
+
+            self._answer_task = asyncio.create_task(_answer())
+            return True
+
+    pipeline.pipeline = _DummyRuntimePipelineGraph(
+        [
+            _CommittingGate(vad_segmentation_enabled=False, stop_strategy=LIVE_STT_STOP_VAD_FLUSH_BEFORE_END),
+            service,
+        ]
+    )
+    # Answers to earlier commits must not satisfy the stop's commit.
+    pipeline_module._provider_commit_results(service).settle()
+    pipeline._mark_final_transcription_received()
+
+    await pipeline.stop(timeout_secs=1.0)
+
+    assert pipeline._terminal_error is None
+    assert events.index("gate_commit") < events.index("empty_answer")
+    assert events.index("empty_answer") < events.index("task_stop_when_done")
 
 
 @pytest.mark.asyncio
@@ -3463,3 +4239,36 @@ async def test_cancel_silent_recording_marks_buffered_provider_skip():
     assert pipeline.task.cancel_called is True
     assert pipeline.runner.cancel_called is True
     assert events == ["audio_stop"]
+
+
+@pytest.mark.asyncio
+async def test_soniox_webm_encode_failure_logs_no_ffmpeg_stderr_paths(monkeypatch):
+    from loguru import logger
+
+    secret_path = "C:\\Users\\Private Person\\AppData\\Local\\Temp\\tmpabc.pcm"
+
+    class FailedProcess:
+        returncode = 1
+
+    async def fake_exec(*_args, **_kwargs):
+        return FailedProcess()
+
+    async def fake_communicate(_proc, **_kwargs):
+        return b"", f"{secret_path}: Invalid data found when processing input".encode()
+
+    monkeypatch.setattr(pipeline_module, "find_media_tool", lambda _name: "ffmpeg")
+    monkeypatch.setattr(pipeline_module.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(pipeline_module, "communicate_or_kill_on_cancel", fake_communicate)
+    messages: list[str] = []
+    sink = logger.add(lambda message: messages.append(str(message)), level="WARNING")
+    try:
+        processor = SonioxAsyncProcessor(api_key="test-key", session=object())
+        encoded, content_type, filename = await processor._encode_audio(b"\0\0" * 320)
+    finally:
+        logger.remove(sink)
+
+    assert (content_type, filename) == ("audio/wav", "audio.wav")
+    assert encoded[:4] == b"RIFF"
+    warnings = [message for message in messages if "WebM encode failed" in message]
+    assert warnings and "exit code 1" in warnings[0]
+    assert all("Private Person" not in message and "Invalid data" not in message for message in messages)

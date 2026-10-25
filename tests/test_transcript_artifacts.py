@@ -179,9 +179,9 @@ def test_google_route_freezes_speech_v2_model_and_raw_pcm_request_contract():
         ),
         (
             "speechmatics",
-            "enhanced",
-            "realtime_v2",
-            "pipecat_speechmatics_realtime_v2_raw_pcm16",
+            "linden-1",
+            "agent_v2",
+            "pipecat_speechmatics_agent_v2_raw_pcm16",
         ),
     ),
 )

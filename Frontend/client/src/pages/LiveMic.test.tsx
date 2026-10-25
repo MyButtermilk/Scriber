@@ -125,6 +125,18 @@ describe("Live Mic consecutive recordings", () => {
     expect(stop).not.toHaveBeenCalled();
   });
 
+  it("keeps the previous transcript processing visible when a next start is rejected", async () => {
+    mount();
+    state();
+    // Backend start rejections carry no session: no capture was admitted.
+    send({ type: "error", message: "Another recording is still using the microphone." });
+    expect(toast).toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("Transcribing recording.");
+    expect(screen.getByRole("button", { name: "Start next recording" })).toBeEnabled();
+    send({ type: "session_finished", sessionId: "old-session", session: { content: "Finished words" } });
+    expect(screen.getByTestId("live-mic-transcript-output")).toHaveTextContent("Finished words");
+  });
+
   it("announces a queued start and allows it to be canceled", async () => {
     mount();
     state({ micStartPending: true });
@@ -428,4 +440,75 @@ it("keeps the real history virtualizer idle while typing in the Live Mic search"
   expect(vi.mocked(useVirtualizer)).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("radio", { name: "List view" }));
   expect(vi.mocked(useVirtualizer)).toHaveBeenCalled();
+});
+
+it("marks failed recordings and never copies a legacy failure message as transcript", async () => {
+  window.localStorage.setItem(LANGUAGE_STORAGE_KEY, "en");
+  for (const name of ["ResizeObserver", "IntersectionObserver"]) {
+    vi.stubGlobal(
+      name,
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+  }
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+    x: 0,
+    y: 0,
+    top: 0,
+    left: 0,
+    bottom: 600,
+    right: 900,
+    width: 900,
+    height: 600,
+    toJSON: () => ({}),
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(600);
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("navigator", { ...window.navigator, clipboard: { writeText } });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) => {
+      if (url === "/api/transcripts/legacy-failed") {
+        return new Response(
+          JSON.stringify({ id: "legacy-failed", status: "failed", content: "[Error] Soniox rejected the API key." }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error("No state snapshot configured");
+    }),
+  );
+  history.push(
+    {
+      id: "legacy-failed",
+      title: "Failed dictation",
+      type: "mic",
+      status: "failed",
+      step: "Soniox rejected the API key.",
+      date: "2026-10-06",
+      duration: "0:04",
+    },
+    {
+      id: "saved",
+      title: "Saved dictation",
+      type: "mic",
+      status: "completed",
+      date: "2026-10-06",
+      duration: "1:00",
+    },
+  );
+  toast.mockClear();
+  mount();
+
+  expect(screen.getAllByText("Failed")).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "Copy transcript Failed dictation" }));
+
+  await waitFor(() =>
+    expect(toast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Copy failed", description: "No transcript content available" }),
+    ),
+  );
+  expect(writeText).not.toHaveBeenCalled();
 });

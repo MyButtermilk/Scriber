@@ -264,53 +264,6 @@ function New-ValidatedNumPyPyInstallerOverlay {
     }
 }
 
-function New-ValidatedNltkPunktData {
-    param(
-        [string]$Root,
-        [string]$BuildWorkRoot,
-        [string]$Python
-    )
-
-    $lockPath = Join-Path $Root "packaging\nltk-punkt-tab-lock-v1.json"
-    $preparerPath = Join-Path $Root "scripts\prepare_nltk_punkt_data.py"
-    foreach ($requiredPath in @($lockPath, $preparerPath)) {
-        if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
-            throw "Missing locked NLTK Punkt build input: $requiredPath"
-        }
-    }
-    $outputRoot = Join-Path $BuildWorkRoot "nltk-data"
-    $null = Assert-UnderRoot `
-        -Root $BuildWorkRoot `
-        -Path $outputRoot `
-        -Label "NLTK Punkt data root" `
-        -Recurse
-    if (Test-Path -LiteralPath $outputRoot) {
-        Remove-Item -LiteralPath $outputRoot -Recurse -Force
-    }
-
-    $preparationOutput = @(
-        & $Python $preparerPath `
-            --lock $lockPath `
-            --output $outputRoot `
-            2>&1
-    )
-    $preparationExitCode = $LASTEXITCODE
-    if ($preparationExitCode -ne 0) {
-        $details = ($preparationOutput | Out-String).Trim()
-        throw "Locked NLTK Punkt preparation failed with exit code $preparationExitCode. $details"
-    }
-    foreach ($line in $preparationOutput) {
-        Write-Host $line
-    }
-    foreach ($language in @("english", "german")) {
-        $languageRoot = Join-Path $outputRoot ("tokenizers\punkt_tab\{0}" -f $language)
-        if (-not (Test-Path -LiteralPath $languageRoot -PathType Container)) {
-            throw "Locked NLTK Punkt preparation omitted $language."
-        }
-    }
-    return (Resolve-Path -LiteralPath $outputRoot).Path
-}
-
 function Invoke-TimedStep {
     param(
         [string]$Label,
@@ -687,11 +640,11 @@ function Get-PythonRuntimeSelection {
     if (
         [string]$runtimeLockPayload.lockContract -ne "ScriberCPythonWindowsRuntimeInputLockV1" -or
         [int]$runtimeLockPayload.schemaVersion -ne 1 -or
-        [string]$runtimeLockPayload.target.pythonVersion -ne "3.14.7" -or
+        [string]$runtimeLockPayload.target.pythonVersion -ne "3.14.9" -or
         [string]$runtimeLockPayload.target.cacheTag -ne "cpython-314" -or
         [string]$runtimeLockPayload.target.architecture -ne "win_amd64"
     ) {
-        throw "Python runtime lock does not target CPython 3.14.7 for Windows x64."
+        throw "Python runtime lock does not target CPython 3.14.9 for Windows x64."
     }
     $jitValue = if ($JitMode -eq "Enabled") { "1" } else { "0" }
     $savedValues = @{}
@@ -718,8 +671,8 @@ function Get-PythonRuntimeSelection {
         }
     }
 
-    if ([string]$identity.version -ne "3.14.7" -or [string]$identity.cacheTag -ne "cpython-314") {
-        throw "The frozen backend requires exactly CPython 3.14.7 (cpython-314)."
+    if ([string]$identity.version -ne "3.14.9" -or [string]$identity.cacheTag -ne "cpython-314") {
+        throw "The frozen backend requires exactly CPython 3.14.9 (cpython-314)."
     }
     if ([bool]$identity.jitActive -ne ($JitMode -eq "Enabled")) {
         throw "The selected CPython runtime did not honor PYTHON_JIT=$jitValue."
@@ -761,7 +714,7 @@ function Get-PythonRuntimeSelection {
             [int64](Get-Item -LiteralPath $runtimeDll).Length -ne [int64]$officialDll[0].sizeBytes -or
             (Get-Sha256Hex -Path $runtimeDll) -cne [string]$officialDll[0].sha256
         ) {
-            throw "Official python314.dll does not match the locked CPython 3.14.7 runtime."
+            throw "Official python314.dll does not match the locked CPython 3.14.9 runtime."
         }
     }
 
@@ -913,14 +866,12 @@ function Get-BackendRuntimeInputManifest {
     $inputPaths = @(
         "packaging\scriber-backend.spec",
         "packaging\backend-sidecar-output-contract.json",
-        "packaging\nltk-punkt-tab-lock-v1.json",
         "packaging\wheels\numpy-noblas-wheel-lock-v1.json",
         "packaging\quickjs-youtube-runtime-lock-v1.json",
         "requirements-base.txt",
         "requirements-build.txt",
         "requirements-release-constraints.txt",
         "scripts\validate_numpy_noblas_wheel.py",
-        "scripts\prepare_nltk_punkt_data.py",
         "scripts\build_quickjs_youtube_runtime.py",
         "scripts\perf\profiles\installer-size\quickjs-runtime-lock-v1.json",
         "native\scriber-quickjs-wrapper\Cargo.toml",
@@ -931,7 +882,7 @@ function Get-BackendRuntimeInputManifest {
     $files = @(Get-InputFileEntries -Root $Root -RelativePaths $inputPaths)
     $files += Get-FileHashEntry -Root $Root -Path $lockedNumPy.WheelPath
     $files += Get-FileHashEntry -Root $Root -Path $RuntimeLock
-    $files += @(Get-PythonFileEntries -Root $Root -RelativeDirectories @("backend_runtime", "pyloudnorm"))
+    $files += @(Get-PythonFileEntries -Root $Root -RelativeDirectories @("backend_runtime"))
     return [ordered]@{
         apiVersion = "1"
         name = "scriber-backend-runtime-layer"
@@ -2867,8 +2818,7 @@ function Test-PyInstaller {
 function Invoke-BackendRuntimeImportCheck {
     param(
         [string]$Python,
-        [string]$Root,
-        [string]$NltkDataRoot
+        [string]$Root
     )
 
     $checkScript = Join-Path $Root "scripts\check_backend_runtime_imports.py"
@@ -2876,19 +2826,11 @@ function Invoke-BackendRuntimeImportCheck {
         throw "Missing backend runtime import check: $checkScript"
     }
 
-    $hadNltkData = Test-Path Env:NLTK_DATA
-    $oldNltkData = $env:NLTK_DATA
-    $env:NLTK_DATA = $NltkDataRoot
     Push-Location $Root
     try {
         & $Python $checkScript
     } finally {
         Pop-Location
-        if ($hadNltkData) {
-            $env:NLTK_DATA = $oldNltkData
-        } else {
-            Remove-Item Env:NLTK_DATA -ErrorAction SilentlyContinue
-        }
     }
     if ($LASTEXITCODE -ne 0) {
         throw "Backend runtime dependency check failed. Install the standard build dependencies with: $Python -m pip install -r requirements-base.txt"
@@ -4050,18 +3992,10 @@ if (-not $cacheHit) {
             }
         }
 
-        Invoke-TimedStep -Label "nltk-punkt-data" -Command {
-            $script:NltkDataRoot = New-ValidatedNltkPunktData `
-                -Root $RepoRoot `
-                -BuildWorkRoot $WorkRoot `
-                -Python $PythonPath
-        }
-
         Invoke-TimedStep -Label "backend-runtime-import-check" -Command {
             Invoke-BackendRuntimeImportCheck `
                 -Python $PythonPath `
-                -Root $RepoRoot `
-                -NltkDataRoot $script:NltkDataRoot
+                -Root $RepoRoot
         }
 
         $runtimeBuildDistRoot = Join-Path $WorkRoot "runtime-dist"
@@ -4089,16 +4023,10 @@ if (-not $cacheHit) {
             $oldNumPyOverlayRoot = $env:SCRIBER_NUMPY_OVERLAY_ROOT
             $hadPythonPath = Test-Path Env:PYTHONPATH
             $oldPythonPath = $env:PYTHONPATH
-            $hadNltkData = Test-Path Env:NLTK_DATA
-            $oldNltkData = $env:NLTK_DATA
-            $hadScriberNltkDataRoot = Test-Path Env:SCRIBER_NLTK_DATA_ROOT
-            $oldScriberNltkDataRoot = $env:SCRIBER_NLTK_DATA_ROOT
             $env:SCRIBER_REPO_ROOT = $RepoRoot
             $env:SCRIBER_NUMPY_WHEEL_PATH = $script:NumPyPyInstallerOverlay.WheelPath
             $env:SCRIBER_NUMPY_OVERLAY_ROOT = $script:NumPyPyInstallerOverlay.OverlayRoot
             $env:PYTHONPATH = $script:NumPyPyInstallerOverlay.OverlayRoot
-            $env:NLTK_DATA = $script:NltkDataRoot
-            $env:SCRIBER_NLTK_DATA_ROOT = $script:NltkDataRoot
             $pyInstallerExitCode = $null
             try {
                 Push-Location $RepoRoot
@@ -4137,16 +4065,6 @@ if (-not $cacheHit) {
                     $env:PYTHONPATH = $oldPythonPath
                 } else {
                     Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
-                }
-                if ($hadNltkData) {
-                    $env:NLTK_DATA = $oldNltkData
-                } else {
-                    Remove-Item Env:NLTK_DATA -ErrorAction SilentlyContinue
-                }
-                if ($hadScriberNltkDataRoot) {
-                    $env:SCRIBER_NLTK_DATA_ROOT = $oldScriberNltkDataRoot
-                } else {
-                    Remove-Item Env:SCRIBER_NLTK_DATA_ROOT -ErrorAction SilentlyContinue
                 }
             }
             if ($pyInstallerExitCode -ne 0) {

@@ -25,7 +25,7 @@ DEPENDENCY_GROUPS: dict[str, dict[str, Any]] = {
         "requiredPaths": (),
         "disallowedPaths": ("scipy", "scipy.libs"),
         "expectedPresent": False,
-        "reason": "Intentionally absent: local pyloudnorm compatibility avoids SciPy for Pipecat loudness",
+        "reason": "Intentionally absent: Pipecat measures loudness with the NumPy-only loudness package",
     },
     "onnxruntime": {
         "paths": ("onnxruntime", "onnxruntime.libs"),

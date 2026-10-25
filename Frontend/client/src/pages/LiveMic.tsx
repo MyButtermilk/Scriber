@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, memo, useMemo, useRef, type CSSProperties } from "react";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { Clock, Globe, Mic } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { DeleteActionButton } from "@/components/ui/delete-action-button";
@@ -20,6 +21,7 @@ import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useToast } from "@/hooks/use-toast";
 import { showRecordingErrorToast } from "@/lib/recording-error-toast";
+import { isFailureOnlyContent } from "@/lib/request-errors";
 import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { useTranscriptHistoryPanelState } from "@/hooks/use-transcript-history-panel-state";
 import { formatDurationLikeYoutube } from "@/lib/duration";
@@ -141,6 +143,12 @@ const TranscriptCard = memo(function TranscriptCard({
   const dateLabel = item.createdAt ? formatDate(item.createdAt, { dateStyle: "medium" }) : timeLabel;
   const clockLabel = item.createdAt ? formatDate(item.createdAt, { timeStyle: "short" }) : "";
   const languageLabel = localizedTranscriptLanguage(item.language, t);
+  const failed = item.status === "failed";
+  const failedBadge = failed ? (
+    <Badge variant="outline" className="border-red-200 bg-red-50 text-ui-micro text-red-600">
+      {t("Failed")}
+    </Badge>
+  ) : null;
   const snippet = (item.preview || "").trim();
   const visibleSnippet =
     snippet && snippet !== item.title
@@ -198,6 +206,7 @@ const TranscriptCard = memo(function TranscriptCard({
               </div>
             </div>
             <div className="flex items-center justify-end gap-1">
+              {failedBadge}
               <CopyActionButton
                 onClick={(e) => onCopy(e, item.id)}
                 disabled={isCopying}
@@ -260,6 +269,7 @@ const TranscriptCard = memo(function TranscriptCard({
                 <Globe className="h-3 w-3 shrink-0 stroke-[1.65px]" aria-hidden="true" />
                 <span className="truncate">{languageLabel}</span>
               </span>
+              {failedBadge}
               <div className="live-recording-actions live-recording-actions--grid ml-auto flex items-center gap-1">
                 <CopyActionButton
                   onClick={(e) => onCopy(e, item.id)}
@@ -849,6 +859,11 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
             break;
           }
           showRecordingErrorToast(toast, msg);
+          if (!msgSessionId && activeSessionId) {
+            // Sessionless errors are rejected starts; the displayed session,
+            // for example a transcript still finalizing, is unaffected.
+            break;
+          }
           audioLevelRef.current = 0;
           setRecordingState("idle");
           setIsRecording(false);
@@ -1285,8 +1300,9 @@ export default function LiveMic() {
           throw new Error(res.statusText);
         }
         const data = await res.json();
-        const content = data?.content || "";
-        if (!content) {
+        // Legacy failed records stored only their failure text as content.
+        const content = isFailureOnlyContent(data?.status, data?.content) ? "" : String(data?.content || "");
+        if (!content.trim()) {
           throw new Error(t("No transcript content available"));
         }
         await navigator.clipboard.writeText(content);

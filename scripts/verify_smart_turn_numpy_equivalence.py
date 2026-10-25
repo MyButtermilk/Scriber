@@ -19,18 +19,56 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
+from packaging.version import InvalidVersion, Version
+
 PUBLIC_NUMPY_VERSION = "2.4.6"
 SCRIBER_NUMPY_VERSION = "2.4.6+scriber.noblas.1"
 PROBABILITY_ABS_TOLERANCE = 1e-7
-EXPECTED_PACKAGE_VERSIONS = {
-    "onnxruntime": "1.24.4",
-    "pipecat-ai": "1.5.0",
-}
+SMART_TURN_PACKAGES = ("onnxruntime", "pipecat-ai")
 NUMPY_WHEEL_LOCK_PATH = Path("packaging/wheels/numpy-noblas-wheel-lock-v1.json")
 RELEASE_CONSTRAINTS_PATH = Path("requirements-release-constraints.txt")
 TEST_CONSTRAINTS_PATH = Path("requirements-test-constraints.txt")
 MEL_MODEL_PATH = Path("src/runtime/smart-turn-mel-matmul.onnx")
 SMART_TURN_MODEL_NAME = "smart-turn-v3.2-cpu.onnx"
+
+
+def _locked_package_versions(repo_root: Path) -> dict[str, str]:
+    """Use the same release constraints that the evidence provenance binds."""
+
+    versions: dict[str, str] = {}
+    for line in (repo_root / RELEASE_CONSTRAINTS_PATH).read_text(encoding="utf-8").splitlines():
+        requirement_text = line.split("#", 1)[0].strip()
+        if not requirement_text:
+            continue
+        try:
+            requirement = Requirement(requirement_text)
+        except InvalidRequirement as exc:
+            raise RuntimeError("Invalid release constraint in SmartTurn evidence inputs") from exc
+        name = canonicalize_name(requirement.name)
+        if name not in SMART_TURN_PACKAGES:
+            continue
+        specifiers = list(requirement.specifier)
+        if (
+            name in versions
+            or requirement.extras
+            or requirement.marker is not None
+            or requirement.url is not None
+            or len(specifiers) != 1
+            or specifiers[0].operator != "=="
+        ):
+            raise RuntimeError(f"SmartTurn requires one unconditional exact release pin for {name}")
+        version = specifiers[0].version
+        try:
+            Version(version)
+        except InvalidVersion as exc:
+            raise RuntimeError(f"SmartTurn requires an exact release version for {name}") from exc
+        versions[name] = version
+    missing = set(SMART_TURN_PACKAGES) - versions.keys()
+    if missing:
+        raise RuntimeError("SmartTurn release pins are missing: " + ", ".join(sorted(missing)))
+    return versions
 
 
 def _sha256_file(path: Path) -> str:
@@ -360,7 +398,7 @@ def _child_payload(*, role: str, numpy_wheel: Path | None = None) -> dict[str, A
         "numpyVersion": np.__version__,
         "buildDependencies": _build_dependencies(),
         "numpyCoreSha256": _sha256_file(core_path),
-        "packageVersions": {name: importlib.metadata.version(name) for name in EXPECTED_PACKAGE_VERSIONS},
+        "packageVersions": {name: importlib.metadata.version(name) for name in SMART_TURN_PACKAGES},
         "fixture": {
             "contract": "ScriberSmartTurnSyntheticPcmV1",
             "sampleRateHz": 16_000,
@@ -445,7 +483,9 @@ def compare_payloads(
     candidate: dict[str, Any],
     *,
     wheel_identity: Mapping[str, Any],
+    repo_root: Path | None = None,
 ) -> tuple[bool, list[str]]:
+    expected_package_versions = _locked_package_versions(repo_root or Path(__file__).resolve().parents[1])
     errors: list[str] = []
     if baseline.get("role") != "baseline":
         errors.append("baseline_role_mismatch")
@@ -485,9 +525,9 @@ def compare_payloads(
         errors.append("python_version_mismatch")
     if baseline.get("pythonCacheTag") != candidate.get("pythonCacheTag"):
         errors.append("python_cache_tag_mismatch")
-    if baseline.get("packageVersions") != EXPECTED_PACKAGE_VERSIONS:
+    if baseline.get("packageVersions") != expected_package_versions:
         errors.append("baseline_package_versions_mismatch")
-    if candidate.get("packageVersions") != EXPECTED_PACKAGE_VERSIONS:
+    if candidate.get("packageVersions") != expected_package_versions:
         errors.append("candidate_package_versions_mismatch")
     if baseline.get("fixture") != candidate.get("fixture"):
         errors.append("smart_turn_fixture_mismatch")
@@ -574,6 +614,7 @@ def main(argv: list[str] | None = None) -> int:
         baseline,
         candidate,
         wheel_identity=wheel_identity,
+        repo_root=repo_root,
     )
     final_provenance = _source_provenance(repo_root)
     if final_provenance != provenance:

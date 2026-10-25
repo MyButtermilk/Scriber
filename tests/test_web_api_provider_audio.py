@@ -242,7 +242,7 @@ async def test_speechmatics_realtime_and_batch_freeze_distinct_endpoints(
         == hashlib.sha256(SPEECHMATICS_BATCH_DEFAULT_BASE_URL.encode("utf-8")).hexdigest()
     )
     assert realtime.provider_endpoint_sha256 != batch.provider_endpoint_sha256
-    assert realtime.provider_audio_capability_id == ("speechmatics:realtime_v2:enhanced")
+    assert realtime.provider_audio_capability_id == ("speechmatics:agent_v2:linden-1")
     assert batch.provider_audio_capability_id == ("speechmatics_async:batch_v2:enhanced")
 
 

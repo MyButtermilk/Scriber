@@ -18,7 +18,9 @@ import { DesktopTitleBar } from "@/components/DesktopTitleBar";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { preloadRouteChunk } from "@/lib/route-preload";
+import { PODCAST_LIBRARY_KEY, type PodcastLibrary } from "@/lib/podcast-types";
 import { BrandMark } from "@/components/BrandMark";
 import { ActiveMeetingPill } from "@/components/meeting/ActiveMeetingPill";
 import { LanguageToggle } from "@/components/language-toggle";
@@ -42,6 +44,32 @@ type NavigationItem = {
   icon: LucideIcon;
   label: string;
 };
+
+/** Episodes that are new or ready but unread; podcast events refresh it immediately. */
+function PodcastAttentionBadge() {
+  const { t, formatNumber } = useI18n();
+  const { data: count = 0 } = useQuery<PodcastLibrary, Error, number>({
+    queryKey: PODCAST_LIBRARY_KEY,
+    select: (library) => library.attentionCount ?? 0,
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,
+    refetchIntervalInBackground: false,
+  });
+  if (!count) return null;
+  const label =
+    count === 1
+      ? t("1 new or unread podcast episode")
+      : t("{{count}} new or unread podcast episodes", { count: formatNumber(count) });
+  return (
+    <span
+      className="ml-auto shrink-0 rounded-full bg-primary px-1.5 py-0.5 text-[11px] font-semibold leading-none tabular-nums text-primary-foreground"
+      aria-label={label}
+      title={label}
+    >
+      {count > 99 ? "99+" : formatNumber(count)}
+    </span>
+  );
+}
 
 export function AppLayout({ children, path }: AppLayoutProps) {
   useHistoryNavigation();
@@ -120,6 +148,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
         >
           <Icon className={cn("h-5 w-5 shrink-0 stroke-[1.5px]", isActive && "stroke-[2px]")} aria-hidden="true" />
           <span className="min-w-0 truncate">{tab.label}</span>
+          {tab.href === "/podcasts" && <PodcastAttentionBadge />}
         </Link>
       </li>
     );

@@ -35,8 +35,8 @@ H17 bzip2 build from 2026-07-20:
   regression.
 - Frozen runtime validation keeps `Analysis(optimize=0)`, `__debug__`, and real
   `assert` execution while removing compiler-owned runtime docstrings from the
-  PyInstaller code cache. English and German Punkt loading/segmentation both
-  pass from the frozen bundle.
+  PyInstaller code cache. Pipecat's sentence segmentation (English, German,
+  decimal, CJK and Arabic probes) passes from the frozen bundle.
 - A real German `de-DE` audio gate produced byte-identical H16/H17 transcripts
   with token recall `18/20` (`0.90`) and WER `3/20` (`0.15`). SmartTurn produced
   all `64,000/64,000` float32 feature values and its prediction/probability
@@ -119,7 +119,7 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 The current frontend verification path uses Bun 1.4.3 for both type projects
 and isolated logic tests, Node Vitest/jsdom for component tests, and ESLint's
-content cache. Node 26.5.0 remains the Vite build runtime, and npm owns the
+content cache. Node 26.12.1 remains the Vite build runtime, and npm owns the
 canonical dependency lock. Bun is installed by `npm ci`; no global Bun
 installation is required. The TypeScript 6 compatibility package preserves
 the JavaScript compiler API used by other development tools. These changes
@@ -2049,7 +2049,19 @@ No-feature-loss constraints:
 
 Current packaging choices:
 
-- `pyloudnorm` is provided locally without SciPy in the packaged sidecar.
+- Pipecat 1.14 measures loudness with the NumPy-only `loudness` package and
+  segments sentences with the embedded `sentencex` rules. The former local
+  SciPy-free `pyloudnorm` package, NLTK, its `regex`/`joblib` dependencies and
+  the English/German Punkt data are no longer installed or bundled; the
+  frozen gate runs Pipecat's sentence probes and fails if NLTK is loaded.
+  ONNXRuntime 1.31 no longer depends on SymPy, which also leaves the closure.
+  Upstream, Pipecat 1.8 loads heavy dependencies lazily and sets up services
+  concurrently, so the first recording after startup pays less import time.
+  Pydantic 2.14 builds model classes faster. On 2026-10-24 importing the eight
+  Pipecat live-STT service modules plus the OpenAI, Deepgram and Google GenAI
+  SDKs took a median 1.98-2.12 s instead of 2.32 s with Pipecat 1.5 and
+  Pydantic 2.13 (Linux source venv, 7 interleaved cold processes per run;
+  informational, not an installed Windows measurement).
 - ONNXRuntime remains because Pipecat Silero VAD needs it.
 - SciPy, Torch, full NeMo, ONNX training/tooling stacks, numba, llvmlite, and
   unused ONNXRuntime tooling are excluded from the standard sidecar. The
@@ -2066,8 +2078,9 @@ Current packaging choices:
   3,149,007 bytes from the complete staged sidecar tree. A bzip2 level-9 proxy
   predicts 3,128,914 bytes of installer savings; this remains a forecast until
   confirmed by a complete installer build.
-- The frozen NLTK `punkt_tab` payload retains the complete English and German
-  models plus root metadata, but no other language directories. Pipecat 1.5's
+- Until Pipecat 1.14 the frozen NLTK `punkt_tab` payload retained the
+  complete English and German models plus root metadata, but no other language
+  directories (history; the payload is gone now). Pipecat 1.5's
   four sentence-boundary call sites all delegate to
   `match_endofsentence()`, which invokes `sent_tokenize(text)` without a
   language argument and therefore uses the English model. Scriber does not add
@@ -2098,12 +2111,12 @@ Current packaging choices:
 - AWS Transcribe is no longer exposed in frontend or backend settings. The
   standard sidecar excludes `boto3`, `botocore`, `s3transfer`, `aioboto3`,
   `aiobotocore`, and Pipecat AWS service modules.
-- The post-Analysis data filter removes only upstream `nltk/test/` doctests and
-  `pipecat/cli/` project-generator templates, including files reintroduced by
-  hooks. The v0.5.115 payload inventory contains 131 such files / 966,180 bytes;
-  this is uncompressed payload savings, not a measured installer-time claim.
-  English/German Punkt, Silero, SmartTurn, ONNX preprocessors and legal notices
-  remain. Explicit `mypy`, `mypyc` and Pydantic mypy-plugin exclusions prevent
+- The post-Analysis data filter removes only upstream `pipecat/cli/`
+  project-generator templates, including files reintroduced by hooks (it also
+  removed `nltk/test/` doctests while NLTK was bundled). The v0.5.115 payload
+  inventory contained 131 such files / 966,180 bytes; this is uncompressed
+  payload savings, not a measured installer-time claim. Silero, SmartTurn, ONNX
+  preprocessors and legal notices remain. Explicit `mypy`, `mypyc` and Pydantic mypy-plugin exclusions prevent
   optional compiled developer tools from contaminating a local frozen build.
   Real provider initialization is tested with those imports blocked. This spec
   change requires one fresh frozen-runtime product before future reuse.
@@ -2111,13 +2124,13 @@ Current packaging choices:
   so `google-generativeai` and Google Cloud Text-to-Speech are excluded from the
   standard sidecar. Google Cloud STT
   remains supported through `google-cloud-speech` plus Pipecat's required
-  `google-genai` namespace dependency; OpenAI STT, Groq STT, and Pipecat's
-  provider import path remain supported through explicit `openai`, `groq`, and
-  `nltk` runtime dependencies.
+  `google-genai` namespace dependency; OpenAI STT and Groq STT remain supported
+  through explicit `openai` and `groq` runtime dependencies.
 - Deepgram Async, Gladia Async, OpenAI Async, and Speechmatics Batch use direct
   HTTP/batch adapters in `src/cloud_async_stt.py`. Speechmatics Batch does not
-  add `speechmatics-batch`; the standard sidecar keeps only the existing
-  Speechmatics realtime/runtime packages.
+  add `speechmatics-batch`; the standard sidecar keeps only the Speechmatics
+  Agent STT (`speechmatics-agent-stt`) and `speechmatics-rt` packages that
+  Pipecat's live service needs.
 - Modulate multilingual batch and streaming use the existing `aiohttp` runtime
   through `src/modulate_stt.py`; no Modulate SDK or additional provider package
   is bundled. Its provider boundary discards utterance metadata and does not
@@ -4170,20 +4183,21 @@ evidence, dock/USB/default-device transitions, longer Always-On-Mic runs,
 restart diagnostics, and eventually moving more device-listing/mapping helpers
 out of `sounddevice`.
 
-## Python 3.14.7 runtime performance
+## Python 3.14.9 runtime performance
 
-The product runtime is CPython 3.14.7. Its conservative release configuration
+The product runtime is CPython 3.14.9. Its conservative release configuration
 is the official Windows x64 build with JIT disabled; this captures the standard
 3.14 interpreter and library improvements without accepting experimental JIT
 warm-up or a custom compiler/runtime chain without user-latency evidence.
 
 The compiler-variant selection evidence below was collected on CPython 3.14.6.
-The 3.14.7 maintenance update keeps the selected official O0 configuration and
-adds its upstream bug and build fixes; it does not promote JIT, free-threading,
-or a custom runtime without a fresh installed-performance qualification.
+The 3.14.7 and 3.14.9 maintenance updates keep the selected official O0
+configuration and add their upstream bug, security and build fixes (3.14.9
+bundles OpenSSL 3.5.9); they do not promote JIT, free-threading, or a custom
+runtime without a fresh installed-performance qualification.
 
 The isolated `python-runtime-ab-v1` profile can compare the official 3.13.14
-anchor, official 3.14.7 with JIT off/on, ClangCL+ThinLTO+PGO with JIT off/on,
+anchor, official 3.14.9 with JIT off/on, ClangCL+ThinLTO+PGO with JIT off/on,
 and the same custom runtime with the tail-call interpreter. All candidates are
 full frozen/Tauri builds from one dependency/runtime lock. JIT warm-up and
 compile time remain in the user-facing latency score. Promotion requires a
@@ -4230,7 +4244,7 @@ the newer canonical provider metrics, so the legacy FastLocal aggregate reports
 profile compares O0 directly against C0 and T0 instead of rewriting that
 baseline. Both custom runtimes fail the provider, App UX, and minimum-gain
 promotion rules independently of that structural block. O0 is therefore the
-selected production runtime: official CPython 3.14.7 with JIT disabled. The
+selected production runtime: official CPython 3.14 (now 3.14.9) with JIT disabled. The
 AMD evidence is emitted below `build/python-runtime-amd` and remains
 intentionally untracked.
 

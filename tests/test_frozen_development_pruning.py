@@ -30,20 +30,13 @@ def _data_filter():
 @pytest.mark.parametrize("separator", ("/", "\\"))
 def test_post_analysis_filter_removes_only_upstream_development_data(separator) -> None:
     removed = [
-        "nltk/test/wordnet.doctest",
-        "nltk/test/nested/grammar.doctest",
         "pipecat/cli/templates/client/react-vite/package.json.jinja2",
         "pipecat/cli/templates/server/Dockerfile.jinja2",
     ]
     retained = [
-        "nltk_data/tokenizers/punkt_tab/english/abbrev_types.txt",
-        "nltk_data/tokenizers/punkt_tab/german/ortho_context.tab",
-        "nltk_data/tokenizers/punkt_tab/README",
         "pipecat/audio/vad/data/silero_vad.onnx",
         "pipecat/audio/turn/smart_turn/data/smart-turn-v3.2-cpu.onnx",
-        "nltk-3.9.4.dist-info/LICENSE.txt",
-        "pipecat_ai-1.5.0.dist-info/licenses/LICENSE",
-        "nltk/testing-runtime/file.dat",
+        "pipecat_ai-1.14.0.dist-info/licenses/LICENSE",
         "pipecat/client/runtime.dat",
         "onnx_asr/preprocessors/nemo.onnx",
     ]
@@ -53,7 +46,7 @@ def test_post_analysis_filter_removes_only_upstream_development_data(separator) 
     assert len(entries) == len(removed) + len(retained)
 
 
-def test_development_data_filter_runs_after_hooks_and_before_runtime_punkt_validation() -> None:
+def test_development_data_filter_runs_after_hooks() -> None:
     calls = [node for node in _spec_tree().body if isinstance(node, (ast.Assign, ast.Expr))]
     analysis_index = next(
         index

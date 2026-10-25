@@ -1,10 +1,11 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 import {
   ArrowDownToLine,
   ArrowRight,
   Check,
+  CheckCheck,
   ChevronLeft,
   ChevronRight,
   Headphones,
@@ -28,6 +29,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -46,15 +48,42 @@ import { apiRequest } from "@/lib/queryClient";
 import { apiUrl } from "@/lib/backend";
 import { cn } from "@/lib/utils";
 import {
+  PODCAST_EPISODES_KEY,
+  PODCAST_LIBRARY_KEY,
+  isPodcastIdentifier,
   podcastEpisodeIsBusy,
   podcastStatusLabels,
   type PodcastEpisode,
   type PodcastEpisodePage,
+  type PodcastEpisodeView,
   type PodcastLibrary,
   type PodcastSearchResult,
 } from "@/lib/podcast-types";
 
-const LIBRARY_KEY = ["/api/podcasts"] as const;
+const LIBRARY_KEY = PODCAST_LIBRARY_KEY;
+
+/** Only a page the user can see may mark episodes as seen. */
+function usePageVisible(): boolean {
+  const [visible, setVisible] = useState(
+    () => typeof document === "undefined" || document.visibilityState !== "hidden",
+  );
+  useEffect(() => {
+    const update = () => setVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+  return visible;
+}
+
+type EpisodeProgress = { read?: boolean; played?: boolean };
+
+/** Applies a confirmed read/played change to a locally retained episode. */
+function withProgress(episode: PodcastEpisode, body: EpisodeProgress): PodcastEpisode {
+  const stamp = new Date().toISOString();
+  const readAt = body.read === undefined ? episode.readAt : body.read ? episode.readAt || stamp : "";
+  const playedAt = body.played === undefined ? episode.playedAt : body.played ? episode.playedAt || stamp : "";
+  return { ...episode, readAt, playedAt, isUnread: episode.status === "completed" && !readAt && !playedAt };
+}
 
 function PodcastMark({ small = false }: { small?: boolean }) {
   return (
@@ -102,8 +131,18 @@ export default function Podcasts() {
   const [feedUrl, setFeedUrl] = useState("");
   const [showFeed, setShowFeed] = useState(false);
   const [offset, setOffset] = useState(0);
-  const [playingId, setPlayingId] = useState<string | null>(null);
+  const [view, setView] = useState<PodcastEpisodeView>("all");
+  // The episode being listened to stays listed while its player is open, even
+  // after playing it moved it out of the unread view.
+  const [player, setPlayer] = useState<{ episode: PodcastEpisode; index: number } | null>(null);
+  const playingId = player?.episode.id ?? null;
   const [removeId, setRemoveId] = useState<string | null>(null);
+  // Episodes stay marked "New" for this visit after the server records them as seen.
+  const [newThisVisit, setNewThisVisit] = useState<ReadonlySet<string>>(() => new Set());
+  const seenRequestedRef = useRef<Set<string>>(new Set());
+  const pageVisible = usePageVisible();
+  const requestedSubscription = new URLSearchParams(useSearch()).get("subscription") ?? "";
+  const [, navigate] = useLocation();
   const library = useQuery<PodcastLibrary>({
     queryKey: LIBRARY_KEY,
     staleTime: 10_000,
@@ -112,16 +151,55 @@ export default function Podcasts() {
   });
   const subscriptions = library.data?.subscriptions ?? [];
   const selected = subscriptions.find((item) => item.id === selectedId) ?? subscriptions[0];
-  const episodeQueryKey = ["/api/podcasts/episodes", selected?.id, offset] as const;
+  const episodeQueryKey = [PODCAST_EPISODES_KEY, selected?.id, offset, view] as const;
   const episodes = useQuery<PodcastEpisodePage>({
     queryKey: episodeQueryKey,
     queryFn: async () =>
-      (await apiRequest("GET", `/api/podcasts/subscriptions/${selected?.id}/episodes?offset=${offset}`)).json(),
+      (
+        await apiRequest(
+          "GET",
+          `/api/podcasts/subscriptions/${selected?.id}/episodes?offset=${offset}${view === "unread" ? "&view=unread" : ""}`,
+        )
+      ).json(),
     enabled: Boolean(selected),
     staleTime: 10_000,
     refetchInterval: library.data?.activeCount ? 5000 : 30_000,
     refetchIntervalInBackground: false,
   });
+
+  useEffect(() => {
+    // A notification links to its podcast with ?subscription=<id>. The request
+    // is consumed so that the same notification link can select it again.
+    if (!requestedSubscription) return;
+    if (isPodcastIdentifier(requestedSubscription)) {
+      setSelectedId(requestedSubscription);
+      setOffset(0);
+      setView("all");
+      setPlayer(null);
+    }
+    navigate("/podcasts", { replace: true });
+  }, [navigate, requestedSubscription]);
+
+  useEffect(() => {
+    setNewThisVisit(new Set());
+    seenRequestedRef.current = new Set();
+  }, [selected?.id]);
+
+  useEffect(() => {
+    if (!pageVisible) return;
+    const unseen = (episodes.data?.items ?? [])
+      .filter((episode) => episode.isNew && !seenRequestedRef.current.has(episode.id))
+      .map((episode) => episode.id);
+    if (!unseen.length) return;
+    for (const id of unseen) seenRequestedRef.current.add(id);
+    setNewThisVisit((previous) => new Set([...previous, ...unseen]));
+    void apiRequest("POST", "/api/podcasts/episodes/seen", { ids: unseen })
+      .then(() => queryClient.invalidateQueries({ queryKey: LIBRARY_KEY }))
+      .catch(() => {
+        // The episodes stay new on the server and are marked again next time.
+        for (const id of unseen) seenRequestedRef.current.delete(id);
+      });
+  }, [episodes.data, pageVisible, queryClient]);
   const search = useQuery<{ items: PodcastSearchResult[] }>({
     queryKey: ["/api/podcasts/search", submittedSearch],
     queryFn: async () =>
@@ -132,7 +210,27 @@ export default function Podcasts() {
 
   const refreshData = () => {
     void queryClient.invalidateQueries({ queryKey: LIBRARY_KEY });
-    void queryClient.invalidateQueries({ queryKey: ["/api/podcasts/episodes"] });
+    void queryClient.invalidateQueries({ queryKey: [PODCAST_EPISODES_KEY] });
+  };
+  const progress = useMutation({
+    mutationFn: async ({ id, body }: { id: string; body: EpisodeProgress }) =>
+      (await apiRequest("PATCH", `/api/podcasts/episodes/${id}`, body)).json(),
+    onSuccess: (_result, { id, body }) => {
+      setPlayer((current) =>
+        current?.episode.id === id ? { ...current, episode: withProgress(current.episode, body) } : current,
+      );
+      refreshData();
+    },
+    onError: (error) =>
+      toast({ title: t("Podcast action failed"), description: t(error.message), variant: "destructive" }),
+  });
+  const listedEpisodes = episodes.data?.items ?? [];
+  const shownEpisodes =
+    player && !listedEpisodes.some((item) => item.id === player.episode.id)
+      ? [...listedEpisodes.slice(0, player.index), player.episode, ...listedEpisodes.slice(player.index)]
+      : listedEpisodes;
+  const markPlayed = (episode: PodcastEpisode) => {
+    if (!episode.playedAt && !progress.isPending) progress.mutate({ id: episode.id, body: { played: true } });
   };
   const mutation = useMutation({
     mutationFn: async ({ method, path, body }: { method: string; path: string; body?: unknown }) => {
@@ -148,7 +246,7 @@ export default function Podcasts() {
       if (variables.method === "DELETE" && variables.path.includes("/subscriptions/")) {
         setSelectedId("");
         setOffset(0);
-        setPlayingId(null);
+        setPlayer(null);
       }
       refreshData();
     },
@@ -165,13 +263,27 @@ export default function Podcasts() {
   const selectedChange = (id: string) => {
     setSelectedId(id);
     setOffset(0);
-    setPlayingId(null);
+    setView("all");
+    setPlayer(null);
+  };
+  const viewChange = (next: PodcastEpisodeView) => {
+    setView(next);
+    setOffset(0);
+    setPlayer(null);
   };
 
-  const renderEpisode = (episode: PodcastEpisode) => {
+  const renderEpisode = (episode: PodcastEpisode, index: number) => {
     const busy = podcastEpisodeIsBusy(episode.status);
+    const isNew = episode.isNew || newThisVisit.has(episode.id);
+    const consumedLabel = episode.readAt ? "Read" : episode.playedAt ? "Listened" : "";
+    const canMarkRead = episode.status === "completed" || Boolean(episode.readAt || episode.playedAt);
     return (
-      <article key={episode.id} className="group border-b border-border/60 py-5 last:border-b-0">
+      <article
+        key={episode.id}
+        data-new={isNew ? "true" : undefined}
+        data-unread={episode.isUnread ? "true" : undefined}
+        className="group border-b border-border/60 py-5 last:border-b-0"
+      >
         <div className="flex items-start gap-3 sm:gap-4">
           <div className="mt-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border/60 bg-muted/30 text-muted-foreground">
             {busy ? (
@@ -184,6 +296,11 @@ export default function Podcasts() {
           </div>
           <div className="min-w-0 flex-1 space-y-2">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-ui-micro text-muted-foreground">
+              {isNew && (
+                <span className="rounded-full bg-primary px-2 py-0.5 font-semibold text-primary-foreground">
+                  {t("New")}
+                </span>
+              )}
               {episode.publishedAt && (
                 <time dateTime={episode.publishedAt}>
                   {formatDate(episode.publishedAt, { day: "numeric", month: "short", year: "numeric" })}
@@ -195,8 +312,28 @@ export default function Podcasts() {
               <span className="rounded-full border border-border/70 px-2 py-0.5">
                 {t(podcastStatusLabels[episode.status])}
               </span>
+              {episode.isUnread ? (
+                <span className="flex items-center gap-1.5 font-medium text-primary">
+                  <span className="h-1.5 w-1.5 rounded-full bg-primary" aria-hidden="true" />
+                  {t("Unread")}
+                </span>
+              ) : (
+                consumedLabel && (
+                  <span className="flex items-center gap-1">
+                    <CheckCheck className="h-3.5 w-3.5" aria-hidden="true" />
+                    {t(consumedLabel)}
+                  </span>
+                )
+              )}
             </div>
-            <h3 className="text-sm font-semibold leading-relaxed text-foreground">{episode.title}</h3>
+            <h3
+              className={cn(
+                "text-sm leading-relaxed text-foreground",
+                isNew || episode.isUnread ? "font-semibold" : "font-medium text-foreground/85",
+              )}
+            >
+              {episode.title}
+            </h3>
             {episode.description && (
               <p className="line-clamp-2 max-w-3xl text-xs leading-relaxed text-muted-foreground">
                 {episode.description}
@@ -249,38 +386,53 @@ export default function Podcasts() {
                 </Button>
               )}
               {episode.downloadedBytes > 0 && (
-                <>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-8 gap-1.5 text-xs"
-                    onClick={() => setPlayingId(playingId === episode.id ? null : episode.id)}
-                  >
-                    {playingId === episode.id ? <X className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-                    {t(playingId === episode.id ? "Close player" : "Listen")}
-                  </Button>
-                  {!busy && (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={t("Episode options")}>
-                          <MoreHorizontal className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          disabled={mutation.isPending}
-                          onClick={() => {
-                            setPlayingId(null);
-                            mutation.mutate({ method: "DELETE", path: `/api/podcasts/episodes/${episode.id}/audio` });
-                          }}
-                        >
-                          <Trash2 className="mr-2 h-4 w-4" />
-                          {t("Remove download")}
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  )}
-                </>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 gap-1.5 text-xs"
+                  onClick={() => setPlayer(playingId === episode.id ? null : { episode, index })}
+                >
+                  {playingId === episode.id ? <X className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+                  {t(playingId === episode.id ? "Close player" : "Listen")}
+                </Button>
+              )}
+              {!busy && (episode.downloadedBytes > 0 || canMarkRead) && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={t("Episode options")}>
+                      <MoreHorizontal className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    {canMarkRead && (
+                      <DropdownMenuItem
+                        disabled={progress.isPending}
+                        onClick={() =>
+                          progress.mutate({
+                            id: episode.id,
+                            body: episode.isUnread ? { read: true } : { read: false, played: false },
+                          })
+                        }
+                      >
+                        <CheckCheck className="mr-2 h-4 w-4" />
+                        {t(episode.isUnread ? "Mark as read" : "Mark as unread")}
+                      </DropdownMenuItem>
+                    )}
+                    {canMarkRead && episode.downloadedBytes > 0 && <DropdownMenuSeparator />}
+                    {episode.downloadedBytes > 0 && (
+                      <DropdownMenuItem
+                        disabled={mutation.isPending}
+                        onClick={() => {
+                          setPlayer(null);
+                          mutation.mutate({ method: "DELETE", path: `/api/podcasts/episodes/${episode.id}/audio` });
+                        }}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        {t("Remove download")}
+                      </DropdownMenuItem>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
               )}
             </div>
             {playingId === episode.id && (
@@ -290,6 +442,7 @@ export default function Podcasts() {
                 src={apiUrl(`/api/podcasts/episodes/${episode.id}/audio`)}
                 className="mt-3 h-10 w-full max-w-lg"
                 aria-label={episode.title}
+                onPlay={() => markPlayed(episode)}
               />
             )}
           </div>
@@ -496,13 +649,31 @@ export default function Podcasts() {
                   )}
                 >
                   <PodcastMark small />
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm font-medium">{item.title}</span>
+                  <span className="min-w-0 flex-1">
+                    <span
+                      className={cn("block truncate text-sm", item.attentionCount ? "font-semibold" : "font-medium")}
+                    >
+                      {item.title}
+                    </span>
                     <span className="mt-1 block text-ui-micro text-muted-foreground">
-                      {t("{{count}} ready", { count: formatNumber(item.completedCount) })}
+                      {item.unreadCount
+                        ? t("{{count}} unread", { count: formatNumber(item.unreadCount) })
+                        : t("{{count}} ready", { count: formatNumber(item.completedCount) })}
                       {!item.autoProcess && ` · ${t("Paused")}`}
                     </span>
                   </span>
+                  {item.newCount > 0 && (
+                    <span
+                      className="shrink-0 rounded-full bg-primary px-2 py-0.5 text-ui-micro font-semibold tabular-nums text-primary-foreground"
+                      aria-label={
+                        item.newCount === 1
+                          ? t("1 new episode")
+                          : t("{{count}} new episodes", { count: formatNumber(item.newCount) })
+                      }
+                    >
+                      {t("{{count}} new", { count: formatNumber(item.newCount) })}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -563,6 +734,47 @@ export default function Podcasts() {
                 </label>
                 <PodcastInfo />
               </div>
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                <div
+                  role="group"
+                  aria-label={t("Episode filter")}
+                  className="inline-flex rounded-lg border border-border/70 p-0.5"
+                >
+                  {(["all", "unread"] as const).map((option) => (
+                    <button
+                      key={option}
+                      type="button"
+                      aria-pressed={view === option}
+                      onClick={() => viewChange(option)}
+                      className={cn(
+                        "rounded-md px-3 py-1 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        view === option ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {option === "all"
+                        ? t("All episodes")
+                        : selected.unreadCount
+                          ? t("Unread ({{count}})", { count: formatNumber(selected.unreadCount) })
+                          : t("Unread")}
+                    </button>
+                  ))}
+                </div>
+                {selected.attentionCount > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 gap-1.5 text-xs"
+                    disabled={mutation.isPending}
+                    onClick={() => {
+                      setNewThisVisit(new Set());
+                      mutation.mutate({ method: "POST", path: `/api/podcasts/subscriptions/${selected.id}/read` });
+                    }}
+                  >
+                    <CheckCheck className="h-3.5 w-3.5" />
+                    {t("Mark all as read")}
+                  </Button>
+                )}
+              </div>
               {selected.error && (
                 <p role="status" className="mt-3 rounded-lg bg-muted/60 p-3 text-xs text-muted-foreground">
                   {t(selected.error)}
@@ -580,11 +792,13 @@ export default function Podcasts() {
               <p role="alert" className="py-6 text-sm text-muted-foreground">
                 {t("Episodes could not be loaded. Try again.")}
               </p>
-            ) : episodes.data?.items.length ? (
-              episodes.data.items.map(renderEpisode)
+            ) : shownEpisodes.length ? (
+              shownEpisodes.map(renderEpisode)
             ) : (
               <p className="py-8 text-sm text-muted-foreground">
-                {t("No audio episodes are available in this feed yet.")}
+                {view === "unread"
+                  ? t("You're all caught up. Every ready episode has been read or played.")
+                  : t("No audio episodes are available in this feed yet.")}
               </p>
             )}
             {(episodes.data?.total ?? 0) > 50 && (
@@ -598,7 +812,10 @@ export default function Podcasts() {
                     variant="outline"
                     className="h-8 w-8"
                     disabled={offset === 0}
-                    onClick={() => setOffset(Math.max(0, offset - 50))}
+                    onClick={() => {
+                      setOffset(Math.max(0, offset - 50));
+                      setPlayer(null);
+                    }}
                     aria-label={t("Previous page")}
                   >
                     <ChevronLeft className="h-4 w-4" />
@@ -608,7 +825,10 @@ export default function Podcasts() {
                     variant="outline"
                     className="h-8 w-8"
                     disabled={offset + 50 >= (episodes.data?.total ?? 0)}
-                    onClick={() => setOffset(offset + 50)}
+                    onClick={() => {
+                      setOffset(offset + 50);
+                      setPlayer(null);
+                    }}
                     aria-label={t("Next page")}
                   >
                     <ChevronRight className="h-4 w-4" />

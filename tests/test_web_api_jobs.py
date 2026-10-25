@@ -3410,7 +3410,11 @@ async def test_completed_youtube_detail_persists_probed_duration(
                 }
             )
             task = ctl._running_tasks[rec.id]
-            await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+            # This is a durable-result contract, not a storage latency budget.
+            # Join the owned workflow; this generous bound only detects a
+            # deadlock and cancels/joins it rather than abandoning a shielded
+            # database worker after two seconds on a busy CI disk.
+            await asyncio.wait_for(task, timeout=30.0)
 
         detail = await ctl.get_transcript(rec.id)
         persisted = web_api.db.get_transcript(rec.id)

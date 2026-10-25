@@ -511,3 +511,67 @@ def test_inject_method_tauri_rejects_success_without_clipboard_set_marker(monkey
     assert snapshot["lastFallbackReason"] == "missing marker(s): clipboard_set"
     assert snapshot["lastResponse"]["success"] is False
     assert snapshot["lastResponse"]["payload"]["markers"] == ["paste"]
+
+
+def test_interrupted_keystroke_typing_is_terminal_and_never_retyped(monkeypatch):
+    from loguru import logger
+
+    monkeypatch.setattr(Config, "INJECT_METHOD", "type")
+    monkeypatch.setattr(Config, "INJECT_TARGET_TITLE", "")
+    injected: list[str] = []
+    injector = TextInjector(on_injected=injected.append)
+    keyboard_mock = MagicMock()
+    # keyboard.write types character by character; a failure can follow
+    # characters that already reached the target.
+    keyboard_mock.write.side_effect = ValueError("cannot type 'geheimer Satz'")
+    messages: list[str] = []
+    sink = logger.add(lambda message: messages.append(str(message)), level="DEBUG")
+    try:
+        with (
+            patch("src.injector.HAS_GUI", True),
+            patch("src.injector._ensure_gui_modules", return_value=True),
+            patch("src.injector.keyboard", new=keyboard_mock),
+            patch("src.injector.pyautogui", new=MagicMock()) as pyautogui_mock,
+        ):
+            assert injector._inject_text_safely("geheimer Satz ") is True
+    finally:
+        logger.remove(sink)
+
+    keyboard_mock.write.assert_called_once_with("geheimer Satz ", delay=0.01)
+    pyautogui_mock.write.assert_not_called()
+    assert injected == []
+    assert not any("geheimer" in message for message in messages)
+
+
+def test_keystroke_typing_uses_pyautogui_only_when_keyboard_is_unavailable(monkeypatch):
+    monkeypatch.setattr(Config, "INJECT_METHOD", "type")
+    monkeypatch.setattr(Config, "INJECT_TARGET_TITLE", "")
+    injected: list[str] = []
+    injector = TextInjector(on_injected=injected.append)
+
+    with (
+        patch("src.injector.HAS_GUI", True),
+        patch("src.injector._ensure_gui_modules", return_value=True),
+        patch("src.injector.keyboard", new=None),
+        patch("src.injector.pyautogui", new=MagicMock()) as pyautogui_mock,
+    ):
+        injector._inject_text("hello ")
+
+    pyautogui_mock.write.assert_called_once_with("hello ", interval=0.01)
+    assert injected == ["hello "]
+
+
+def test_injection_failure_log_omits_exception_text(monkeypatch):
+    from loguru import logger
+
+    injector = TextInjector()
+    messages: list[str] = []
+    sink = logger.add(lambda message: messages.append(str(message)), level="DEBUG")
+    try:
+        with patch.object(injector, "_inject_text", side_effect=OSError("clipboard held 'geheimer Satz'")):
+            assert injector._inject_text_safely("geheimer Satz ") is False
+    finally:
+        logger.remove(sink)
+
+    assert any("Text injection failed" in message and "OSError" in message for message in messages)
+    assert not any("geheimer" in message for message in messages)

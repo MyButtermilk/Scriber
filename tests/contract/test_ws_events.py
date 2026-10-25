@@ -20,6 +20,8 @@ from src.core.ws_contracts import (
     meeting_segment_event,
     meeting_state_event,
     meeting_transcript_edited_event,
+    podcast_episode_ready_event,
+    podcast_episodes_discovered_event,
     post_processing_fallback_used_event,
     session_finished_event,
     session_started_event,
@@ -149,6 +151,35 @@ def test_ws_event_builders_match_contract():
     for payload in payloads:
         assert payload["apiVersion"] == WS_API_VERSION
         validate_event_payload(payload)
+
+
+def test_podcast_events_are_bounded_and_valid():
+    podcasts = [{"subscriptionId": f"{index:032x}", "title": "  A\n podcast  " * 40, "count": 2} for index in range(7)]
+    discovered = podcast_episodes_discovered_event("event-1", podcasts, queued_count=3)
+    validate_event_payload(discovered)
+    assert discovered["count"] == 14
+    assert len(discovered["podcasts"]) == 5
+    assert all(len(item["title"]) <= 300 and "\n" not in item["title"] for item in discovered["podcasts"])
+    ready = podcast_episode_ready_event(
+        "event-2",
+        episode_id="a" * 32,
+        subscription_id="b" * 32,
+        transcript_id="c" * 32,
+        title="Episode",
+        podcast_title="Podcast",
+    )
+    validate_event_payload(ready)
+
+    for invalid in (
+        {**discovered, "podcasts": []},
+        {**discovered, "count": -1},
+        {**discovered, "queuedCount": True},
+        {**discovered, "podcasts": [{"subscriptionId": "s", "title": "t", "count": 0}]},
+        {**ready, "transcriptId": ""},
+        {key: value for key, value in ready.items() if key != "title"},
+    ):
+        with pytest.raises(WSContractError):
+            validate_event_payload(invalid)
 
 
 @pytest.mark.parametrize(

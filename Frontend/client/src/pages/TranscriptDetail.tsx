@@ -31,11 +31,13 @@ import {
   extractFailureMessage,
   friendlyError,
   friendlyRequestMessage,
+  isFailureOnlyContent,
   responseErrorMessage,
 } from "@/lib/request-errors";
 import { prepareSummaryHtml } from "@/lib/summary-html";
 import { summaryTableOfContentsTitle } from "@/lib/summary-document-language";
 import { saveTranscriptExport } from "@/lib/transcript-export";
+import { markPodcastTranscriptRead } from "@/lib/podcast-progress";
 import type { SettingsResponse, TranscriptDetailResponse, TranscriptHistoryItem } from "@/lib/api-types";
 import { useI18n } from "@/i18n";
 
@@ -388,6 +390,12 @@ export default function TranscriptDetail() {
     },
   });
   const transcriptData = transcriptQuery.data;
+  const readableFileTranscriptId =
+    transcriptData?.type === "file" && transcriptData.status === "completed" ? transcriptData.id : "";
+  useEffect(() => {
+    // Podcast episodes are transcribed as file jobs; opening one marks it read.
+    if (readableFileTranscriptId) void markPodcastTranscriptRead(queryClient, readableFileTranscriptId);
+  }, [queryClient, readableFileTranscriptId]);
   const needsAutoSummarySetting = Boolean(
     transcriptData &&
     transcriptData.type !== "mic" &&
@@ -444,9 +452,7 @@ export default function TranscriptDetail() {
   const summaryCopyText = summaryFormat === "html" ? preparedSummaryHtml.plainText : summaryMarkdown;
   const hasSummary = summarySource.length > 0;
   const isFailedTranscript = transcript.status === "failed";
-  const failedContentLooksLikeErrorOnly =
-    isFailedTranscript &&
-    /^\[(error|timeout|download error|storage error)\]/i.test(String(transcript.content || "").trim());
+  const failedContentLooksLikeErrorOnly = isFailureOnlyContent(transcript.status, transcript.content);
   const transcriptContent = failedContentLooksLikeErrorOnly ? "" : String(transcript.content || "");
   const hasExportableContent = !failedContentLooksLikeErrorOnly && Boolean(transcriptContent.trim() || hasSummary);
   const transcriptWordCount = useMemo(

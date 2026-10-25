@@ -5,10 +5,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TAURI_CONFIG = ROOT / "Frontend" / "src-tauri" / "tauri.conf.json"
 NSIS_TEMPLATE = ROOT / "Frontend" / "src-tauri" / "windows" / "installer-template.nsi"
-UPSTREAM_TEMPLATE_SHA256 = "20f4ecc730defb71f1342eaeaec4021df13be3d843abba0effe88ea5835fa079"
+UPSTREAM_TEMPLATE_SHA256 = "d00089d3b1a2c4a30d7b6e098079100cb8f25e980f84d4515aca4597b95e967d"
 SCRIBER_TEMPLATE_HEADER = (
-    "; Vendored from tauri-apps/tauri tag tauri-cli-v2.11.3\n"
-    "; source commit 6f6ab1207bb3923c2721fbc67d2fdb1c8deb0c7a.\n"
+    "; Vendored from tauri-apps/tauri tag tauri-cli-v2.12.4\n"
+    "; source commit 993038c49185307dfc895ab7657d77ca0d5ed7c7.\n"
     "; Scriber delta: prefer overlay installation for version upgrades so Windows\n"
     "; shell pins and the user's autostart state remain intact.\n"
 )

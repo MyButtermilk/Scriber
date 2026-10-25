@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, BinaryIO
 
 import aiohttp
+import numpy as np
 from loguru import logger
 from pipecat.frames.frames import (
     CancelFrame,
@@ -86,6 +87,21 @@ _PROVIDER_INGRESS_DRAIN_SERVICES = frozenset(
 )
 _PROVIDER_INGRESS_DRAIN_TIMEOUT_SECONDS = 2.0
 _PROVIDER_INGRESS_ABORT_TIMEOUT_SECONDS = 2.0
+# Services that transcribe only audio a VAD stop closes (realtime commits and
+# segmented uploads). A file has no local VAD, so its pipeline closes segments.
+_FILE_COMMIT_PERIODIC_SERVICES = frozenset({"openai", "elevenlabs"})
+_FILE_COMMIT_FINALIZED_SERVICES = frozenset({"deepgram"})
+# ElevenLabs commits on its own after about 36 s and recommends 20-30 s.
+_FILE_COMMIT_MIN_SEGMENT_SECONDS = 20.0
+_FILE_COMMIT_MAX_SEGMENT_SECONDS = 30.0
+_FILE_COMMIT_PAUSE_SECONDS = 0.2
+_FILE_COMMIT_PAUSE_RATIO = 0.1
+_FILE_COMMIT_SILENCE_RMS = 100.0
+# OpenAI rejects commits of less than 100 ms of audio.
+_FILE_COMMIT_MIN_TAIL_SECONDS = 0.25
+_FILE_COMMIT_FLUSH_TIMEOUT_SECONDS = 10.0
+_FILE_COMMIT_RESULT_IDLE_TIMEOUT_SECONDS = 20.0
+_FILE_PIPELINE_ABORT_TIMEOUT_SECONDS = 5.0
 
 
 async def _raise_soniox_status(response: Any, operation: str) -> None:
@@ -575,7 +591,7 @@ def _create_vad_analyzer(*, quiet_mic: bool = False):
 
 
 def _create_soniox_smart_turn_processor() -> UserTurnProcessor | None:
-    """Create a session-owned Pipecat 1.5 SmartTurn processor.
+    """Create a session-owned Pipecat SmartTurn processor.
 
     ``TransportParams`` no longer accepts analyzers. SmartTurn must run after
     Soniox STT so its stop strategy sees both passthrough audio/VAD events and
@@ -612,7 +628,7 @@ def _ordered_live_pipeline_steps(
     provider_ingress_drain: FrameProcessor | None = None,
     silence_stop_observer: FrameProcessor | None = None,
 ) -> list[FrameProcessor]:
-    """Return the canonical Pipecat 1.5 live-microphone processor order."""
+    """Return the canonical Pipecat live-microphone processor order."""
     steps: list[FrameProcessor] = [audio_input]
     if silence_stop_observer is not None:
         steps.append(silence_stop_observer)
@@ -645,6 +661,191 @@ def _redact_provider_error_text(message: str) -> str:
     text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", text)
     text = re.sub(r"(?i)\bToken\s+[A-Za-z0-9._~+/=-]+", "Token [REDACTED]", text)
     return text
+
+
+_SPEECHMATICS_FLUSH_MARKER = "ScriberSpeechmaticsFlushComplete"
+_SPEECHMATICS_FLUSH_DRAIN_TIMEOUT_SECONDS = 2.0
+_SPEECHMATICS_FLUSHING_SERVICE_CLASSES: dict[type, type] = {}
+
+
+def _speechmatics_stop_flushing_service_class(base: type) -> type:
+    """Return a Speechmatics service that delivers the open turn on EndFrame.
+
+    Pipecat 1.14 cancels its message consumer and discards the queue before the
+    SDK's ``disconnect()`` flushes the session, so the final segments of the
+    turn still open at stop never become transcripts. A dictation stopped right
+    after the last word, or a file ending in speech, lost that utterance.
+    """
+    cached = _SPEECHMATICS_FLUSHING_SERVICE_CLASSES.get(base)
+    if cached is not None:
+        return cached
+
+    class ScriberSpeechmaticsSTTService(base):
+        async def stop(self, frame):
+            await self._flush_open_turn()
+            await super().stop(frame)
+
+        async def _handle_message(self, message):
+            if message.get("message") == _SPEECHMATICS_FLUSH_MARKER:
+                message["done"].set()
+                return
+            await super()._handle_message(message)
+
+        async def _flush_open_turn(self) -> None:
+            client = self._client
+            consumer = self._stt_msg_task
+            if client is None or consumer is None or consumer.done():
+                return
+            # A flushed session must not reconnect when its audio gate closes.
+            self._closed = True
+            await self._cancel_reconnect_task()
+            # The SDK sends EndOfStream and waits (bounded) for EndOfTranscript;
+            # the open turn's final segments arrive on the queue meanwhile.
+            try:
+                await client.disconnect()
+            except Exception as exc:
+                logger.warning("Speechmatics stop flush failed (error_type={})", type(exc).__name__)
+                return
+            # The consumer handles messages strictly in order, so reaching the
+            # marker means every flushed segment has been pushed downstream.
+            done = asyncio.Event()
+            self._stt_msg_queue.put_nowait({"message": _SPEECHMATICS_FLUSH_MARKER, "done": done})
+            try:
+                await asyncio.wait_for(done.wait(), timeout=_SPEECHMATICS_FLUSH_DRAIN_TIMEOUT_SECONDS)
+            except TimeoutError:
+                logger.warning("Speechmatics final segments did not drain before stop")
+
+    _SPEECHMATICS_FLUSHING_SERVICE_CLASSES[base] = ScriberSpeechmaticsSTTService
+    return ScriberSpeechmaticsSTTService
+
+
+_GOOGLE_END_OF_AUDIO = object()
+# Google ends a streaming request after about five minutes of audio.
+_GOOGLE_STREAM_ROTATION_SECONDS = 240.0
+_GOOGLE_FINAL_RESULTS_TIMEOUT_SECONDS = 5.0
+_GOOGLE_STOP_TIMEOUT_SECONDS = 10.0
+_GOOGLE_FINALIZING_SERVICE_CLASSES: dict[type, type] = {}
+
+
+def _google_finalizing_service_class(base: type, request_type: type) -> type:
+    """Return a Google service that half-closes streams instead of dropping them.
+
+    Pipecat 1.14 cancels its streaming task on EndFrame and abandons a stream at
+    the four-minute rotation as soon as the next response arrives. Google still
+    holds the open utterance as an interim result at both points, so the last
+    words of a dictation or file, and those spoken across each rotation, were
+    never finalized. Ending the request stream makes Google finalize the audio
+    it received and then close the response stream.
+    """
+    cached = _GOOGLE_FINALIZING_SERVICE_CLASSES.get(base)
+    if cached is not None:
+        return cached
+
+    class ScriberGoogleSTTService(base):
+        # The request stream below decides rotation. Pipecat's response-side
+        # cutoff would discard the finals of the stream being rotated.
+        STREAMING_LIMIT = math.inf
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._audio_finished = False
+            self._carried_audio: bytes | None = None
+            self._open_request_stream: asyncio.Event | None = None
+
+        async def _connect(self):
+            self._audio_finished = False
+            self._carried_audio = None
+            await super()._connect()
+
+        async def stop(self, frame):
+            await self._finish_audio()
+            await super().stop(frame)
+
+        async def _finish_audio(self) -> None:
+            task = self._streaming_task
+            if task is None or task.done():
+                return
+            self._audio_finished = True
+            # An idle stream loop has nothing to finalize and exits by itself.
+            if (
+                self._open_request_stream is not None
+                or self._carried_audio is not None
+                or not self._request_queue.empty()
+            ):
+                self._request_queue.put_nowait(_GOOGLE_END_OF_AUDIO)
+            _done, pending = await asyncio.wait({task}, timeout=_GOOGLE_STOP_TIMEOUT_SECONDS)
+            if pending:
+                logger.warning("Google final results did not arrive before stop")
+
+        async def _stream_audio(self):
+            while True:
+                if self._carried_audio is None and self._request_queue.empty():
+                    if self._audio_finished:
+                        return
+                    await asyncio.sleep(0.01)
+                    continue
+                stream_closed = asyncio.Event()
+                try:
+                    responses = await self._client.streaming_recognize(requests=self._audio_requests(stream_closed))
+                    await self._receive_results(responses, stream_closed)
+                except Exception as exc:
+                    await self.push_error(error_msg=f"Unknown error occurred: {exc}", exception=exc)
+                    if self._audio_finished:
+                        return
+                    await asyncio.sleep(1)
+
+        async def _audio_requests(self, stream_closed: asyncio.Event):
+            opened_at = time.monotonic()
+            sent_audio = False
+            self._open_request_stream = stream_closed
+            try:
+                yield request_type(
+                    recognizer=f"projects/{self._project_id}/locations/{self._location}/recognizers/_",
+                    streaming_config=self._config,
+                )
+                while True:
+                    if self._carried_audio is not None:
+                        audio, self._carried_audio = self._carried_audio, None
+                    else:
+                        audio = await self._request_queue.get()
+                        self._request_queue.task_done()
+                    if audio is _GOOGLE_END_OF_AUDIO:
+                        return
+                    if sent_audio and time.monotonic() - opened_at > _GOOGLE_STREAM_ROTATION_SECONDS:
+                        # The next stream starts with this chunk, keeping order.
+                        self._carried_audio = audio
+                        return
+                    sent_audio = True
+                    yield request_type(audio=audio)
+            finally:
+                if self._open_request_stream is stream_closed:
+                    self._open_request_stream = None
+                stream_closed.set()
+
+        async def _receive_results(self, responses, stream_closed: asyncio.Event) -> None:
+            receiving = asyncio.ensure_future(self._process_responses(responses))
+            closing = asyncio.ensure_future(stream_closed.wait())
+            try:
+                await asyncio.wait({receiving, closing}, return_when=asyncio.FIRST_COMPLETED)
+                if not receiving.done():
+                    # The request stream ended; Google now finalizes the audio
+                    # it received and closes the response stream.
+                    await asyncio.wait({receiving}, timeout=_GOOGLE_FINAL_RESULTS_TIMEOUT_SECONDS)
+            finally:
+                closing.cancel()
+                if not receiving.done():
+                    receiving.cancel()
+                    cancel_call = getattr(responses, "cancel", None)
+                    if callable(cancel_call):
+                        cancel_call()
+                await asyncio.gather(closing, receiving, return_exceptions=True)
+            if receiving.cancelled():
+                logger.warning("Google final results did not arrive before the stream closed")
+                return
+            receiving.result()
+
+    _GOOGLE_FINALIZING_SERVICE_CLASSES[base] = ScriberGoogleSTTService
+    return ScriberGoogleSTTService
 
 
 SonioxSTTService = None
@@ -1203,6 +1404,7 @@ class SonioxAsyncProcessor(FrameProcessor):
             # WebM/Matroska containers need seekable output to write duration to header
             tmp_input_path = None
             tmp_output_path = None
+            proc = None
             try:
                 # Write PCM to temp input file
                 with tempfile.NamedTemporaryFile(suffix=".pcm", delete=False) as tmp_input:
@@ -1245,14 +1447,16 @@ class SonioxAsyncProcessor(FrameProcessor):
                     **hidden_subprocess_kwargs(),
                 )
 
-                _, stderr = await communicate_or_kill_on_cancel(
+                # FFmpeg's stderr and OS errors name temporary paths under the
+                # user's profile; only the exit status and error type are logged.
+                await communicate_or_kill_on_cancel(
                     proc,
                     max_stdout_bytes=64 * 1024,
                     max_stderr_bytes=1024 * 1024,
                 )
 
                 if proc.returncode != 0:
-                    raise RuntimeError(f"FFmpeg encoding failed: {stderr.decode()}")
+                    raise RuntimeError(f"FFmpeg encoding failed (exit code {proc.returncode})")
 
                 # Read the WebM file with proper duration metadata
                 with open(tmp_output_path, "rb") as f:
@@ -1264,7 +1468,11 @@ class SonioxAsyncProcessor(FrameProcessor):
                 return webm_bytes, "audio/webm", "audio.webm"
 
             except Exception as e:
-                logger.warning(f"WebM encode failed ({e}); falling back to WAV")
+                logger.warning(
+                    "WebM encode failed ({}{}); falling back to WAV",
+                    type(e).__name__,
+                    f", exit code {proc.returncode}" if proc is not None and proc.returncode else "",
+                )
             finally:
                 # Clean up temp files
                 try:
@@ -1399,7 +1607,7 @@ def _create_assemblyai_realtime_service(
     keyterms = build_keyterms_from_vocab(custom_vocab)
 
     if settings_cls is None:
-        raise RuntimeError("AssemblyAI realtime transcription requires Pipecat 1.5.0.")
+        raise RuntimeError("AssemblyAI realtime transcription requires Pipecat 1.14.0.")
 
     settings_candidates = {"model": model}
     if language_code:
@@ -1655,6 +1863,20 @@ class ConnectionErrorHandlerProcessor(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class _FileProviderErrorProcessor(FrameProcessor):
+    """Route downstream provider errors to the worker that owns file cleanup."""
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, ErrorFrame):
+            # The worker only receives errors upstream. Reuse its error handler
+            # so failures cancel unfinished input too, without a detached task
+            # or waiting for teardown from inside the provider's processing lane.
+            await self.push_frame(frame, FrameDirection.UPSTREAM)
+            return
+        await self.push_frame(frame, direction)
+
+
 class PipecatVadSpeechObserver(FrameProcessor):
     """Tracks Pipecat VAD speech events for diagnostics and silent-session skips."""
 
@@ -1822,6 +2044,147 @@ class _ProviderIngressDrainProcessor(FrameProcessor):
             frame.acknowledge()
             return
         await self.push_frame(frame, direction)
+
+
+class _ProviderCommitResults:
+    """Counts the results a realtime service returned for committed audio."""
+
+    def __init__(self) -> None:
+        self.settled = 0
+        self._changed = asyncio.Event()
+
+    def settle(self) -> None:
+        self.settled += 1
+        self._changed.set()
+
+    async def wait_for(self, expected: int, *, idle_timeout: float) -> bool:
+        """Wait for ``expected`` results while each one arrives within the timeout."""
+        while self.settled < expected:
+            self._changed.clear()
+            try:
+                await asyncio.wait_for(self._changed.wait(), timeout=idle_timeout)
+            except TimeoutError:
+                return False
+        return True
+
+
+def _provider_commit_results(service: Any) -> _ProviderCommitResults:
+    results = getattr(service, "_scriber_provider_commit_results", None)
+    if results is None:
+        results = _ProviderCommitResults()
+        service._scriber_provider_commit_results = results
+    return results
+
+
+def _pcm16_rms(audio: bytes) -> float:
+    samples = np.frombuffer(audio[: len(audio) - len(audio) % 2], dtype="<i2")
+    if not samples.size:
+        return 0.0
+    return float(np.sqrt(np.mean(np.square(samples, dtype=np.float64))))
+
+
+class _FileCommitFlushFrame(SystemFrame):
+    """Private same-lane fence that closes a file's last commit segment."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._acknowledged = asyncio.Event()
+
+    def acknowledge(self) -> None:
+        self._acknowledged.set()
+
+    @property
+    def acknowledged(self) -> bool:
+        return self._acknowledged.is_set()
+
+    async def wait(self) -> None:
+        await self._acknowledged.wait()
+
+
+class _FileCommitSegmenter(FrameProcessor):
+    """Close segments for services that transcribe only on a VAD stop.
+
+    The file pipeline has no local VAD, so OpenAI and segmented uploads such as
+    Groq never transcribed a file, ElevenLabs only what it committed on its
+    own, and Deepgram lost the results EndFrame cut off. With ``periodic`` a
+    segment closes at the first pause after the minimum length, or at the
+    maximum; the flush fence closes the last segment behind every audio frame.
+    """
+
+    def __init__(self, *, periodic: bool):
+        super().__init__()
+        self._periodic = periodic
+        self.commits = 0
+        self._sample_rate = 0
+        self._channels = 1
+        self._segment_samples = 0
+        self._segment_peak = 0.0
+        self._quiet_samples = 0
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+
+        if direction != FrameDirection.DOWNSTREAM:
+            await self.push_frame(frame, direction)
+            return
+
+        if isinstance(frame, _FileCommitFlushFrame):
+            if self._sample_rate and self._segment_samples:
+                # A forced periodic cut may leave only the end of a word. Keep
+                # that audio and pad it to the provider's minimum commit size
+                # instead of silently discarding a short final segment.
+                padding_samples = 0
+                if self._periodic:
+                    padding_samples = max(
+                        0, math.ceil(_FILE_COMMIT_MIN_TAIL_SECONDS * self._sample_rate) - self._segment_samples
+                    )
+                if padding_samples:
+                    await self.push_frame(
+                        InputAudioRawFrame(
+                            audio=b"\x00\x00" * padding_samples * self._channels,
+                            sample_rate=self._sample_rate,
+                            num_channels=self._channels,
+                        ),
+                        direction,
+                    )
+                await self._close_segment(direction)
+            frame.acknowledge()
+            return
+
+        await self.push_frame(frame, direction)
+        if isinstance(frame, StartFrame):
+            await self.push_frame(VADUserStartedSpeakingFrame(), direction)
+        elif isinstance(frame, InputAudioRawFrame) and frame.audio and self._segment_ends_after(frame):
+            await self._close_segment(direction)
+            await self.push_frame(VADUserStartedSpeakingFrame(), direction)
+
+    def _segment_ends_after(self, frame: InputAudioRawFrame) -> bool:
+        self._channels = max(1, int(frame.num_channels or 1))
+        samples = len(frame.audio) // (2 * self._channels)
+        self._sample_rate = int(frame.sample_rate or self._sample_rate or Config.SAMPLE_RATE)
+        self._segment_samples += samples
+        if not self._periodic:
+            return False
+        level = _pcm16_rms(frame.audio)
+        self._segment_peak = max(self._segment_peak, level)
+        if level <= max(_FILE_COMMIT_SILENCE_RMS, self._segment_peak * _FILE_COMMIT_PAUSE_RATIO):
+            self._quiet_samples += samples
+        else:
+            self._quiet_samples = 0
+        seconds = self._segment_samples / self._sample_rate
+        if seconds >= _FILE_COMMIT_MAX_SEGMENT_SECONDS:
+            return True
+        return (
+            seconds >= _FILE_COMMIT_MIN_SEGMENT_SECONDS
+            and self._quiet_samples >= _FILE_COMMIT_PAUSE_SECONDS * self._sample_rate
+        )
+
+    async def _close_segment(self, direction: FrameDirection) -> None:
+        await self.push_frame(VADUserStoppedSpeakingFrame(), direction)
+        self.commits += 1
+        self._segment_samples = 0
+        self._segment_peak = 0.0
+        self._quiet_samples = 0
 
 
 class TranscriptionCallbackProcessor(FrameProcessor):
@@ -2815,15 +3178,22 @@ class ScriberPipeline:
         *,
         after_generation: int,
         timeout_seconds: float,
+        commit_results: _ProviderCommitResults | None = None,
+        settled_before: int = 0,
     ) -> str:
         if self._final_transcription_generation > after_generation:
             return "final"
         self._final_transcription_received.clear()
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(0.0, timeout_seconds)
+        # An answered commit without text produces no final frame, so poll its
+        # counter more often than the final event.
+        poll_seconds = 0.25 if commit_results is None else 0.05
         while True:
             if self._final_transcription_generation > after_generation:
                 return "final"
+            if commit_results is not None and commit_results.settled > settled_before:
+                return "settled"
             if self._terminal_error:
                 return "error"
             if self.task and self.task.has_finished():
@@ -2834,7 +3204,7 @@ class ScriberPipeline:
             try:
                 await asyncio.wait_for(
                     self._final_transcription_received.wait(),
-                    timeout=min(0.25, remaining),
+                    timeout=min(poll_seconds, remaining),
                 )
             except TimeoutError:
                 continue
@@ -2847,6 +3217,8 @@ class ScriberPipeline:
         *,
         after_generation: int,
         final_response_pending: bool,
+        commit_results: _ProviderCommitResults | None = None,
+        settled_before: int = 0,
     ) -> str:
         if not final_response_pending or not self._uses_async_vad_commit_finalization():
             return "not_required"
@@ -2854,9 +3226,15 @@ class ScriberPipeline:
         result = await self._wait_for_new_final_transcription_or_done(
             after_generation=after_generation,
             timeout_seconds=timeout_seconds,
+            commit_results=commit_results,
+            settled_before=settled_before,
         )
         if result == "final":
             logger.debug("Committed live STT final received; continuing immediately")
+        elif result == "settled":
+            # Silence, or speech the provider had already finalized (Deepgram
+            # answers Finalize with an empty result then), is a valid answer.
+            logger.debug("Committed live STT result answered without new text; continuing immediately")
         elif result == "timeout":
             message = (
                 "The live transcription provider did not return its committed "
@@ -2919,6 +3297,13 @@ class ScriberPipeline:
                 max_callback_gap_seconds=max_callback_gap_seconds,
             )
         )
+
+    def _stt_commit_results(self) -> _ProviderCommitResults | None:
+        """Result counter of a realtime service that answers each commit once."""
+        for processor in self._iter_pipeline_processors():
+            if getattr(processor, "reports_commit_results", False):
+                return _provider_commit_results(processor)
+        return None
 
     def _iter_pipeline_processors(self) -> list[Any]:
         pipeline = self.pipeline
@@ -3119,7 +3504,7 @@ class ScriberPipeline:
                 raise RuntimeError("SonioxSTTService not available.")
             settings_cls = getattr(soniox_service_cls, "Settings", None)
             if settings_cls is None:
-                raise RuntimeError("Soniox realtime transcription requires Pipecat 1.5.0.")
+                raise RuntimeError("Soniox realtime transcription requires Pipecat 1.14.0.")
             lang_hint = Language.EN if self.soniox_replay_url is not None else self._execution_pipecat_language()
             rt_model = self.soniox_replay_model or self._execution_model(Config.SONIOX_RT_MODEL)
             settings_candidates: dict[str, Any] = {
@@ -3134,7 +3519,7 @@ class ScriberPipeline:
                     logger.info(f"Applying custom vocabulary: {terms}")
                     settings_candidates["context"] = soniox_context_cls(terms=terms)
             settings = settings_cls(**_filter_supported_kwargs(settings_cls, settings_candidates))
-            logger.info("Creating SonioxSTTService with Pipecat 1.5 settings and Soniox semantic endpoint detection")
+            logger.info("Creating SonioxSTTService with Pipecat settings and Soniox semantic endpoint detection")
             service_kwargs: dict[str, Any] = {
                 "api_key": ("local-replay" if self.soniox_replay_url is not None else soniox_api_key),
                 "sample_rate": (48_000 if self._provider_replay_capture_enabled else Config.SAMPLE_RATE),
@@ -3264,7 +3649,7 @@ class ScriberPipeline:
                 raise ValueError("Google Cloud credentials path is missing.")
             settings_cls = getattr(GoogleSTTService, "Settings", None)
             if settings_cls is None:
-                raise RuntimeError("Google Cloud streaming transcription requires Pipecat 1.5.0.")
+                raise RuntimeError("Google Cloud streaming transcription requires Pipecat 1.14.0.")
             provider_route = realtime_route_for_provider("google")
             if not provider_route:
                 raise ProviderAudioCapabilityError("Google Cloud has no active exact streaming route.")
@@ -3292,7 +3677,10 @@ class ScriberPipeline:
             if selected_language and settings_kwargs.get("languages") != [selected_language]:
                 raise RuntimeError("Google Cloud Pipecat settings cannot bind the frozen language.")
             settings = settings_cls(**settings_kwargs)
-            return GoogleSTTService(
+            request_type = getattr(getattr(module, "cloud_speech", None), "StreamingRecognizeRequest", None)
+            if request_type is None:
+                raise RuntimeError("Google Cloud streaming transcription requires Pipecat 1.14.0.")
+            return _google_finalizing_service_class(GoogleSTTService, request_type)(
                 credentials_path=credentials_path,
                 sample_rate=Config.SAMPLE_RATE,
                 settings=settings,
@@ -3344,11 +3732,11 @@ class ScriberPipeline:
 
             realtime_cls = getattr(module, "ElevenLabsRealtimeSTTService", None)
             if realtime_cls is None:
-                raise RuntimeError("ElevenLabs Live requires Pipecat 1.5.0.")
+                raise RuntimeError("ElevenLabs Live requires Pipecat 1.14.0.")
             commit_strategy = getattr(getattr(module, "CommitStrategy", object), "MANUAL", None)
             settings_cls = getattr(realtime_cls, "Settings", None)
             if settings_cls is None or commit_strategy is None:
-                raise RuntimeError("ElevenLabs Live requires Pipecat 1.5.0 settings support.")
+                raise RuntimeError("ElevenLabs Live requires Pipecat 1.14.0 settings support.")
             bound_model = self._require_realtime_pcm_request_contract(
                 provider="elevenlabs",
                 default_model="scribe_v2_realtime",
@@ -3375,7 +3763,17 @@ class ScriberPipeline:
                 self._execution_selected_language() or "auto-detect",
             )
 
-            return realtime_cls(
+            class ScriberElevenLabsRealtimeSTTService(realtime_cls):
+                # The server answers every commit with one committed_transcript.
+                reports_provider_commit_results = True
+
+                async def _on_committed_transcript(self, data):
+                    try:
+                        await super()._on_committed_transcript(data)
+                    finally:
+                        _provider_commit_results(self).settle()
+
+            return ScriberElevenLabsRealtimeSTTService(
                 **_filter_supported_kwargs(
                     realtime_cls,
                     {
@@ -3397,7 +3795,7 @@ class ScriberPipeline:
                 raise ValueError("Deepgram API Key is missing.")
             settings_cls = getattr(DeepgramSTTService, "Settings", None)
             if settings_cls is None:
-                raise RuntimeError("Deepgram streaming transcription requires Pipecat 1.5.0.")
+                raise RuntimeError("Deepgram streaming transcription requires Pipecat 1.14.0.")
             bound_model = self._require_realtime_pcm_request_contract(
                 provider="deepgram",
                 default_model=Config.DEEPGRAM_MODEL,
@@ -3426,14 +3824,24 @@ class ScriberPipeline:
             pipeline_ref = self
 
             class ScriberDeepgramSTTService(DeepgramSTTService):
-                async def push_error(self, error_msg: str, exception=None, fatal: bool = False):
+                reports_provider_commit_results = True
+
+                async def push_error(self, error_msg: str, exception=None, fatal: bool = False, **kwargs):
                     safe_error = _redact_provider_error_text(error_msg)
                     pipeline_ref._record_terminal_error(f"Deepgram streaming error: {safe_error}")
+                    # Pipecat 1.14 also passes the error category and permanence.
                     await super().push_error(
                         error_msg=error_msg,
                         exception=exception,
                         fatal=fatal,
+                        **kwargs,
                     )
+
+                async def _on_message(self, message):
+                    await super()._on_message(message)
+                    # Deepgram answers each Finalize with one from_finalize result.
+                    if getattr(message, "is_final", False) and getattr(message, "from_finalize", False):
+                        _provider_commit_results(self).settle()
 
             return ScriberDeepgramSTTService(
                 api_key=_get_api_key("deepgram"),
@@ -3466,10 +3874,10 @@ class ScriberPipeline:
             if not _get_api_key("openai"):
                 raise ValueError("OpenAI API Key is missing.")
             if OpenAIRealtimeSTTService is None:
-                raise RuntimeError("OpenAI Realtime STT requires Pipecat 1.5.0.")
+                raise RuntimeError("OpenAI Realtime STT requires Pipecat 1.14.0.")
             settings_cls = getattr(OpenAIRealtimeSTTService, "Settings", None)
             if settings_cls is None:
-                raise RuntimeError("OpenAI Realtime STT requires Pipecat 1.5.0 settings support.")
+                raise RuntimeError("OpenAI Realtime STT requires Pipecat 1.14.0 settings support.")
             bound_model = self._require_realtime_pcm_request_contract(
                 provider="openai",
                 default_model=Config.OPENAI_REALTIME_STT_MODEL,
@@ -3478,7 +3886,24 @@ class ScriberPipeline:
                 model=bound_model,
                 language=self._execution_pipecat_language(),
             )
-            return OpenAIRealtimeSTTService(
+
+            class ScriberOpenAIRealtimeSTTService(OpenAIRealtimeSTTService):
+                # Every commit ends in exactly one completed or failed event.
+                reports_provider_commit_results = True
+
+                async def _handle_transcription_completed(self, evt):
+                    try:
+                        await super()._handle_transcription_completed(evt)
+                    finally:
+                        _provider_commit_results(self).settle()
+
+                async def _handle_transcription_failed(self, evt):
+                    try:
+                        await super()._handle_transcription_failed(evt)
+                    finally:
+                        _provider_commit_results(self).settle()
+
+            return ScriberOpenAIRealtimeSTTService(
                 api_key=_get_api_key("openai"),
                 settings=settings,
                 turn_detection=False,
@@ -3584,15 +4009,22 @@ class ScriberPipeline:
             GladiaSTTService = module.GladiaSTTService
             if not _get_api_key("gladia"):
                 raise ValueError("Gladia API Key is missing.")
-            pipeline_ref = self
 
             class ScriberGladiaSTTService(GladiaSTTService):
                 async def stop(self, frame: EndFrame):
                     await STTService.stop(self, frame)
+                    # After stop_recording Gladia finalizes the remaining audio,
+                    # sends the trailing finals and closes the socket with 1000.
+                    # A final from an earlier utterance proves nothing about the
+                    # last one, so wait for that close; it must end the receive
+                    # loop instead of reconnecting to the finished session.
+                    self._disconnecting = True
+                    receive_task = self._receive_task
                     try:
                         await self._send_stop_recording()
                     except Exception as exc:
-                        logger.debug(f"Gladia stop_recording warning: {exc}")
+                        logger.debug("Gladia stop_recording failed (error_type={})", type(exc).__name__)
+                        receive_task = None
 
                     timeout = env_float(
                         "SCRIBER_GLADIA_STOP_FINAL_TIMEOUT_SECONDS",
@@ -3600,23 +4032,16 @@ class ScriberPipeline:
                         minimum=0.25,
                         maximum=10.0,
                     )
-                    if not pipeline_ref._final_transcription_received.is_set():
-                        try:
-                            await asyncio.wait_for(
-                                pipeline_ref._final_transcription_received.wait(),
-                                timeout=timeout,
-                            )
-                            logger.debug("Gladia final transcription received before websocket cleanup")
-                        except TimeoutError:
-                            logger.debug(
-                                f"Timed out waiting {timeout:g}s for Gladia final transcription before websocket cleanup"
-                            )
+                    if receive_task is not None and not receive_task.done():
+                        _done, pending = await asyncio.wait({receive_task}, timeout=timeout)
+                        if pending:
+                            logger.debug(f"Timed out waiting {timeout:g}s for Gladia to close the finished session")
 
                     await self._disconnect()
 
             settings_cls = getattr(GladiaSTTService, "Settings", None)
             if settings_cls is None:
-                raise RuntimeError("Gladia realtime transcription requires Pipecat 1.5.0.")
+                raise RuntimeError("Gladia realtime transcription requires Pipecat 1.14.0.")
             gladia_settings = settings_cls(
                 **_filter_supported_kwargs(
                     settings_cls,
@@ -3663,7 +4088,7 @@ class ScriberPipeline:
                 raise ValueError("Groq API Key is missing.")
             settings_cls = getattr(GroqSTTService, "Settings", None)
             if settings_cls is None:
-                raise RuntimeError("Groq transcription requires Pipecat 1.5.0.")
+                raise RuntimeError("Groq transcription requires Pipecat 1.14.0.")
             provider_route = batch_route_for_provider("groq")
             if not provider_route:
                 raise ProviderAudioCapabilityError("Groq has no active exact segmented request route.")
@@ -3714,23 +4139,13 @@ class ScriberPipeline:
             if not _get_api_key("speechmatics"):
                 raise ValueError("Speechmatics API Key is missing.")
             settings_cls = getattr(SpeechmaticsSTTService, "Settings", None)
-            if settings_cls is None:
-                raise RuntimeError("Speechmatics realtime transcription requires Pipecat 1.5.0.")
+            turn_detection_cls = getattr(SpeechmaticsSTTService, "TurnDetectionMode", None)
+            if settings_cls is None or turn_detection_cls is None:
+                raise RuntimeError("Speechmatics realtime transcription requires Pipecat 1.14.0.")
             bound_model = self._require_realtime_pcm_request_contract(
                 provider="speechmatics",
-                default_model="enhanced",
+                default_model="linden-1",
             )
-            operating_point_cls = getattr(
-                SpeechmaticsSTTService,
-                "OperatingPoint",
-                getattr(module, "OperatingPoint", None),
-            )
-            if operating_point_cls is None:
-                raise RuntimeError("Speechmatics Pipecat service cannot bind the frozen model.")
-            try:
-                operating_point = operating_point_cls(bound_model)
-            except (TypeError, ValueError) as exc:
-                raise RuntimeError("Speechmatics Pipecat service cannot bind the frozen model.") from exc
             speechmatics_terms = build_keyterms_from_vocab(self._execution_custom_vocab())
             additional_vocab_cls = getattr(
                 SpeechmaticsSTTService,
@@ -3745,25 +4160,31 @@ class ScriberPipeline:
                 else []
             )
             bound_language = self._execution_pipecat_language() or Language.EN
+            diarize = bool(self.enable_speaker_diarization if for_file else False)
             settings_values = {
                 "model": bound_model,
                 "language": bound_language,
                 "additional_vocab": additional_vocab,
-                "operating_point": operating_point,
-                "enable_diarization": (self.enable_speaker_diarization if for_file else False),
-                "speaker_active_format": "[Speaker {speaker_id}]: {text}",
-                "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
+                # Agent STT closes turns itself at pauses. Scriber attaches no local
+                # VAD to native streams, so EXTERNAL turns would never finalize.
+                "turn_detection_mode": turn_detection_cls.VAD,
+                "enable_diarization": diarize,
+                # Pipecat 1.14 formats every final with this template, even
+                # without diarization; plain dictation must stay plain text.
+                "speaker_active_format": ("[Speaker {speaker_id}]: {text}" if diarize else "{text}"),
             }
             settings_kwargs = _filter_supported_kwargs(
                 settings_cls,
                 settings_values,
             )
-            if settings_kwargs.get("model") != bound_model or settings_kwargs.get("operating_point") != operating_point:
+            if settings_kwargs.get("model") != bound_model:
                 raise RuntimeError("Speechmatics Pipecat settings cannot bind the frozen model.")
             if settings_kwargs.get("language") != bound_language:
                 raise RuntimeError("Speechmatics Pipecat settings cannot bind the frozen language.")
             if speechmatics_terms and (settings_kwargs.get("additional_vocab") != additional_vocab):
                 raise RuntimeError("Speechmatics Pipecat settings cannot bind the frozen vocabulary.")
+            if settings_kwargs.get("turn_detection_mode") != turn_detection_cls.VAD:
+                raise RuntimeError("Speechmatics Pipecat settings cannot bind provider turn detection.")
             settings = settings_cls(**settings_kwargs)
             speechmatics_base_url = self._bind_execution_provider_endpoint(
                 speechmatics_realtime_base_url(
@@ -3784,7 +4205,7 @@ class ScriberPipeline:
             )
             if service_kwargs.get("base_url") != speechmatics_base_url:
                 raise RuntimeError("Speechmatics Pipecat service cannot bind the frozen endpoint.")
-            return SpeechmaticsSTTService(**service_kwargs)
+            return _speechmatics_stop_flushing_service_class(SpeechmaticsSTTService)(**service_kwargs)
 
         elif self.service_name == "speechmatics_async":
             from src.cloud_async_stt import SpeechmaticsAsyncProcessor
@@ -3870,7 +4291,6 @@ class ScriberPipeline:
                     # local model. Each full chunk emits a final frame and the
                     # terminal frame flushes the remainder.
                     max_buffer_secs=30,
-                    flush_on_limit=True,
                 )
             return OnnxLocalBufferedSTTService(
                 model_name=Config.ONNX_MODEL,
@@ -4125,6 +4545,11 @@ class ScriberPipeline:
                     enable_rtvi=False,
                     enable_turn_tracking=False,
                     check_dangling_tasks=False,  # suppress false-positive dangling task warnings (e.g., Soniox keepalive)
+                    # Pipecat cancels a worker after 300 s without transcription
+                    # or VAD speech frames. A whole-recording upload emits its
+                    # first final only after stop, so that would discard long
+                    # dictations; the controller owns the recording lifetime.
+                    idle_timeout_secs=None,
                 )
 
                 # Register error handler to catch non-fatal errors (e.g., Soniox websocket timeout)
@@ -4187,28 +4612,124 @@ class ScriberPipeline:
         run_task: asyncio.Task | None,
         file_input: FfmpegAudioFileInput | None,
     ) -> None:
-        if self.task and not self.task.has_finished():
-            try:
-                await asyncio.wait_for(
-                    self.task.cancel(reason="file transcription aborted"),
-                    timeout=5.0,
-                )
-            except Exception as exc:
-                logger.debug(f"File pipeline task cancellation warning: {exc}")
+        try:
+            await asyncio.wait_for(
+                self._cancel_worker_past_end_frame(self.task, reason="file transcription aborted"),
+                timeout=5.0,
+            )
+        except Exception as exc:
+            logger.debug(f"File pipeline task cancellation warning: {exc}")
         if self.runner:
             try:
                 await asyncio.wait_for(self.runner.cancel(), timeout=5.0)
             except Exception as exc:
                 logger.debug(f"File pipeline runner cancellation warning: {exc}")
-        if run_task is not None and not run_task.done():
-            run_task.cancel()
         if run_task is not None:
-            await asyncio.gather(run_task, return_exceptions=True)
+            # Let the runner finish its own shutdown first; cancel it only when
+            # it does not, and never wait for it without a bound.
+            _done, pending = await asyncio.wait({run_task}, timeout=_FILE_PIPELINE_ABORT_TIMEOUT_SECONDS)
+            if pending:
+                run_task.cancel()
+                _done, pending = await asyncio.wait({run_task}, timeout=_FILE_PIPELINE_ABORT_TIMEOUT_SECONDS)
+            if pending:
+                logger.warning("File pipeline runner did not finish after cancellation")
+            else:
+                await asyncio.gather(run_task, return_exceptions=True)
         if file_input is not None:
             try:
                 await asyncio.wait_for(file_input.stop(EndFrame()), timeout=7.0)
             except Exception as exc:
                 logger.debug(f"File input abort cleanup warning: {exc}")
+
+    async def _handle_file_pipeline_error(self, task, frame) -> None:
+        error_msg = str(frame.error) if hasattr(frame, "error") else str(frame)
+        error = getattr(frame, "exception", None)
+        self._last_error_diagnostics.update(exception_diagnostics(error if isinstance(error, Exception) else error_msg))
+        self._record_terminal_error(error_msg)
+        logger.bind(meta=self.last_error_diagnostics()).error("File pipeline processing failed")
+        # The provider has dropped or will drop part of the file. Stop feeding
+        # it rather than returning a transcript with a silent gap.
+        await self._cancel_worker_past_end_frame(task, reason="file provider failed")
+
+    async def _cancel_worker_past_end_frame(self, task: Any, *, reason: str) -> None:
+        """Cancel the worker even while it waits for an EndFrame.
+
+        Pipecat queues a worker cancellation behind the EndFrame it waits for
+        without a bound. A processor that fails on that EndFrame never forwards
+        it, so only a CancelFrame sent into the pipeline itself reaches the sink
+        and lets the worker finish.
+        """
+        if task is None or task.has_finished():
+            return
+        try:
+            await task.cancel(reason=reason)
+        except Exception as exc:
+            logger.debug("Pipeline worker cancel warning: {}", type(exc).__name__)
+        if self.pipeline is not None and not task.has_finished():
+            try:
+                await self.pipeline.queue_frame(CancelFrame(reason=reason))
+            except Exception as exc:
+                logger.debug("Pipeline cancel frame warning: {}", type(exc).__name__)
+
+    async def _commit_file_tail_and_wait(
+        self,
+        file_input: Any,
+        segmenter: _FileCommitSegmenter,
+        stt_service: Any,
+        run_task: asyncio.Task,
+    ) -> None:
+        """Commit the file's last segment and wait for every committed result.
+
+        EndFrame disconnects these services at once, so results still on the
+        way, including the one for the tail, would be dropped.
+        """
+        flush = _FileCommitFlushFrame()
+        await file_input.push_frame(flush, FrameDirection.DOWNSTREAM)
+        flushed = asyncio.ensure_future(flush.wait())
+        try:
+            await asyncio.wait(
+                {flushed, run_task},
+                timeout=_FILE_COMMIT_FLUSH_TIMEOUT_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            flushed.cancel()
+            await asyncio.gather(flushed, return_exceptions=True)
+        if run_task.done():
+            return
+        if not flush.acknowledged:
+            raise RuntimeError("File transcription did not confirm that its last audio segment was committed.")
+        if not getattr(stt_service, "reports_provider_commit_results", False):
+            return
+
+        results = _provider_commit_results(stt_service)
+        settled = asyncio.ensure_future(
+            results.wait_for(segmenter.commits, idle_timeout=_FILE_COMMIT_RESULT_IDLE_TIMEOUT_SECONDS)
+        )
+        try:
+            await asyncio.wait({settled, run_task}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            if not settled.done():
+                settled.cancel()
+            await asyncio.gather(settled, return_exceptions=True)
+        if not settled.cancelled() and settled.result() is False:
+            raise RuntimeError(
+                "The transcription provider did not return every committed file segment "
+                f"({results.settled} of {segmenter.commits} results received)."
+            )
+
+    async def _wait_for_file_input_or_pipeline_end(
+        self,
+        file_input: FfmpegAudioFileInput,
+        run_task: asyncio.Task,
+    ) -> None:
+        feed_done = asyncio.ensure_future(file_input.done.wait())
+        try:
+            await asyncio.wait({feed_done, run_task}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            if not feed_done.done():
+                feed_done.cancel()
+            await asyncio.gather(feed_done, return_exceptions=True)
 
     async def transcribe_file(self, file_path: str) -> None:
         self._provider_request_started = False
@@ -4216,6 +4737,8 @@ class ScriberPipeline:
         self._provider_ingress_drain_processor = None
         if self.is_active:
             return
+        self._terminal_error = None
+        self._last_error_diagnostics = {}
         logger.info("Transcribing audio file (provider={})", self.service_name)
         self._start_done.clear()
         file_input: FfmpegAudioFileInput | None = None
@@ -4240,10 +4763,22 @@ class ScriberPipeline:
                     if self.on_transcription
                     else None
                 )
-                steps = [file_input, stt_service]
+                periodic_commits = self.service_name in _FILE_COMMIT_PERIODIC_SERVICES or isinstance(
+                    stt_service, SegmentedSTTService
+                )
+                commit_segmenter = (
+                    _FileCommitSegmenter(periodic=periodic_commits)
+                    if periodic_commits or self.service_name in _FILE_COMMIT_FINALIZED_SERVICES
+                    else None
+                )
+                steps = [file_input]
+                if commit_segmenter is not None:
+                    steps.append(commit_segmenter)
+                steps.append(stt_service)
                 if self._requires_provider_ingress_audio_drain():
                     self._provider_ingress_drain_processor = _ProviderIngressDrainProcessor()
                     steps.append(self._provider_ingress_drain_processor)
+                steps.append(_FileProviderErrorProcessor())
                 if transcript_cb:
                     steps.append(transcript_cb)
 
@@ -4254,7 +4789,16 @@ class ScriberPipeline:
                     enable_rtvi=False,
                     enable_turn_tracking=False,
                     check_dangling_tasks=False,
+                    # A file with a long silent or music passage produces no
+                    # transcription frames; Pipecat would cancel it as idle and
+                    # the truncated transcript would look complete.
+                    idle_timeout_secs=None,
                 )
+
+                @self.task.event_handler("on_pipeline_error")
+                async def handle_file_pipeline_error(task, frame):
+                    await self._handle_file_pipeline_error(task, frame)
+
                 self.runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
                 await self.runner.add_workers(self.task)
                 self.is_active = True
@@ -4270,15 +4814,30 @@ class ScriberPipeline:
 
                 # Wait until the input transport has finished feeding (and its internal audio queue has drained),
                 # then end the pipeline gracefully so providers can flush final transcripts.
-                await file_input.done.wait()
+                await self._wait_for_file_input_or_pipeline_end(file_input, run_task)
+                if commit_segmenter is not None and not run_task.done():
+                    await self._commit_file_tail_and_wait(file_input, commit_segmenter, stt_service, run_task)
+                if run_task.done():
+                    # A provider failure cancelled the pipeline mid-file. The
+                    # aborted-pipeline cleanup below stops the decoder.
+                    await run_task
+                    raise RuntimeError(
+                        self._terminal_error or "File transcription ended before the whole file was processed."
+                    )
                 await self._await_provider_ingress_audio_drain(file_input)
                 await self.task.stop_when_done()
 
+                # Not awaiting the task itself keeps a cancellation of this call
+                # out of the runner, whose shutdown would then wait for a worker
+                # stuck on its EndFrame; the cleanup below ends that worker.
+                await asyncio.wait({run_task})
                 await run_task
                 pipeline_finished = True
 
                 if file_input.error:
                     raise RuntimeError(file_input.error)
+                if self._terminal_error:
+                    raise RuntimeError(self._terminal_error)
                 self._provider_request_state = "result_received"
 
         except (ValueError, ImportError) as e:
@@ -5305,16 +5864,21 @@ class ScriberPipeline:
 
         requires_pre_endframe_finalization = self._requires_pre_endframe_stt_finalization()
         provider_ingress_audio_input = self.audio_input
+        # Counted right before each commit, so only its own answer ends the wait.
+        commit_results = self._stt_commit_results()
         if requires_pre_endframe_finalization:
             final_generation_before_commit = self._final_transcription_generation
             await self._stop_audio_capture_for_segmented_finalization()
             await self._abort_if_capture_stop_failed()
             await self._await_provider_ingress_audio_drain(provider_ingress_audio_input)
             await self._notify_capture_stopped()
+            settled_before_commit = commit_results.settled if commit_results is not None else 0
             boundary_flushed = await self._flush_segmented_stt_buffers()
             await self._await_async_vad_commit_final(
                 after_generation=final_generation_before_commit,
                 final_response_pending=boundary_flushed,
+                commit_results=commit_results,
+                settled_before=settled_before_commit,
             )
             await self._cleanup_audio_input()
         else:
@@ -5328,10 +5892,13 @@ class ScriberPipeline:
             await self._abort_if_capture_stop_failed()
             await self._await_provider_ingress_audio_drain(provider_ingress_audio_input)
             await self._notify_capture_stopped()
+            settled_before_commit = commit_results.settled if commit_results is not None else 0
             boundary_flushed = await self._flush_live_vad_finalization_turn()
             await self._await_async_vad_commit_final(
                 after_generation=final_generation_before_commit,
                 final_response_pending=(final_response_pending or boundary_flushed),
+                commit_results=commit_results,
+                settled_before=settled_before_commit,
             )
 
         # For Soniox real-time: send stop_recording and wait for final tokens BEFORE pipeline shutdown.
@@ -5488,11 +6055,7 @@ class ScriberPipeline:
         except TimeoutError:
             logger.warning(f"Timeout while stopping pipeline (>{wait_timeout}s); forcing cancel")
             self._record_terminal_error(f"Transcription did not finish within {wait_timeout:g} seconds.")
-            if self.task and not self.task.has_finished():
-                try:
-                    await self.task.cancel(reason="stop timeout")
-                except Exception as e:
-                    logger.debug(f"Task cancel error: {e}")
+            await self._cancel_worker_past_end_frame(self.task, reason="stop timeout")
             if self.runner:
                 try:
                     await self.runner.cancel()
@@ -5513,7 +6076,7 @@ class ScriberPipeline:
         # Flush any buffered transcription as a last resort.
         try:
             if hasattr(self, "text_injector") and self.text_injector:
-                self.text_injector.flush()
+                await self.text_injector.flush_async()
         except Exception as e:
             logger.debug(f"TextInjector flush warning: {e}")
 

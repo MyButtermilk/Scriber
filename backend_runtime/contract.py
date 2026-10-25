@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 RUNTIME_CONTRACT_NAME = "scriber-frozen-python-runtime"
-RUNTIME_CONTRACT_REVISION = 8
+RUNTIME_CONTRACT_REVISION = 9
 APPLICATION_LAYER_SCHEMA_VERSION = 1
 RUNTIME_LAYER_SCHEMA_VERSION = 1
 APPLICATION_ENTRY_POINT = "src.backend_worker:main"
@@ -36,6 +36,7 @@ RUNTIME_REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
     ("keyboard", "compatibility hotkey runtime"),
     ("lxml.etree", "native XML parser qualification runtime"),
     ("loguru", "structured backend logging runtime"),
+    ("loudness", "Pipecat ITU-R BS.1770 loudness runtime"),
     ("numpy", "audio and model array runtime"),
     ("onnx_asr", "local ONNX speech-to-text runtime"),
     ("onnxruntime", "Silero and local ONNX native runtime"),
@@ -52,6 +53,7 @@ RUNTIME_REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
     ("pipecat.transports.base_input", "Pipecat audio input transport runtime"),
     ("pipecat.transports.base_transport", "Pipecat audio transport runtime"),
     ("pipecat.utils.time", "Pipecat timestamp runtime"),
+    ("pipecat.utils.types", "Pipecat settings sentinel runtime"),
     ("pipecat.audio.vad.vad_analyzer", "Pipecat VAD analyzer runtime"),
     ("pipecat.audio.vad.silero", "Silero VAD runtime"),
     (
@@ -74,8 +76,8 @@ RUNTIME_REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
     ("pipecat.services.elevenlabs.stt", "ElevenLabs STT provider"),
     ("pyautogui", "compatibility text injection runtime"),
     ("pycaw.pycaw", "Windows audio session runtime"),
-    ("pyloudnorm", "local loudness compatibility runtime"),
     ("reportlab.platypus", "PDF meeting export runtime"),
+    ("sentencex", "Pipecat sentence segmentation runtime"),
     ("sounddevice", "audio device enumeration runtime"),
     ("sqlite3", "CPython SQLite persistence runtime"),
     ("ssl", "CPython OpenSSL transport runtime"),
@@ -87,7 +89,7 @@ RUNTIME_REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
 )
 
 REQUIRED_PACKAGE_VERSIONS: tuple[tuple[str, str], ...] = (
-    ("pipecat-ai", "1.5.0"),
+    ("pipecat-ai", "1.14.0"),
     ("yt-dlp", "2026.8.19"),
     ("yt-dlp-ejs", "0.8.0"),
 )
@@ -112,7 +114,6 @@ APPLICATION_EXTERNAL_IMPORT_ROOTS = frozenset(
         "pipecat",
         "pyautogui",
         "pycaw",
-        "pyloudnorm",
         "reportlab",
         "sounddevice",
         "tqdm",

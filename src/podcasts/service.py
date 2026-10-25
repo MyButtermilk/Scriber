@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import time
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from loguru import logger
 
 from src.core.logging_setup import emit_event
+from src.core.ws_contracts import podcast_episode_ready_event, podcast_episodes_discovered_event
 from src.podcasts.feeds import MAX_AUDIO_BYTES, PodcastError, PodcastHttp, public_url
 from src.podcasts.processor import PodcastProcessor
 from src.podcasts.store import PodcastStore
@@ -33,8 +35,10 @@ class PodcastService:
         transport: PodcastHttp | None = None,
         startup_delay: float = 15,
         refresh_seconds: float = REFRESH_SECONDS,
+        notify: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._root = root
+        self._notify = notify
         self._audio = root / "audio"
         self._store = PodcastStore(root / "subscriptions.db")
         self._processor = processor
@@ -83,8 +87,12 @@ class PodcastService:
 
     async def library(self) -> dict[str, Any]:
         await self._ensure_ready()
+        subscriptions = await asyncio.to_thread(self._store.subscriptions)
         return {
-            "subscriptions": await asyncio.to_thread(self._store.subscriptions),
+            "subscriptions": subscriptions,
+            "newCount": sum(row["new_count"] for row in subscriptions),
+            "unreadCount": sum(row["unread_count"] for row in subscriptions),
+            "attentionCount": sum(row["attention_count"] for row in subscriptions),
             "activeCount": await asyncio.to_thread(self._store.active_count),
             "refreshIntervalMinutes": int(self._refresh_seconds / 60),
             "cacheLimitBytes": MAX_CACHE_BYTES,
@@ -142,9 +150,27 @@ class PodcastService:
 
             return await to_thread_cancellation_barrier(remove_subscription)
 
-    async def episodes(self, identifier: str, *, offset: int = 0) -> dict[str, Any]:
+    async def episodes(self, identifier: str, *, offset: int = 0, unread_only: bool = False) -> dict[str, Any]:
         await self._ensure_ready()
-        return await asyncio.to_thread(self._store.episodes, identifier, offset=offset)
+        return await asyncio.to_thread(self._store.episodes, identifier, offset=offset, unread_only=unread_only)
+
+    async def mark_seen(self, identifiers: list[str]) -> int:
+        await self._ensure_ready()
+        return await to_thread_cancellation_barrier(self._store.mark_seen, identifiers)
+
+    async def set_episode_progress(
+        self, identifier: str, *, read: bool | None = None, played: bool | None = None
+    ) -> bool:
+        await self._ensure_ready()
+        return await to_thread_cancellation_barrier(self._store.set_progress, identifier, read=read, played=played)
+
+    async def mark_subscription_read(self, identifier: str) -> int:
+        await self._ensure_ready()
+        return await to_thread_cancellation_barrier(self._store.mark_subscription_read, identifier)
+
+    async def mark_transcript_read(self, transcript_id: str) -> bool:
+        await self._ensure_ready()
+        return await to_thread_cancellation_barrier(self._store.mark_transcript_read, transcript_id)
 
     async def episode_for_transcript(self, transcript_id: str) -> dict[str, Any] | None:
         await self._ensure_ready()
@@ -249,20 +275,40 @@ class PodcastService:
             },
         )
 
+    async def _publish(self, payload: dict[str, Any]) -> None:
+        # Notifications are a convenience; the library state is already durable.
+        if self._notify is None:
+            return
+        try:
+            await self._notify(payload)
+        except Exception as exc:
+            logger.warning("Podcast notification failed (error_type={})", type(exc).__name__)
+
     async def _refresh(self) -> None:
+        discovered: list[dict[str, Any]] = []
+        queued_total = 0
         for subscription in await asyncio.to_thread(self._store.subscriptions):
             started = time.monotonic()
             try:
                 feed = await self._http.feed(subscription["feed_url"])
                 async with self._subscription_lock:
-                    queued = await to_thread_cancellation_barrier(self._store.refresh, subscription["id"], feed)
+                    result = await to_thread_cancellation_barrier(self._store.refresh, subscription["id"], feed)
                 self._wake.set()
+                if result.discovered:
+                    discovered.append(
+                        {"subscriptionId": subscription["id"], "title": feed.title, "count": result.discovered}
+                    )
+                    queued_total += result.queued
                 self._event(
                     "feed_refreshed",
                     outcome="success",
                     subscription_id=subscription["id"],
                     duration_ms=(time.monotonic() - started) * 1000,
-                    meta={"episodeCount": len(feed.episodes), "queuedCount": queued},
+                    meta={
+                        "episodeCount": len(feed.episodes),
+                        "queuedCount": result.queued,
+                        "discoveredCount": result.discovered,
+                    },
                 )
             except Exception as exc:
                 message = (
@@ -278,6 +324,9 @@ class PodcastService:
                     error=exc,
                     duration_ms=(time.monotonic() - started) * 1000,
                 )
+        if discovered:
+            # One notice per refresh pass, however many podcasts published.
+            await self._publish(podcast_episodes_discovered_event(uuid4().hex, discovered, queued_count=queued_total))
 
     def _cache_size(self) -> int:
         if not self._audio.exists():
@@ -285,6 +334,17 @@ class PodcastService:
         return sum(path.stat().st_size for path in self._audio.iterdir() if path.is_file() and not path.is_symlink())
 
     async def _process(self, episode: dict[str, Any]) -> None:
+        try:
+            notification = await self._process_episode(episode)
+        finally:
+            # The source is no longer in use once processing has finished.
+            # Notifications must not retain media ownership or later clear a
+            # successor's claim when the completed download is retried.
+            self._active_episodes.discard(episode["id"])
+        if notification is not None:
+            await self._publish(notification)
+
+    async def _process_episode(self, episode: dict[str, Any]) -> dict[str, Any] | None:
         identifier = episode["id"]
         transcript_id = episode["transcript_id"] or uuid5(NAMESPACE_URL, f"scriber:podcast:{identifier}").hex
         started = time.monotonic()
@@ -360,7 +420,11 @@ class PodcastService:
             )
             if not download_only:
                 await self._processor.process(target, episode["title"], transcript_id, plan, stage)
-            await to_thread_cancellation_barrier(self._store.update, identifier, status="completed")
+            completed = None if download_only else await asyncio.to_thread(self._store.episode, identifier)
+            # Removal shares this lock and cannot observe a terminal row until
+            # the worker has resumed and can release its in-memory ownership.
+            async with self._subscription_lock:
+                await to_thread_cancellation_barrier(self._store.update, identifier, status="completed")
             self._event(
                 "episode_completed",
                 outcome="success",
@@ -396,6 +460,17 @@ class PodcastService:
                 error=exc,
                 meta={"from_status": current_stage, "to_status": "failed"},
             )
+            return None
+        if completed is not None:
+            return podcast_episode_ready_event(
+                uuid4().hex,
+                episode_id=identifier,
+                subscription_id=completed["subscription_id"],
+                transcript_id=transcript_id,
+                title=completed["title"],
+                podcast_title=completed["podcast_title"],
+            )
+        return None
 
     async def _run(self) -> None:
         if self._startup_delay:
@@ -409,10 +484,7 @@ class PodcastService:
                     if episode:
                         self._active_episodes.add(episode["id"])
                 if episode is not None:
-                    try:
-                        await self._process(episode)
-                    finally:
-                        self._active_episodes.discard(episode["id"])
+                    await self._process(episode)
                     continue
                 await self._wake.wait()
             except asyncio.CancelledError:

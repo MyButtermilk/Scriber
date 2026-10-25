@@ -131,7 +131,7 @@ def test_batch_and_realtime_formats_are_route_scoped_and_separate():
         ("openai", "realtime_transcription", "gpt-realtime-whisper"),
         ("google", "cloud_streaming_v2", "latest_long"),
         ("elevenlabs", "scribe_v2_realtime", "scribe_v2_realtime"),
-        ("speechmatics", "realtime_v2", "enhanced"),
+        ("speechmatics", "agent_v2", "linden-1"),
         ("gemini_realtime", "live_transcription", "gemini-3.5-transcribe-live"),
     ),
 )

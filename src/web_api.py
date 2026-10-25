@@ -533,6 +533,11 @@ _AUDIO_ENGINE_ENV = "SCRIBER_AUDIO_ENGINE"
 _RUST_AUDIO_PROBE_ENV = "SCRIBER_RUST_AUDIO_PROBE"
 _LIVE_MIC_ASYNC_STOP_TIMEOUT_ENV = "SCRIBER_LIVE_MIC_ASYNC_STOP_TIMEOUT_SEC"
 _LIVE_MIC_SILENT_STOP_TIMEOUT_ENV = "SCRIBER_LIVE_MIC_SILENT_STOP_TIMEOUT_SEC"
+# Realtime streams finalize only their last utterance after stop. Every other
+# async-finalization route uploads the whole recording after stop, so its stop
+# budget keeps growing with the recording (provider requests allow 900 s).
+_LIVE_MIC_STREAMING_ASYNC_STOP_SERVICES = frozenset({"elevenlabs", "openai"})
+_LIVE_MIC_ASYNC_STOP_TIMEOUT_MAX_SECONDS = 600.0
 _LIVE_MIC_SILENCE_RMS_THRESHOLD_ENV = "SCRIBER_LIVE_MIC_SILENCE_RMS_THRESHOLD"
 _LIVE_MIC_TOGGLE_START_GRACE_ENV = "SCRIBER_LIVE_MIC_TOGGLE_START_GRACE_SEC"
 _LIVE_MIC_COLD_START_PREBUFFER_MS_ENV = "SCRIBER_LIVE_MIC_COLD_START_PREBUFFER_MS"
@@ -550,7 +555,7 @@ _PRIVATE_NETWORK_ACCESS_REQUEST_HEADER = "Access-Control-Request-Private-Network
 _PRIVATE_NETWORK_ACCESS_ALLOW_HEADER = "Access-Control-Allow-Private-Network"
 _RUST_AUDIO_PROTOTYPE_AVAILABLE = False
 _AUDIO_DIAGNOSTIC_IMPORTS = (
-    "pyloudnorm",
+    "loudness",
     "onnxruntime",
     "pipecat.frames.frames",
     "pipecat.audio.vad.vad_analyzer",
@@ -1897,13 +1902,14 @@ class TranscriptRecord:
         self.duration = _format_duration(elapsed)
         self.updated_at = datetime.now().isoformat()
 
-    def append_final_text(self, text: str) -> None:
+    def append_final_text(self, text: str) -> bool:
+        """Append one final segment; return whether it became transcript text."""
         cleaned = (text or "").strip()
         if not cleaned:
-            return
+            return False
         # Avoid repeats from some providers.
         if self._last_segment == cleaned:
-            return
+            return False
         if not self.content and not self._pending_content_segments:
             self.content = cleaned
         else:
@@ -1924,6 +1930,7 @@ class TranscriptRecord:
                 has_more=self._preview_has_more,
             )
         self.updated_at = datetime.now().isoformat()
+        return True
 
     def replace_content(self, text: str) -> None:
         self.content = ""
@@ -9363,14 +9370,17 @@ class ScriberWebController:
         if session_id is not None and session_id != self._session_id and finalizing_record is None:
             return
         logger.debug(f"Transcription received: final={is_final}, len={len(text) if text else 0}")
+        broadcast_text = text
         if is_final and text:
             self._mark_hot_path(session_id or self._session_id, "first_final_token")
             self._mark_hot_path(session_id or self._session_id, "provider_final_received")
             self._mark_hot_path(session_id or self._session_id, "transcript_parsed")
             with self._current_lock:
                 record = finalizing_record or self._current
-                if record and (session_id is None or record.id == session_id):
-                    record.append_final_text(text)
+                # The record and the injector drop a repeated final. An empty
+                # final still clears the live interim text.
+                if record and (session_id is None or record.id == session_id) and not record.append_final_text(text):
+                    broadcast_text = ""
             self._emit_workflow_event(
                 message="Final transcript chunk received",
                 event="pipeline.transcript.final",
@@ -9385,7 +9395,7 @@ class ScriberWebController:
             )
         if session_id is None:
             session_id = self._session_id
-        payload = transcript_event(text, bool(is_final), session_id=session_id)
+        payload = transcript_event(broadcast_text, bool(is_final), session_id=session_id)
         try:
             self._loop.call_soon_threadsafe(
                 self._queue_transcript_broadcast,
@@ -9683,7 +9693,7 @@ class ScriberWebController:
         if not cleaned:
             return False
 
-        from src.injector import inject_text_once
+        from src.injector import inject_text_once_async
 
         def on_text_injected(_text: str) -> None:
             if provider_replay_execution is not None:
@@ -9720,7 +9730,7 @@ class ScriberWebController:
             elif provider_replay_execution is not None and marker == "target_changed_after_paste":
                 provider_replay_execution.fail("target_mismatch")
 
-        return inject_text_once(
+        return await inject_text_once_async(
             f"{cleaned} ",
             on_injected=on_text_injected,
             on_injection_marker=on_injection_marker,
@@ -13333,7 +13343,40 @@ class ScriberWebController:
         release_audio_claim: bool = True,
         failure_message: str | None = None,
     ) -> bool:
-        """Emergency stop for connection errors; the session is retained as failed."""
+        """Keep native cleanup and failed speech alive when a waiter is cancelled."""
+        cleanup = self._emergency_stop_pipeline_owned(
+            session_id=session_id,
+            release_audio_claim=release_audio_claim,
+            failure_message=failure_message,
+        )
+        finalizer = self._live_mic_finalizer_supervisor.spawn(cleanup, name="live_mic_emergency_stop")
+        if finalizer is not None:
+            self._live_mic_finalizer_tasks.add(finalizer)
+            finalizer.add_done_callback(self._live_mic_finalizer_tasks.discard)
+        else:
+            # Admission loss can request cleanup after shutdown has sealed the
+            # supervisor. Its existing owner must join that cleanup inline.
+            result, pending_cancel = await await_with_delayed_cancellation(
+                self._emergency_stop_pipeline_owned(
+                    session_id=session_id,
+                    release_audio_claim=release_audio_claim,
+                    failure_message=failure_message,
+                )
+            )
+        if finalizer is not None:
+            result, pending_cancel = await await_with_delayed_cancellation(finalizer)
+        if pending_cancel is not None:
+            raise pending_cancel
+        return result
+
+    async def _emergency_stop_pipeline_owned(
+        self,
+        *,
+        session_id: str | None,
+        release_audio_claim: bool,
+        failure_message: str | None,
+    ) -> bool:
+        """Stop capture promptly; retain ordered output until its runner is done."""
         if self._pending_live_mic_native_cleanup is not None:
             return await self._retry_live_mic_native_cleanup(
                 session_id=session_id, release_audio_claim=release_audio_claim
@@ -13359,6 +13402,37 @@ class ScriberWebController:
         owns_stop = False
         pipeline_stop_completed = True
         native_audio_stop_confirmation: bool | None = None
+        output_cleanup_ready = asyncio.Event()
+        output_finalizer: asyncio.Future[None] | None = None
+        output_session_id: str | None = None
+        output_predecessor: asyncio.Future[None] | None = None
+
+        async def finish_output() -> None:
+            try:
+                await output_cleanup_ready.wait()
+                if pipeline_task is not None:
+                    await asyncio.gather(pipeline_task, return_exceptions=True)
+                injector = getattr(pipeline, "text_injector", None)
+                if injector is not None:
+                    await injector.flush_async()
+                if output_predecessor is not None and failed_record is not None:
+                    # A successor's injector stays disabled for its whole
+                    # capture when earlier output was pending at admission.
+                    # Preserve its recognized speech in that same order even
+                    # after a provider failure, without polishing failed text.
+                    await asyncio.shield(output_predecessor)
+                    await self._inject_live_transcript_text(
+                        failed_record.content_text(),
+                        record=failed_record,
+                        session_id=output_session_id,
+                        provider=provider_used,
+                        post_processed=False,
+                    )
+            finally:
+                task = asyncio.current_task()
+                if output_session_id is not None and task is not None:
+                    self._complete_live_mic_finalizer(task, session_id=output_session_id)
+
         try:
             async with self._listening_lock:
                 if session_id is not None and session_id != self._session_id:
@@ -13367,6 +13441,12 @@ class ScriberWebController:
                 # references or lower the busy gate while it is running.
                 if getattr(self, "_live_mic_stop_owner", None) is not None:
                     logger.debug("Emergency pipeline stop ignored because a serialized stop is already in progress")
+                    return False
+
+                # Capture release lowers the normal stop gate before provider
+                # finalization ends. That finalizer still owns this session's
+                # transcript and insertion future; never replace either here.
+                if self._session_id in self._live_mic_finalization_done:
                     return False
 
                 self._live_mic_stop_owner = stop_owner
@@ -13387,6 +13467,20 @@ class ScriberWebController:
                 pipeline = self._pipeline
                 pipeline_task = self._pipeline_task
                 provider_used = self._active_provider
+                output_session_id = self._session_id
+                if output_session_id is not None:
+                    output_predecessor = self._live_mic_injection_predecessors.get(output_session_id)
+                    # Publish the output barrier before releasing native capture.
+                    # A slow old clipboard drain must precede a new recording's
+                    # text even after the emergency stop's bounded runner join.
+                    self._live_mic_insertion_done[output_session_id] = self._loop.create_future()
+                    self._live_mic_finalization_done[output_session_id] = self._loop.create_future()
+                    output_finalizer = self._live_mic_finalizer_supervisor.spawn(
+                        finish_output(), name="live_mic_emergency_output"
+                    )
+                    if output_finalizer is not None:
+                        self._live_mic_finalizer_tasks.add(output_finalizer)
+                        output_finalizer.add_done_callback(self._live_mic_finalizer_tasks.discard)
                 self._is_listening = False
                 self._pipeline = None
                 self._pipeline_task = None
@@ -13397,7 +13491,6 @@ class ScriberWebController:
                 self._set_recording_state(RecordingState.IDLE, context="emergency_stop")
                 self._clear_hot_path_tracer(session_id)
                 if session_id is not None:
-                    self._live_mic_injection_predecessors.pop(session_id, None)
                     self._post_processing_session_ids.discard(session_id)
 
             # Stop the previous pipeline instance outside the lock.
@@ -13409,7 +13502,7 @@ class ScriberWebController:
                 except TimeoutError:
                     logger.warning("Emergency stop timeout - forcing cleanup")
                 except Exception as e:
-                    logger.debug(f"Emergency stop warning: {e}")
+                    logger.debug("Emergency stop warning: {}", type(e).__name__)
 
             # Cancel previous pipeline task if still running.
             if pipeline_task and not pipeline_task.done():
@@ -13418,7 +13511,7 @@ class ScriberWebController:
                     await asyncio.wait_for(asyncio.shield(pipeline_task), timeout=1.0)
         except Exception as e:
             pipeline_stop_completed = False
-            logger.error(f"Emergency stop error: {e}")
+            logger.error("Emergency stop error: {}", type(e).__name__)
         finally:
             if owns_stop:
                 native_audio_stop_confirmation = _pipeline_native_audio_stop_confirmation(
@@ -13427,48 +13520,59 @@ class ScriberWebController:
                 )
                 if audio_claim is not None and audio_claim.owner_kind == "live_mic":
                     self._pending_live_mic_native_cleanup = (audio_claim.owner_id, pipeline)
-                # Release only the claim captured by this exact session. A
-                # stale cleanup must never release a later recording's claim.
                 try:
-                    if release_audio_claim and audio_claim is not None and native_audio_stop_confirmation is True:
-                        await _release_persistent_audio(self, audio_claim)
-                    elif release_audio_claim and audio_claim is not None:
-                        logger.error(
-                            "Persistent native-audio admission retained after unconfirmed native emergency stop"
-                        )
-                finally:
-                    resume_idle_prewarm = False
-                    async with self._listening_lock:
-                        if getattr(self, "_live_mic_stop_owner", None) is stop_owner:
-                            self._live_mic_stop_owner = None
-                            self._is_stopping = False
-                            resume_idle_prewarm = True
-                            self._schedule_state_snapshot_broadcast()
+                    # Release only the claim captured by this exact session. A
+                    # stale cleanup must never release a later recording's claim.
+                    try:
+                        if release_audio_claim and audio_claim is not None and native_audio_stop_confirmation is True:
+                            await _release_persistent_audio(self, audio_claim)
+                        elif release_audio_claim and audio_claim is not None:
+                            logger.error(
+                                "Persistent native-audio admission retained after unconfirmed native emergency stop"
+                            )
+                    finally:
+                        resume_idle_prewarm = False
+                        async with self._listening_lock:
+                            if getattr(self, "_live_mic_stop_owner", None) is stop_owner:
+                                self._live_mic_stop_owner = None
+                                self._is_stopping = False
+                                resume_idle_prewarm = True
+                                self._schedule_state_snapshot_broadcast()
 
-                    if resume_idle_prewarm and native_audio_stop_confirmation is True:
-                        # Schedule the replacement idle capture only after
-                        # releasing the serialized stop gate. The scheduling
-                        # helper treats an active stop as an active capture and
-                        # deliberately pauses prewarm. Calling it before this
-                        # state transition therefore stopped the overlap-first
-                        # prewarm that pipeline cleanup had just made ready,
-                        # leaving the next hotkey on a cold WASAPI route and
-                        # prone to a first-live-frame timeout.
-                        self._resume_idle_mic_prewarm_after_capture()
-        if failed_record is not None:
-            if failure_message is None:
-                failure_message = self._provider_user_error(
-                    RuntimeError("Live microphone session stopped unexpectedly."),
-                    provider=provider_used,
-                ).message
-            try:
-                await self._persist_failed_live_mic_record(
-                    failed_record, step=failure_message, reason="pipeline_failed"
-                )
-            except Exception as exc:
-                # Persistence must not turn a confirmed native stop into a
-                # retained audio lease for the loss handler.
-                logger.warning("Failed Live Mic record persistence after emergency stop: {}", type(exc).__name__)
+                        if resume_idle_prewarm and native_audio_stop_confirmation is True:
+                            # Schedule the replacement idle capture only after
+                            # releasing the serialized stop gate. The scheduling
+                            # helper treats an active stop as an active capture and
+                            # deliberately pauses prewarm. Calling it before this
+                            # state transition therefore stopped the overlap-first
+                            # prewarm that pipeline cleanup had just made ready,
+                            # leaving the next hotkey on a cold WASAPI route and
+                            # prone to a first-live-frame timeout.
+                            self._resume_idle_mic_prewarm_after_capture()
+                finally:
+                    try:
+                        if failed_record is not None:
+                            if failure_message is None:
+                                failure_message = self._provider_user_error(
+                                    RuntimeError("Live microphone session stopped unexpectedly."),
+                                    provider=provider_used,
+                                ).message
+                            try:
+                                await self._persist_failed_live_mic_record(
+                                    failed_record, step=failure_message, reason="pipeline_failed"
+                                )
+                            except Exception as exc:
+                                # Persistence must not turn a confirmed native stop into a
+                                # retained audio lease for the loss handler.
+                                logger.warning(
+                                    "Failed Live Mic record persistence after emergency stop: {}", type(exc).__name__
+                                )
+                    finally:
+                        output_cleanup_ready.set()
+                        if output_session_id is not None and output_finalizer is None:
+                            # A sealed shutdown supervisor cannot take new work;
+                            # this admitted cleanup owner must finish it itself.
+                            await finish_output()
         return bool(owns_stop and native_audio_stop_confirmation is True)
 
     def _live_mic_stop_timeout_seconds(
@@ -13477,21 +13581,31 @@ class ScriberWebController:
         current: TranscriptRecord | None,
         async_finalization: bool,
         quiet_recording: bool,
+        service_name: str = "",
     ) -> float | None:
+        elapsed = 0.0
+        if current is not None and current._started_at_monotonic is not None:
+            elapsed = max(0.0, time.monotonic() - current._started_at_monotonic)
+        if service_name == "onnx_local":
+            # Local inference of the buffered recording, plus a first model
+            # load, runs after stop; a fixed 30 seconds failed long dictations.
+            return min(_LIVE_MIC_ASYNC_STOP_TIMEOUT_MAX_SECONDS, max(30.0, 8.0 + elapsed * 0.35))
         if not async_finalization:
             return None
         if quiet_recording:
             return env_float(_LIVE_MIC_SILENT_STOP_TIMEOUT_ENV, 4.0, minimum=1.0, maximum=30.0)
 
-        elapsed = 0.0
-        if current is not None and current._started_at_monotonic is not None:
-            elapsed = max(0.0, time.monotonic() - current._started_at_monotonic)
-        dynamic_default = min(90.0, max(12.0, 8.0 + elapsed * 0.35))
+        ceiling = (
+            90.0
+            if service_name in _LIVE_MIC_STREAMING_ASYNC_STOP_SERVICES
+            else _LIVE_MIC_ASYNC_STOP_TIMEOUT_MAX_SECONDS
+        )
+        dynamic_default = min(ceiling, max(12.0, 8.0 + elapsed * 0.35))
         return env_float(
             _LIVE_MIC_ASYNC_STOP_TIMEOUT_ENV,
             dynamic_default,
             minimum=5.0,
-            maximum=180.0,
+            maximum=_LIVE_MIC_ASYNC_STOP_TIMEOUT_MAX_SECONDS,
         )
 
     def _on_background_stop_done(self, task: asyncio.Task) -> None:
@@ -13503,7 +13617,7 @@ class ScriberWebController:
         except asyncio.CancelledError:
             return
         except Exception as exc:
-            logger.warning(f"Background live mic stop failed: {exc}")
+            logger.warning("Background live mic stop failed: {}", type(exc).__name__)
             return
         # A canceled startup may never create a pipeline. Its no-op stop then
         # has no capture-stopped/finalization callback to admit a newer start
@@ -14029,6 +14143,7 @@ class ScriberWebController:
                 current=current,
                 async_finalization=async_finalization,
                 quiet_recording=quiet_recording,
+                service_name=str(getattr(pipeline, "service_name", "") or ""),
             )
             is_realtime_service = (
                 pipeline
@@ -21113,7 +21228,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
     register_file_transcription_routes(app, controller=controller)
     register_podcast_routes(
         app,
-        factory=lambda: PodcastService(data_dir() / "podcasts", PodcastProcessor(controller)),
+        factory=lambda: PodcastService(
+            data_dir() / "podcasts",
+            PodcastProcessor(controller),
+            notify=getattr(controller, "broadcast", None),
+        ),
     )
 
     register_onnx_routes(app, controller=controller)

@@ -118,7 +118,7 @@ scripts\project-python.cmd -m mypy src\api src\core src\runtime src\data
 ```
 
 Install the CI test tools from `requirements-test.txt` and resolve the complete
-Windows CPython 3.14.7 graph through `requirements-test-constraints.txt`. The
+Windows CPython 3.14.9 graph through `requirements-test-constraints.txt`. The
 constraints file closes all direct and transitive versions used by the full
 suite without changing the broader application dependency policy. `mypy` runs
 in that complete Windows environment after pytest. The reusable Windows job
@@ -263,7 +263,7 @@ npm run build
 ```
 
 `npm ci` installs the pinned Bun 1.4.3 package locally; these npm scripts do
-not require a global Bun installation. Node.js 26.5.0 remains the runtime for
+not require a global Bun installation. Node.js 26.12.1 remains the runtime for
 Vite and npm command orchestration. `package-lock.json` remains the canonical
 dependency lock, and an exact release `node_modules` cache hit already skips
 installation. Bun and pnpm are faster installers in the separate comparisons;
@@ -445,7 +445,7 @@ existing authenticated YouTube job request, including a query-only handoff
 while the already-running app is still on `/youtube` and deferred consumption
 while an earlier start request is in flight.
 
-Use the exact Node.js 26.5.0 version from `.node-version`; CI and release builds
+Use the exact Node.js 26.12.1 version from `.node-version`; CI and release builds
 consume that pin, while `Frontend/package.json` declares the supported
 `>=26.5.0 <27` range for local tooling. The frontend is a Vite-only WebView
 build, so these commands do not start or produce a legacy Express server bundle.
@@ -759,20 +759,22 @@ scripts\project-python.cmd scripts\smoke_diarization_worker_resource.py `
 ```
 - `requirements-base.txt` pins the Pipecat/provider SDK combination used by the
   frozen backend runtime import gate. Pipecat, Deepgram, Speechmatics RT, and
-  `speechmatics-voice` must move together: unpinned Pipecat or provider SDK
-  drift can break fresh CI runners, while `pipecat-ai[speechmatics]` would pull
-  `transformers`/HuggingFace into the standard installer.
+  `speechmatics-agent-stt` must move together: unpinned Pipecat or provider SDK
+  drift can break fresh CI runners. Pipecat 1.10+ reaches Speechmatics live
+  only through Agent STT (`/v2/agent`, `linden-1`); the legacy realtime
+  endpoint and `speechmatics-voice` are no longer used.
 - The frozen runtime import gate also covers the AssemblyAI realtime Pipecat
   module and `onnx_asr`. This protects the installed AssemblyAI Universal-3.5
   realtime path and the bundled ONNX local-ASR path. The exact-module AST gate
   additionally requires every direct `pipecat.*` import under `src` to be in the
-  frozen contract; revision 5 replaces Pipecat's deprecated task/runner aliases
+  frozen contract; revision 9 moves to Pipecat 1.14 (`loudness`, `sentencex`,
+  `pipecat.utils.types`, no local `pyloudnorm`); revision 5 replaced Pipecat's deprecated task/runner aliases
   with the canonical `pipecat.pipeline.worker` and `pipecat.workers.runner`
   modules and includes the `audioop-lts` PCM RMS runtime, while preserving the
   revision-4 bounded installer-research YouTube holdout probe and revision-3
   `pipecat.transports.base_input` boundary.
 - Provider tests for custom Pipecat services must run with deprecation warnings
-  promoted to errors and assert complete Pipecat 1.5 `STTSettings`. Lifecycle
+  promoted to errors and assert complete Pipecat `STTSettings`. Lifecycle
   coverage also verifies that only the expected Windows Proactor WinError 10054
   cleanup callback is suppressed and unrelated loop errors are forwarded.
 - Live-mic post-processing coverage should include prompt-template tests,
@@ -845,7 +847,7 @@ Frontend\src-tauri\target\release\backend\scriber-backend.exe `
 ## Python 3.14 runtime selection
 
 The shipping fallback and current production default are the official Windows
-CPython 3.14.7 runtime with JIT disabled (`Official` / `Disabled`). The default
+CPython 3.14.9 runtime with JIT disabled (`Official` / `Disabled`). The default
 is compiled into the release build; it is not a `.env` or Settings option.
 The Tauri supervisor removes inherited `PYTHON_JIT`, `PYTHON_GIL`, and
 `PYTHON_TLBC`, sets the manifest-bound `PYTHON_JIT=0`, and the frozen backend
@@ -855,7 +857,7 @@ state, or JIT expectation differs from the packaged policy.
 The separate `python-runtime-ab-v1` research profile may compare A13, O0/O1,
 C0/C1, T0/T1, and the non-release K0 calibration. Build inputs are bound by
 `packaging/cpython-windows-runtime-input-lock-v1.json`; custom builds are
-offline after provisioning and use the unchanged CPython `v3.14.7` source,
+offline after provisioning and use the unchanged CPython `v3.14.9` source,
 LLVM 19.1.7, ClangCL, ThinLTO, and the upstream PGO job. Run the evaluator
 through `scripts/perf/python_runtime_ab.py`. Never promote JIT, Clang/PGO, or
 the tail-call interpreter from a microbenchmark. A candidate must pass every
@@ -894,7 +896,7 @@ anchor required to promote an optimized runtime.
 
 For the current PyInstaller 6.20 frozen backend, O1/C1/T1 are expected to fail
 closed: PyInstaller's isolated embedded-interpreter configuration ignores
-`PYTHON_JIT`, while CPython 3.14.7 exposes no supported post-initialization JIT
+`PYTHON_JIT`, while CPython 3.14.9 exposes no supported post-initialization JIT
 setter. Do not weaken isolation by enabling every Python environment variable
 or claim that a source-runtime JIT probe represents the packaged app. The
 JIT-off O0/C0/T0 family remains measurable; use
@@ -920,20 +922,26 @@ installation, and proves that strict uninstall preserves user data. Wildcard
 or recursive installer deletion is forbidden; directory cleanup is exact and
 non-recursive.
 
+NSIS overlays never remove files on their own, so every release whose frozen
+payload drops or renames files needs exact tombstones for the last published
+installer. `packaging/overlay-upgrade-from-v0.5.138.json` covers the Pipecat
+1.14 and dependency updates: NLTK, its Punkt data and `regex` are gone, and
+the cryptography, pipecat-ai, pydantic, speechmatics-rt and tqdm metadata
+directories carry new versions. List both installers with `7z l -slt`,
+take the backend files present only in the published one, and add one
+`Delete` per file plus child-first non-recursive `RMDir` lines for the
+directories the candidate no longer ships.
+
 The probe must report the exact custom NumPy version, `blas` and `lapack` as
 `none`, successful numerical probes, and no OpenBLAS file. Also inventory the
 tree directly; `backend\_internal\numpy.libs`, public
 `numpy-2.4.6.dist-info`, and every `*openblas*` file must be absent, while
 `numpy-2.4.6+scriber.noblas.1.dist-info` and its licenses must be present.
 
-A clean runtime-cache miss also prepares Punkt from
-`packaging/nltk-punkt-tab-lock-v1.json`. The preparer verifies the downloaded
-archive's exact length/SHA-256, validates every ZIP path, and extracts only the
-locked English/German files into the build work root. `NLTK_DATA` is scoped to
-the source import probe and PyInstaller child and restored afterward. If a CI
-build reports `LookupError` for `pipecat.utils.string.match_endofsentence`,
-check the `nltk-punkt-data` phase and archive identity first; do not rely on or
-copy a developer's `%APPDATA%\nltk_data` cache.
+Since Pipecat 1.12 sentence segmentation uses the `sentencex` rules embedded
+in its wheel, so a runtime-cache miss no longer prepares NLTK Punkt data. If a
+CI build reports a failure for `pipecat.utils.string.match_endofsentence`, the
+frozen bundle either lacks the `sentencex` extension or loaded NLTK.
 
 SmartTurn equivalence is stricter than a smoke test. Compare all `64,000`
 float32 feature values, final probability, and boolean prediction against a
@@ -975,7 +983,7 @@ contains an older version, the signed release build fails instead of silently
 publishing an installer with the wrong version.
 
 The checked-in `Frontend/src-tauri/windows/installer-template.nsi` is the
-reviewed Tauri CLI 2.11.3 template with one product-specific behavior change:
+reviewed Tauri CLI 2.12.4 template with one product-specific behavior change:
 an NSIS-to-NSIS manual version upgrade skips the destructive maintenance prompt
 and proceeds as an overlay instead of first uninstalling the existing app. This
 preserves existing Start-menu and taskbar pins plus the HKCU autostart entry,
@@ -1126,7 +1134,7 @@ parser through a local one-shot raw transport. Before activation that lane
 prepares bounded decode references from the exact PCM fixture; the measured
 transport then uses bundled ffmpeg to decode the actual MP3 upload and rejects
 corruption, content/duration mismatch, a non-zero or overlong tail, and any
-URL/API/model/locale/definition or credential-sentinel drift. Soniox traverses Pipecat 1.5's
+URL/API/model/locale/definition or credential-sentinel drift. Soniox traverses Pipecat 1.14's
 real `stt-rt-v5` WebSocket parser through a loopback server. Speechmatics
 traverses the real `speechmatics_async` Batch-v2 adapter and JSON-v2 parser;
 its local one-shot raw transport fully consumes and validates the uploaded WAV

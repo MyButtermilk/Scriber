@@ -64,7 +64,7 @@ the user explicitly asks for a temporary investigation note.
   events, SQLite, Pipecat pipeline code, and provider adapters.
 - Frontend default in dev: `localhost:5000`, implemented with Vite 8, React 19,
   TypeScript, Tailwind v4, Wouter, and TanStack Query. The Vite-only frontend
-  toolchain is pinned to Node.js 26.5.0 through `.node-version` and
+  toolchain is pinned to Node.js 26.12.1 through `.node-version` and
   `Frontend/package.json`; the removed Express/Replit scaffold is not part of
   the desktop runtime or build. `npm ci` consumes the canonical npm lock and
   installs Bun 1.4.3 locally for the app/test type checks and isolated logic
@@ -241,8 +241,11 @@ Backend and runtime:
 - `src/podcasts/`: public-only RSS/directory transport, durable subscription and
   episode state, retained downloads, independent feed refresh, and three concurrent
   processing workers. Downloads serialize their capacity check and write to preserve
-  the shared cache limit. Its processor alone adapts to File admission and Transcript
-  summaries. Commit the transcript ID before admission and resume that identity;
+  the shared cache limit. Terminal completion and media-ownership release precede
+  best-effort ready notifications; a delayed notification must not block download
+  removal or clear a successor retry's ownership. Its processor alone adapts to
+  File admission and Transcript summaries. Commit the transcript ID before
+  admission and resume that identity;
   only explicit retry may allocate a new attempt after failure. The first
   subscription queues its latest episode, subsequent new episodes queue while
   the app runs. Preserve the per-episode/cache limits and cancellation barriers.
@@ -252,6 +255,14 @@ Backend and runtime:
   persistent podcast worker.
   `src/api/podcast_routes.py` owns the strict controller-free HTTP boundary and
   local collaborator port; never add scheduler logic or private paths to the UI.
+  Episode listening state (`seen_at`, `read_at`, `played_at`) lives in the same
+  store. Only post-subscription refreshes create unseen episodes; the schema
+  migration marks existing rows seen/read so an upgrade never floods users.
+  The page marks episodes seen only while visible, keeps their New marker for
+  that visit, and opening a transcript anywhere marks it read. One refresh pass
+  publishes one `podcast_episodes_discovered` event; each completion publishes
+  `podcast_episode_ready`. Their bounded titles reach only the WebSocket, never
+  logs, and a notification failure must not affect refresh or processing.
 - `src/data/job_store.py`: persistent file/YouTube jobs.
 - `src/data/latency_metrics_store.py`: hot-path metrics.
 - `src/core/`: contracts, state machine, circuit breaker, logging, tracing.
@@ -522,7 +533,7 @@ Frontend and shell:
 - `Frontend/src-tauri/tauri.conf.json`: Tauri build, CSP, NSIS bundle, backend
   resource mapping, before-bundle sidecar command.
 - `Frontend/src-tauri/windows/installer-template.nsi`: reviewed Tauri CLI
-  2.11.3 NSIS template with manual NSIS version upgrades routed directly to the
+  2.12.4 NSIS template with manual NSIS version upgrades routed directly to the
   non-destructive overlay path. Do not restore Tauri's destructive maintenance
   prompt for this case: its uninstall path intentionally removes taskbar pins,
   Start-menu shortcuts, and the HKCU autostart value. Same-version maintenance,
@@ -541,10 +552,10 @@ Packaging and scripts:
   independent clean builds must produce identical shipping bytes.
 - `packaging/cpython-windows-runtime-input-lock-v1.json`,
   `scripts/build_cpython_windows_runtime.ps1`, and
-  `scripts/perf/profiles/python-runtime/`: exact CPython 3.14.7/LLVM 19.1.7
+  `scripts/perf/profiles/python-runtime/`: exact CPython 3.14.9/LLVM 19.1.7
   runtime inputs, offline ClangCL/ThinLTO/PGO/tail builders, and the isolated
   `python-runtime-ab-v1` promotion profile. Shipping defaults to official
-  CPython 3.14.7 with JIT disabled unless installed FullLocal evidence promotes
+  CPython 3.14.9 with JIT disabled unless installed FullLocal evidence promotes
   a variant; microbenchmarks cannot select a product runtime. Stock PyInstaller
   6.20 ignores `PYTHON_JIT` in its isolated embedded interpreter, so O1/C1/T1
   currently fail the frozen runtime policy and are not eligible variants.
@@ -558,11 +569,13 @@ Packaging and scripts:
   `RMDir` statements. Final acceptance compares a real v0.5.47 overlay
   byte-for-byte with a clean CP314 install and preserves user data through
   strict uninstall.
-- `packaging/nltk-punkt-tab-lock-v1.json` and
-  `scripts/prepare_nltk_punkt_data.py`: locked source for the English/German
-  Punkt build data. A clean frozen-runtime miss must prepare it below the build
-  work root and expose `NLTK_DATA` only to the source import probe and
-  PyInstaller child; never rely on a developer's roaming NLTK cache.
+- `packaging/overlay-upgrade-from-v0.5.138.json`: public v0.5.138 installer
+  identity plus the 48 files and 17 directories an overlay would otherwise
+  keep after Pipecat 1.14 dropped NLTK/Punkt/regex and the dependency
+  updates renamed versioned package metadata. Derive such tombstones from a
+  diff of the published and candidate installer inventories, never from
+  guesses; `tests/test_overlay_upgrade_tombstones.py` binds each entry to one
+  exact hook line and rejects tombstones for currently pinned metadata.
 - `packaging/quickjs-youtube-runtime-lock-v1.json`,
   `native/scriber-quickjs-wrapper/`, and
   `scripts/build_quickjs_youtube_runtime.py`: byte-locked QuickJS-ng engine,
@@ -707,7 +720,7 @@ Packaging and scripts:
 ### Tauri Runtime
 
 - Tauri is the primary desktop runtime.
-- The packaged backend runtime is exact CPython 3.14.7 (`cpython-314`). Release
+- The packaged backend runtime is exact CPython 3.14.9 (`cpython-314`). Release
   defaults are `PythonRuntimeFlavor=Official` and
   `PythonJitMode=Disabled`; they are build parameters, not `.env` or Settings
   values. Before launching the worker, Rust removes inherited `PYTHON_JIT`,
@@ -914,6 +927,30 @@ Packaging and scripts:
   `CF_BITMAP` or `CF_ENHMETAFILE` must never reach `GlobalSize`/`GlobalLock`.
   Restore the snapshot only if the clipboard sequence is unchanged; do not
   regress this to text-only clipboard preservation.
+  Live Mic insertion (the pipeline `TextInjector` and deferred or
+  post-processed output via `inject_text_once_async`) runs on one dedicated,
+  ordered `scriber-text-injection` worker, never on the asyncio loop: lease
+  waits, pre-delays, Office COM, and typing fallbacks otherwise stall
+  WebSocket delivery and a successor recording. Cancellation withdraws an
+  insertion still queued behind another (focus may have moved) and waits for a
+  started dispatch. Immediate realtime finals are owned by `TextInjector`, not
+  by Pipecat's process task: the Soniox manual stop ends the pipeline with
+  CancelFrame, so finals that already arrived are still inserted, and
+  End/Stop/Cancel frames, flush, and cleanup wait for them. Finals arriving
+  while an insertion runs (for example behind the previous paste's clipboard
+  lease) are coalesced into one insertion instead of one lease wait each.
+  Emergency stops retain that session's insertion predecessor until its
+  remaining output settles, even after native capture is released. A later
+  recording may capture immediately but must not insert ahead of older text;
+  shutdown must retain and join the owning finalizer.
+  If that deferred recording fails, insert its retained raw speech after the
+  predecessor, respecting disabled text injection and skipping LLM polishing.
+  The synchronous `flush()` remains only for the benchmark visible-text
+  contract. Keystroke typing is the last fallback: an interrupted
+  `keyboard.write` is terminal, never retyped through pyautogui, and injector
+  failures log exception types only. Log FFmpeg upload-encoding failures by
+  exit code and error type only; its stderr names temporary paths under the
+  user profile.
 - Shell IPC diagnostics may expose the latest `injectText` attempt only in
   sanitized form: error codes, fallback reason, allowed markers, restore status,
   `preDelayMode`, requested/applied pre-delay numbers, timing numbers, and
@@ -1039,6 +1076,12 @@ Packaging and scripts:
   repeated stops, and never arm a deferred toggle. The existing state and
   WebSocket events remain completion authority; `/api/live-mic/stop` is kept
   only for compatibility callers that explicitly need a synchronous result.
+  Routes that upload the whole recording after stop get a finalization budget
+  of 8 s plus 0.35 times the recording length, capped at 600 s (below the
+  900-second provider requests); the ElevenLabs/OpenAI realtime streams keep
+  their 90-second ceiling. A 90-second ceiling for whole-recording uploads
+  cancelled long dictations and discarded them. Stop-path failure logs carry
+  exception types only.
 - Meeting segments treat `startMs`, `endMs`, and `durationMs` as one contract.
   `durationMs` must equal `endMs - startMs` in REST and `meeting_segment`
   events; transcript and citation controls must preserve timestamp seeking.
@@ -1310,6 +1353,10 @@ Packaging and scripts:
   Completion is event-driven with no fixed settle sleep: capture the final
   generation before issuing the commit, continue immediately when a newer
   final arrives, and do not let a stale earlier final satisfy the last commit.
+  OpenAI, ElevenLabs and Deepgram count one answer per commit; an answer
+  without new text (silence, or Deepgram's empty reply to a Finalize after its
+  endpointing already finalized the words) also completes the wait instead of
+  failing the recording. Count answers right before the commit is issued.
   A real `SegmentedSTTService` completes synchronously inside its awaited flush;
   only asynchronous VAD-commit providers use the short failure deadline.
   Terminal-buffered
@@ -1461,11 +1508,37 @@ Packaging and scripts:
   job retry is disabled so billable work is not replayed. A durable recovered
   provider StageResult remains the only safe way to continue without a second
   provider call.
-- Standard backend builds pin `pipecat-ai[silero]==1.5.0`. Provider factories
-  must use the Pipecat 1.5 `Settings` API; do not restore deprecated
-  `InputParams`, `LiveOptions`, or pre-1.5 fallback paths. Synthetic VAD turn
+- Standard backend builds pin `pipecat-ai[silero]==1.14.0`. Regenerate both
+  constraint files with a Windows/CPython 3.14.9 resolution and keep them
+  identical apart from their headers. Pipecat 1.8+ connects services inside
+  `setup()` and holds frames until `StartFrame`; tests that drive a real
+  service connection must patch the connector before `setup()` or drive
+  `_connect_websocket()` directly so no provider traffic leaves the test.
+  Provider factories
+  must use the Pipecat `Settings` API; do not restore deprecated
+  `InputParams`, `LiveOptions`, or pre-1.5 fallback paths. Overrides of
+  `push_error` must forward Pipecat 1.14's `category` and
+  `force_treat_as_permanent` keywords. Every Scriber `PipelineWorker` passes
+  `idle_timeout_secs=None`: Pipecat otherwise cancels a worker after 300 s
+  without transcription or VAD speech frames, which discards a long
+  whole-recording dictation and truncates a file with a long quiet passage.
+  The Pipecat file path routes every provider `ErrorFrame` to the worker's
+  `on_pipeline_error` handler, including downstream errors through
+  `_FileProviderErrorProcessor`. Cancel unfinished input immediately rather
+  than waiting for EOF, and never report a pipeline that ended before its
+  `EndFrame` as a complete transcript. A file has no local VAD, so services
+  that transcribe only audio a VAD stop closes get boundaries from
+  `_FileCommitSegmenter`: OpenAI, ElevenLabs and segmented uploads such as
+  Groq every 20-30 s at a pause, Deepgram one Finalize after the last audio. Before `EndFrame` the file path
+  waits, idle-bounded, for one provider result per commit. Pipecat queues a
+  worker cancellation behind the EndFrame it waits for without a bound, and a
+  processor that raises on that EndFrame never forwards it. Error, abort and
+  stop-timeout paths therefore use `_cancel_worker_past_end_frame`, which also
+  sends a CancelFrame into the pipeline itself; never await the runner task
+  where a caller's cancellation could reach it, and bound abort waits.
+  Synthetic VAD turn
   boundaries must use `VADUserStartedSpeakingFrame` and
-  `VADUserStoppedSpeakingFrame`, which are the frames consumed by Pipecat 1.5
+  `VADUserStoppedSpeakingFrame`, which are the frames consumed by Pipecat
   streaming and segmented STT services. The frozen runtime import gate must
   reject a sidecar containing any other Pipecat version. Every direct
   `pipecat.*` import under `src` must also appear as that exact module in the
@@ -1480,9 +1553,9 @@ Packaging and scripts:
   active boundaries on `CancelFrame`, including later cleanup flushes;
   `EndFrame` and `StopFrame` retain their normal finalization behavior.
 - Do not add Pipecat's `local-smart-turn` extra to the standard sidecar: in
-  Pipecat 1.5 it pulls Torch, Torchaudio, and Transformers. SmartTurn remains
+  Pipecat 1.14 it pulls Torch, Torchaudio, and Transformers. SmartTurn remains
   optional; import `LocalSmartTurnAnalyzerV3` directly and do not couple it to
-  the removed `pipecat.processors.user_idle_processor` module. Pipecat 1.5
+  the removed `pipecat.processors.user_idle_processor` module. Pipecat
   `TransportParams` does not own VAD or turn analyzers: eligible segmented and
   async live pipelines must wire an explicit `VADProcessor`. Native realtime
   providers, including Soniox, do not attach local SmartTurn. Analyzer instances
@@ -1514,10 +1587,12 @@ Packaging and scripts:
   fallback when bundled ffmpeg cannot produce WebM, not an API-rejection retry.
 - Soniox realtime authenticates every WebSocket upgrade (including reconnects)
   with `Authorization: Bearer`; start messages must not contain `api_key`.
-  `src/soniox_realtime.py` adapts pinned Pipecat 1.5 connection setup and
+  `src/soniox_realtime.py` adapts pinned Pipecat 1.14 connection setup and
   error frames (including authentication errors without tokens);
   preserve its inherited parser and lifecycle and the `SonioxSTTService` name
-  used by manual-stop/cleanup. Keep transport wire logging disabled so DEBUG
+  used by manual-stop/cleanup. It opens the socket through Pipecat's
+  `_websocket_connect` so the two-second closing handshake and bounded sends
+  apply. Keep transport wire logging disabled so DEBUG
   cannot expose credentials. The shared transport boundary strips raw exception
   and close-reason text while retaining normal/error closure classes and codes.
   Installed replay enforces the same handshake.
@@ -1566,7 +1641,9 @@ Packaging and scripts:
 - Live Mic may broadcast `InterimTranscriptionFrame` text as replaceable UI
   preview, but it must never append, persist, or inject that text. Only provider
   `TranscriptionFrame` finals enter the transcript and text injector; this also
-  applies to ElevenLabs manual-commit realtime transcription.
+  applies to ElevenLabs manual-commit realtime transcription. A repeated final
+  that the record and injector drop is broadcast without text, so the live
+  view clears its interim preview without showing the repeat.
 - Keep Silero/Pipecat VAD opt-in through `SCRIBER_SEGMENT_SPEECH_WITH_VAD` and
   the Settings toggle only for segmented/async Live Mic routes. A
   provider-native realtime route must never construct, attach, or replenish a
@@ -1719,9 +1796,13 @@ Packaging and scripts:
   only recognized speech in transcript content. Preserve partial speech and
   empty failed history entries. Transcript Detail shows the failure separately
   and excludes legacy error-only content from word counts and copy/export
-  actions; never add an error string as a transcript segment. This includes
-  provider-error emergency stops and a pipeline task that ends without a stop
-  request; the latter must move INITIALIZING/RECORDING through FAILED before
+  actions; the Live Mic history marks failed cards and its copy action uses the
+  same `isFailureOnlyContent` rule. Never add an error string as a transcript
+  segment. This includes provider-error emergency stops: preserve the failed record
+  independently of cleanup errors and caller cancellation. A native cleanup
+  retry cannot recover speech after the record reference has been discarded.
+  It also includes a pipeline task
+  that ends without a stop request; the latter must move INITIALIZING/RECORDING through FAILED before
   IDLE, or the next start ignores its microphone-ready edge. The app-global
   toast bridge suppresses a failed `session_finished` already reported by its
   session's `error` event, because one visible toast would otherwise replace
@@ -1756,20 +1837,31 @@ Packaging and scripts:
   payloads remain in local scope; log only a bounded provider/stage and exception
   type. Google Cloud STT uses
   `google-cloud-speech` plus Pipecat's required `google-genai` namespace
-  dependency, OpenAI live STT uses Pipecat's OpenAI Realtime STT service with
+  dependency. Pipecat cancels its Google stream on stop and abandons it at the
+  four-minute rotation while the open utterance is still interim; Scriber's
+  Google subclass instead ends the request stream (gRPC half-close), drains the
+  finals with a bounded wait, and carries the rotation chunk to the next
+  stream in order. OpenAI live STT uses Pipecat's OpenAI Realtime STT service with
   `gpt-realtime-whisper`, while `openai_async` uses the direct OpenAI Audio
   Transcriptions HTTP adapter with `gpt-4o-mini-transcribe-2025-12-15`. Keep
   the explicit `openai` SDK and `websockets` dependencies for these paths.
-  Groq STT uses Pipecat's `groq` SDK dependency, and Pipecat provider imports
-  require `nltk` at runtime. The frozen `punkt_tab` data keeps only the complete
-  English and German models. Pipecat 1.5's sentence-boundary utility calls
-  `sent_tokenize(text)` without a language argument, so provider support for
-  Spanish, French, Italian, Portuguese, Dutch, or auto-detected speech must not
-  be conflated with a requirement to bundle those unused Punkt models. Frozen
-  gates must explicitly load English and German from the bundle, reject any
-  third language directory, and forbid NLTK download fallback. Gladia live
+  Groq STT uses Pipecat's `groq` SDK dependency. Pipecat 1.12+ segments
+  sentences with the embedded `sentencex` rules and measures loudness with the
+  NumPy-only `loudness` package, so the frozen backend bundles neither NLTK,
+  Punkt data, SciPy, nor a local `pyloudnorm`; the frozen gate runs Pipecat's
+  sentence probes and fails if NLTK is loaded. Speechmatics live uses
+  Pipecat's Agent STT service (`/v2/agent`, model `linden-1`) with
+  server-side turn detection, because Scriber attaches no local VAD to native
+  streams; the Pipecat 1.14 speaker template applies to every final, so only
+  diarized files use speaker labels. Pipecat's `stop()` discards its message
+  queue before the SDK disconnect flushes the open turn, so Scriber's
+  Speechmatics subclass disconnects first while the consumer still runs and
+  waits for an in-order marker; keep that flush or the last utterance of a
+  dictation or file is lost. Gladia live
   transcription uses
-  Pipecat's Gladia service; Gladia file and YouTube transcription use the
+  Pipecat's Gladia service. Its stop waits (bounded) for the socket close that
+  follows `stop_recording`, with reconnection disabled first; a final from an
+  earlier utterance is not proof that the last one arrived. Gladia file and YouTube transcription use the
   direct pre-recorded HTTP upload/polling API and should not be routed through
   the live WebSocket pipeline. The direct async adapters
   `deepgram_async`, `gladia_async`, `openai_async`, `gemini_stt`, and
@@ -1785,10 +1877,16 @@ Packaging and scripts:
   `onnx-asr[cpu,hub]` in the standard sidecar for the ONNX local-ASR path.
   NeMo/Torch is not exposed as a local provider in Settings.
   Local ONNX file transcription uses the buffered Pipecat service with bounded
-  30-second flush chunks. Pipecat 1.5 no longer carries the legacy transport
+  30-second flush chunks. Pipecat no longer carries the legacy transport
   `vad_analyzer` parameter, so file transcription must not depend on transport
-  VAD frames to trigger ONNX recognition. Long files must flush completed
-  chunks instead of dropping earlier PCM at the live-recording buffer limit.
+  VAD frames to trigger ONNX recognition. Long files and Live Mic dictations
+  beyond five minutes must flush completed chunks instead of dropping earlier
+  PCM; each chunk ends in the quietest 100 ms of its last 10 seconds so no word
+  is split. CancelFrame and the terminal-transcription skip mark discard the
+  buffer without inference. Live Mic starts loading an already downloaded
+  model at StartFrame (never a download), and its stop budget is
+  `max(30, 8 + 0.35 × recording length)` seconds, capped at 600, because the
+  buffered recording is transcribed locally after stop.
   Primeline Parakeet support uses ready Hugging Face artifacts only; Scriber
   must not quantize this model on end-user machines. Preserve `fp32` through
   `geier/deskscribe-parakeet-primeline-onnx` with the manifest/checksum-backed
@@ -2234,7 +2332,8 @@ Already implemented and should not be regressed:
   allowlist and the exclusions for unused Deepgram surfaces, OpenAI SDK
   Realtime/Conversations/Webhooks implementation modules, and synchronous grpc
   helpers. The frozen gate must initialize every supported provider path, reject
-  representative pruned imports, and load both English and German Punkt data.
+  representative pruned imports, and exercise Pipecat's sentencex
+  segmentation without NLTK.
 - The Windows frozen backend uses the validated
   `numpy-2.4.6+scriber.noblas.1` wheel through a work-root-local,
   PyInstaller-child-only overlay. Keep wheel/lock/validator in both the internal
@@ -2626,6 +2725,11 @@ never make the suite depend on a developer `.env`, real API keys, or untracked
 AutoResearch session files. Keep the scoped mypy gate limited to `src/api`,
 `src/core`, `src/runtime`, and `src/data` until a separately reviewed branch
 expands the baseline.
+
+The real Windows host-profile smoke runs serially after parallel pytest in
+the full-suite CI job, with `SCRIBER_RUN_HOST_PROFILE_SMOKE=1`. Its CIM,
+PowerShell, and runtime inventory must not compete with four pytest workers;
+keep the serial step required and publish its separate JUnit result.
 
 Real-controller tests that acquire native-audio ownership must bind
 `src.database._DB_PATH` to a per-test temporary database before constructing the

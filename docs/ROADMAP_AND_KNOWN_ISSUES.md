@@ -65,6 +65,34 @@ Gemini tests cover late finals and blocked persistence, but the ambiguous
 15-second provider drain above remains deliberately unchanged. This is not a
 claim that Reaper's entire provider-tail delay is solved.
 
+## Dependency status (2026-10-24)
+
+The 2026-10-24 audit (OSV, `npm audit`) updated every package with a
+compatible fix: aiohttp/yarl/multidict, brotli, certifi, cryptography,
+filelock, urllib3, pip, pytest and setuptools; dompurify, vite, vitest and
+transitive build tools; rustls, rustls-webpki, webpki-root-certs, anyhow,
+event-listener, serde_with and tokio; Node.js 26.12.1. The follow-up moved
+Pipecat to 1.14.0 (which admits Pillow 13.0.0 and drops NLTK), the packaged
+runtime to CPython 3.14.9, Tauri to 2.12.5 with the matching `@tauri-apps/*`
+2.12 packages, Scriber's `windows` crates to 0.62.2, and refreshed the audio and
+diarization worker lockfiles. The updater plugin no longer compiles its legacy
+`.nsis.zip` extraction, so the `zip` 4.6.1 advisories are gone from the shell.
+OSV and `npm audit` now report nothing for the Windows product. Remaining:
+
+- `glib`, `zbus_names`, `zvariant` and `proc-macro-error` advisories exist
+  only in Tauri's Linux GTK/DBus graph, which the Windows build never compiles.
+- `onnx-asr` stays on 0.10.x: newer releases change the model loader and the
+  NumPy/ONNX surface that the no-BLAS frozen NumPy overlay and the Primeline
+  archive flow were validated against. Upgrade it as its own reviewed change.
+- `websockets` stays below 16, matching the range the OpenAI SDK's realtime
+  extra still declares; lift it with an OpenAI SDK release that admits 16+ and
+  a re-run of the Soniox/OpenAI realtime transport tests.
+- Speechmatics live now uses Pipecat's Agent STT (`/v2/agent`, `linden-1`,
+  server VAD turn detection). Run one real-key dictation before release.
+- The QuickJS wrapper lockfile is byte-locked with its prebuilt cache asset and
+  was deliberately left unchanged.
+- Rust 1.97.0 remains pinned; change it only together with the release cache.
+
 ## Recently Completed
 
 Remote Desktop dictation (#47): an experimental, default-off setting keeps the
@@ -100,6 +128,8 @@ September runtime and workflow work:
   restart recovery are implemented. Feed checks run while Scriber is running;
   there is no separate Windows background scheduler. The configured provider's
   ordinary usage charges still apply, and unsupported/private feeds are rejected.
+  Durable New/Unread episode state, an Unread filter, read/unread controls, a
+  Podcasts tab attention count, and toasts for new and ready episodes exist.
 - Debug Console now has workflow filtering, indexed metadata search, virtualized
   rows, separate stage timings, and a bounded redacted snapshot cache. A persisted
   diagnostic-logging opt-out covers Python, shell output, and timing persistence.
@@ -370,11 +400,11 @@ Packaging/performance:
 - Live-meeting PCM16 RMS checks share the native `audioop-lts` implementation
   instead of per-sample Python loops. Provider wrappers are imported only by the
   selected pipeline branch, and transcript timing uses prefix sums.
-- Release dependency resolution is constrained by an exact Windows CPython 3.14.7
+- Release dependency resolution is constrained by an exact Windows CPython 3.14.9
   graph. Profile-B restoration is bound to a versioned artifact identity, and
   tag releases remain drafts until downloaded assets, updater signatures,
   Authenticode evidence, installed smoke, and uninstall gates all pass.
-- The Python 3.14.7 product runtime is official O0 with JIT disabled. Final
+- The Python 3.14.9 product runtime is official O0 with JIT disabled. Final
   source-attested AMD screening rejected Clang/PGO C0: startup p50 improved only
   3.56%, App UX p50 regressed 5.69%, and 11 of 48 provider p50/p95 series
   exceeded the protected 3% regression limit. It also rejected Clang/PGO/Tail
@@ -1935,7 +1965,7 @@ Signing/updater:
   them against a public key embedded in the frozen launcher before importing
   physical application code.
 - Rebuilding an expired Python runtime cache now uses an exact
-  Windows/Python-3.14.7 constraints graph. The graph does not yet carry wheel
+  Windows/Python-3.14.9 constraints graph. The graph does not yet carry wheel
   hashes, so independently rebuilt generations still require the existing
   wheelhouse and runtime-inventory evidence rather than being assumed
   byte-identical.

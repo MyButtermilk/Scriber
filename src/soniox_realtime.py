@@ -1,10 +1,12 @@
-# Connection configuration adapted from pipecat-ai 1.5.0.
+# Connection configuration adapted from pipecat-ai 1.14.0.
 # Copyright (c) 2024-2026, Daily. SPDX-License-Identifier: BSD-2-Clause
 
-"""Handshake authentication adapter for the pinned Pipecat 1.5 Soniox client.
+"""Private transport adapter for the pinned Pipecat 1.14 Soniox client.
 
-Connection setup and error privacy differ; token parsing, endpointing, keepalive
-and reconnect orchestration remain inherited. Retain the class name because the
+Pipecat authenticates the handshake with the same Bearer header. This adapter
+keeps websockets' wire logging disabled and never forwards transport exception
+text or provider error messages. Token parsing, endpointing, keepalive and
+reconnect orchestration remain inherited. Retain the class name because the
 pipeline's manual-finalization and cleanup paths identify Soniox by name.
 """
 
@@ -13,7 +15,6 @@ import json
 from contextlib import suppress
 
 from loguru import logger
-from pipecat.services.settings import assert_given
 from pipecat.services.soniox.stt import (
     SonioxContextObject,
     _prepare_language_hints,
@@ -21,7 +22,7 @@ from pipecat.services.soniox.stt import (
 from pipecat.services.soniox.stt import (
     SonioxSTTService as PipecatSonioxSTTService,
 )
-from websockets.asyncio.client import connect as websocket_connect
+from pipecat.utils.types import assert_given
 from websockets.protocol import State
 
 from src.soniox_websocket import connect_soniox_websocket
@@ -37,7 +38,13 @@ class SonioxSTTService(PipecatSonioxSTTService):
 
             logger.debug("Connecting to Soniox STT")
 
-            websocket = await connect_soniox_websocket(self._url, self._api_key, connect_factory=websocket_connect)
+            # Pipecat's connector bounds the closing handshake and each send, so an
+            # unresponsive peer cannot hold up a stop for websockets' 10 s default.
+            websocket = await connect_soniox_websocket(
+                self._url,
+                self._api_key,
+                connect_factory=self._websocket_connect,
+            )
             self._websocket = websocket
 
             if not self._websocket:

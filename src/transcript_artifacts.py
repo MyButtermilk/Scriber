@@ -166,7 +166,7 @@ def provider_batch_model(provider: str) -> str:
         "groq": "whisper-large-v3-turbo",
         "google": "latest_long",
         "elevenlabs": "scribe_v2_realtime",
-        "speechmatics": "enhanced",
+        "speechmatics": "linden-1",
     }
     return str(configured.get(key) or key or "unknown")
 

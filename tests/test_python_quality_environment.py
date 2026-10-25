@@ -125,7 +125,7 @@ def test_invalid_cache_rebuilds_the_locked_environment_and_validates_again(root:
     monkeypatch.setattr(setup, "_run", run)
     assert setup.prepare_environment(root, identity) == "cold-install"
     assert validation.call_count == 2
-    assert commands[1][1:] == ["-m", "pip", "install", "pip==26.1.2"]
+    assert commands[1][1:] == ["-m", "pip", "install", "pip==26.2.2"]
     assert commands[2][1:] == [
         "-m",
         "pip",

@@ -1,3 +1,4 @@
+import asyncio
 import ctypes
 import functools
 import math
@@ -6,8 +7,10 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from ctypes import wintypes
 from dataclasses import dataclass
+from typing import Any
 
 from loguru import logger
 from pipecat.frames.frames import (
@@ -22,6 +25,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from src.config import Config
+from src.runtime.cancellation import await_with_delayed_cancellation
 from src.runtime.office_text_insert import OfficeInsertOutcome, try_insert_office_text
 from src.runtime.shell_ipc import call_shell_ipc, record_command_diagnostic
 from src.runtime.windows_clipboard_lease import WindowsClipboardLease
@@ -34,6 +38,8 @@ _GUI_IMPORT_ATTEMPTED = False
 _CLIPBOARD_PASTE_LOCK = threading.Lock()
 _CLIPBOARD_API_LOCK = threading.RLock()
 _ACTIVE_CLIPBOARD_LEASE: WindowsClipboardLease | None = None
+_TEXT_INJECTION_EXECUTOR: ThreadPoolExecutor | None = None
+_TEXT_INJECTION_EXECUTOR_LOCK = threading.Lock()
 
 
 def _serialize_clipboard_access(function):
@@ -1160,6 +1166,41 @@ def _tauri_marker_timestamp_ns(
     return max(call_started_ns, min(call_finished_ns, estimated_ns))
 
 
+def _text_injection_executor() -> ThreadPoolExecutor:
+    """Return the one ordered worker for clipboard, Office COM, and input dispatch.
+
+    Insertion can wait for a preceding clipboard lease (up to two seconds), an
+    application pre-delay, a bounded Office COM call, or per-character typing.
+    On the asyncio loop those waits stalled WebSocket delivery, health checks,
+    and a successor recording's pipeline. A single worker keeps insertions in
+    submission order across pipelines and deferred session output.
+    """
+    global _TEXT_INJECTION_EXECUTOR
+    with _TEXT_INJECTION_EXECUTOR_LOCK:
+        if _TEXT_INJECTION_EXECUTOR is None:
+            _TEXT_INJECTION_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scriber-text-injection")
+        return _TEXT_INJECTION_EXECUTOR
+
+
+async def _run_text_injection(function: Callable[..., bool], /, *args: Any, **kwargs: Any) -> bool:
+    """Insert on the injection worker, honoring cancellation only before dispatch.
+
+    Cancellation withdraws an insertion still queued behind another one: by the
+    time the worker frees up, focus may belong to an unrelated application. A
+    started paste cannot be withdrawn, so the caller observes its outcome and
+    callbacks before unwinding, exactly as the former synchronous call did.
+    """
+    queued = _text_injection_executor().submit(functools.partial(function, *args, **kwargs))
+    worker = asyncio.wrap_future(queued)
+    try:
+        await asyncio.wait((worker,))
+    except asyncio.CancelledError:
+        if not queued.cancel():
+            await await_with_delayed_cancellation(worker)
+        raise
+    return bool(worker.result())
+
+
 class TextInjector(FrameProcessor):
     def __init__(
         self,
@@ -1179,6 +1220,11 @@ class TextInjector(FrameProcessor):
         self.injection_method = str(injection_method or "").strip().lower() or None
         self._buffer = []
         self._last_injected = ""
+        # Immediate finals are owned here, not by Pipecat's process task: the
+        # Soniox manual stop ends the pipeline with CancelFrame, which cancels
+        # an in-flight process_frame and would withdraw a queued insertion.
+        self._pending_immediate: list[str] = []
+        self._immediate_drain: asyncio.Task[None] | None = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -1192,7 +1238,7 @@ class TextInjector(FrameProcessor):
                 if not self.enabled:
                     pass
                 elif self.inject_immediately:
-                    self._inject_text_safely(frame.text.strip() + " ")
+                    self._queue_immediate(frame.text.strip() + " ")
                 else:
                     # Buffer finalized transcript segments; inject as one block at end of utterance.
                     self._buffer.append(frame.text.strip())
@@ -1201,31 +1247,76 @@ class TextInjector(FrameProcessor):
             self._buffer = []
             self._last_injected = ""
         elif isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
-            self.flush()
+            await self.flush_async()
 
         await self.push_frame(frame, direction)
 
-    def flush(self):
+    def _take_flush_text(self) -> str:
+        """Return the buffered utterance exactly as it will be inserted, then clear it."""
+        buffered, self._buffer = self._buffer, []
         if not self.enabled:
-            self._buffer = []
-            return
-        if self._buffer:
-            text = " ".join(self._buffer).strip()
-            if text:
-                logger.debug(f"TextInjector flush: injecting {len(text)} chars")
-                self._inject_text_safely(text + " ")
-            else:
-                logger.debug("TextInjector flush: buffer joined to empty string")
-        else:
+            return ""
+        if not buffered:
             logger.debug("TextInjector flush: buffer is empty")
-        self._buffer = []
+            return ""
+        text = " ".join(buffered).strip()
+        if not text:
+            logger.debug("TextInjector flush: buffer joined to empty string")
+            return ""
+        logger.debug(f"TextInjector flush: injecting {len(text)} chars")
+        return text + " "
+
+    def flush(self):
+        text = self._take_flush_text()
+        if text:
+            self._inject_text_safely(text)
+
+    async def flush_async(self) -> None:
+        await self._wait_for_immediate_insertions()
+        text = self._take_flush_text()
+        if text:
+            await self._inject_text_async(text)
+
+    def _queue_immediate(self, text: str) -> None:
+        self._pending_immediate.append(text)
+        drain = self._immediate_drain
+        if drain is None or drain.done():
+            self._immediate_drain = asyncio.get_running_loop().create_task(
+                self._drain_immediate(),
+                name="scriber-immediate-text-injection",
+            )
+
+    async def _drain_immediate(self) -> None:
+        # Each clipboard paste can wait for the previous paste's lease (up to
+        # its restore delay). Finals arriving meanwhile are inserted together
+        # instead of queueing one lease wait each.
+        while self._pending_immediate:
+            text = "".join(self._pending_immediate)
+            self._pending_immediate.clear()
+            await self._inject_text_async(text)
+
+    async def _wait_for_immediate_insertions(self) -> None:
+        drain = self._immediate_drain
+        if drain is not None and not drain.done():
+            # A cancelled waiter must not cancel speech that already arrived.
+            await asyncio.shield(drain)
+
+    async def cleanup(self):
+        try:
+            await self._wait_for_immediate_insertions()
+        finally:
+            await super().cleanup()
+
+    async def _inject_text_async(self, text: str) -> bool:
+        return await _run_text_injection(self._inject_text_safely, text)
 
     def _inject_text_safely(self, text: str) -> bool:
         try:
             self._inject_text(text)
             return True
         except Exception as exc:
-            logger.warning(f"Text injection failed; transcript retained ({type(exc).__name__}: {exc})")
+            # Exception text can echo inserted characters; log the type only.
+            logger.warning("Text injection failed; transcript retained ({})", type(exc).__name__)
             return False
 
     def _inject_text(self, text: str):
@@ -1352,20 +1443,26 @@ class TextInjector(FrameProcessor):
             phase="before_keyboard_dispatch",
         ):
             return
-        try:
-            if not _ensure_gui_modules() or keyboard is None:
-                raise RuntimeError("keyboard.write unavailable")
-            keyboard.write(text, delay=0.01)  # 10ms per char
-            self._notify_injected(text)
-        except Exception:
+        if _ensure_gui_modules() and keyboard is not None:
             try:
-                logger.warning("keyboard.write failed, falling back to pyautogui.")
-                if not _ensure_gui_modules() or pyautogui is None:
-                    raise RuntimeError("pyautogui.write unavailable")
-                pyautogui.write(text, interval=0.01)
-                self._notify_injected(text)
-            except Exception as e:
-                logger.error(f"Text injection failed with all methods: {e}")
+                keyboard.write(text, delay=0.01)  # 10ms per char
+            except Exception as exc:
+                # Earlier characters may already be in the target; typing the
+                # whole text again through pyautogui would duplicate them.
+                logger.warning(
+                    "Keystroke typing interrupted ({}); transcript retained and unsafe retries disabled",
+                    type(exc).__name__,
+                )
+                return
+            self._notify_injected(text)
+            return
+        try:
+            if not _ensure_gui_modules() or pyautogui is None:
+                raise RuntimeError("pyautogui.write unavailable")
+            pyautogui.write(text, interval=0.01)
+            self._notify_injected(text)
+        except Exception as exc:
+            logger.error("Text injection failed with all methods ({})", type(exc).__name__)
 
     def _notify_injected(self, text: str) -> None:
         if not self.on_injected:
@@ -1412,3 +1509,8 @@ def inject_text_once(
         injection_method=injection_method,
     )
     return injector._inject_text_safely(text)
+
+
+async def inject_text_once_async(text: str, **kwargs: Any) -> bool:
+    """Run :func:`inject_text_once` on the ordered injection worker."""
+    return await _run_text_injection(inject_text_once, text, **kwargs)
