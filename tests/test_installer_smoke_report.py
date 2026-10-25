@@ -16,9 +16,9 @@ HELPER = ROOT / "scripts" / "ci" / "validate_installer_smoke_report.py"
 
 @pytest.fixture
 def smoke(tmp_path):
-    installer = tmp_path / "Scriber_0.5.116_x64-setup.exe"
+    installer = tmp_path / "Scriber_0.5.140_x64-setup.exe"
     installer.write_bytes(b"existing downloaded installer fixture")
-    # Actual Windows v0.5.116 schema, stripped only of non-gating diagnostics.
+    # Windows report shape with the required v0.5.140 shell-panic evidence.
     frontend = {
         "verified": True,
         "source": "tauri-webview",
@@ -53,6 +53,7 @@ def smoke(tmp_path):
         "primaryBackend": "vulkan",
         "version": {"exitCode": 0},
     }
+    shell_panic = {"verified": True, "panicDetected": False, "inspectedBytes": 0}
     report = {
         "installer": str(installer.resolve()),
         "ok": True,
@@ -61,6 +62,7 @@ def smoke(tmp_path):
         "runtimeMode": "tauri-supervised",
         "launchKind": "sidecar",
         "desktopSmokeExitCode": 0,
+        "shellPanicCheck": deepcopy(shell_panic),
         "cleanInstall": {
             "ok": True,
             "ready": True,
@@ -68,6 +70,7 @@ def smoke(tmp_path):
             "runtimeMode": "tauri-supervised",
             "launchKind": "sidecar",
             "processExitCode": 0,
+            "shellPanicCheck": deepcopy(shell_panic),
             "frontend": deepcopy(frontend),
             "supportBundle": deepcopy(support),
         },
@@ -82,6 +85,7 @@ def smoke(tmp_path):
             "secondCleanupVerified": True,
             "secondRuntimeMode": "tauri-supervised",
             "secondLaunchKind": "sidecar",
+            "shellPanicCheck": deepcopy(shell_panic),
             "frontend": deepcopy(frontend),
             "supportBundle": deepcopy(support),
             "frontendAssetOwnership": deepcopy(ownership),
@@ -135,6 +139,56 @@ def _change(report, field, value):
 def test_complete_real_shaped_report_accepts_existing_installer(smoke) -> None:
     report, installer = smoke
     validate_report(report, installer=installer)
+
+
+@pytest.mark.parametrize("prefix", ("", "cleanInstall.", "upgrade."))
+@pytest.mark.parametrize(
+    "mode",
+    (
+        "missing",
+        "missing-verified",
+        "unverified",
+        "verified-integer",
+        "missing-panic",
+        "panic",
+        "panic-integer",
+        "missing-count",
+        "negative-count",
+        "boolean-count",
+        "string-count",
+        "oversized-count",
+    ),
+)
+def test_each_installed_launch_requires_complete_panic_free_evidence(smoke, prefix, mode) -> None:
+    report, installer = smoke
+    stage = report if not prefix else report[prefix.removesuffix(".")]
+    evidence = stage["shellPanicCheck"]
+    if mode == "missing":
+        del stage["shellPanicCheck"]
+    elif mode == "missing-verified":
+        del evidence["verified"]
+    elif mode == "unverified":
+        evidence["verified"] = False
+    elif mode == "verified-integer":
+        evidence["verified"] = 1
+    elif mode == "missing-panic":
+        del evidence["panicDetected"]
+    elif mode == "panic":
+        evidence["panicDetected"] = True
+    elif mode == "panic-integer":
+        evidence["panicDetected"] = 0
+    elif mode == "missing-count":
+        del evidence["inspectedBytes"]
+    elif mode == "negative-count":
+        evidence["inspectedBytes"] = -1
+    elif mode == "boolean-count":
+        evidence["inspectedBytes"] = False
+    elif mode == "string-count":
+        evidence["inspectedBytes"] = "0"
+    else:
+        evidence["inspectedBytes"] = 8 * 1024 * 1024 + 1
+    with pytest.raises(ReportValidationError, match="shellPanicCheck"):
+        validate_report(report, installer=installer)
 
 
 @pytest.mark.parametrize(

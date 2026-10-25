@@ -918,6 +918,7 @@ try {
             frontendAssetOwnership = $frontendAssetOwnership
             liveRecording = $secondSmoke.liveRecording
             stability = $secondSmoke.stability
+            shellPanicCheck = $secondSmoke.shellPanicCheck
             legacyDataMigration = $secondSmoke.legacyDataMigration
             installSize = $installSize
             localPolishingRuntime = $localPolishingRuntime
@@ -977,6 +978,7 @@ try {
         mediaPreparation = $mediaPreparation
         liveRecording = $smoke.liveRecording
         stability = $smoke.stability
+        shellPanicCheck = $smoke.shellPanicCheck
         failureDiagnostics = $smoke.failureDiagnostics
         desktopSmokeFailure = $desktopSmokeFailure
         cleanupVerified = $smoke.cleanupVerified
