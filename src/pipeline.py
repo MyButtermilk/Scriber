@@ -4272,7 +4272,6 @@ class ScriberPipeline:
                     # local model. Each full chunk emits a final frame and the
                     # terminal frame flushes the remainder.
                     max_buffer_secs=30,
-                    flush_on_limit=True,
                 )
             return OnnxLocalBufferedSTTService(
                 model_name=Config.ONNX_MODEL,

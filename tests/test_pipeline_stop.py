@@ -2002,7 +2002,6 @@ def test_onnx_file_factory_uses_bounded_flushing_service(monkeypatch):
     assert type(service).__name__ == "OnnxLocalBufferedSTTService"
     assert service._quantization == "fp32"
     assert service._max_buffer_secs == 30
-    assert service._flush_on_limit is True
 
 
 def test_onnx_file_factory_uses_frozen_model_and_language(monkeypatch):

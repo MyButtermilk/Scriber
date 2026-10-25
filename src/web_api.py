@@ -13583,14 +13583,18 @@ class ScriberWebController:
         quiet_recording: bool,
         service_name: str = "",
     ) -> float | None:
+        elapsed = 0.0
+        if current is not None and current._started_at_monotonic is not None:
+            elapsed = max(0.0, time.monotonic() - current._started_at_monotonic)
+        if service_name == "onnx_local":
+            # Local inference of the buffered recording, plus a first model
+            # load, runs after stop; a fixed 30 seconds failed long dictations.
+            return min(_LIVE_MIC_ASYNC_STOP_TIMEOUT_MAX_SECONDS, max(30.0, 8.0 + elapsed * 0.35))
         if not async_finalization:
             return None
         if quiet_recording:
             return env_float(_LIVE_MIC_SILENT_STOP_TIMEOUT_ENV, 4.0, minimum=1.0, maximum=30.0)
 
-        elapsed = 0.0
-        if current is not None and current._started_at_monotonic is not None:
-            elapsed = max(0.0, time.monotonic() - current._started_at_monotonic)
         ceiling = (
             90.0
             if service_name in _LIVE_MIC_STREAMING_ASYNC_STOP_SERVICES

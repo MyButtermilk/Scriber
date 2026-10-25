@@ -937,6 +937,32 @@ async def test_long_dictation_stop_budget_grows_for_whole_recording_uploads(monk
 
 
 @pytest.mark.asyncio
+async def test_local_onnx_stop_budget_covers_inference_of_the_whole_dictation():
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    def budget(elapsed_seconds: float, *, quiet: bool = False) -> float | None:
+        record = _make_record(f"onnx-{elapsed_seconds}-{quiet}")
+        record._started_at_monotonic = time.monotonic() - elapsed_seconds
+        return ctl._live_mic_stop_timeout_seconds(
+            current=record,
+            async_finalization=web_api._live_pipeline_uses_async_finalization(
+                types.SimpleNamespace(service_name="onnx_local")
+            ),
+            quiet_recording=quiet,
+            service_name="onnx_local",
+        )
+
+    # The buffered recording is transcribed on this machine after stop. A fixed
+    # 30-second pipeline deadline failed long dictations and discarded them.
+    assert budget(20) == 30.0
+    assert budget(20, quiet=True) == 30.0
+    assert budget(600) == pytest.approx(218, abs=1)
+    assert budget(3600) == 600.0
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_stop_listening_when_idle_is_noop(monkeypatch):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)

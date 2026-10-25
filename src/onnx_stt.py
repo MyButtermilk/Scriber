@@ -1043,6 +1043,38 @@ def load_model(
         return _load_model_impl(model_name, quantization, use_vad)
 
 
+def _preload_downloaded_model(model_name: str, quantization: str, use_vad: bool) -> bool:
+    # A preload must never start a multi-GB download behind the user's back.
+    if not is_model_downloaded(model_name, quantization):
+        return False
+    load_model(model_name, quantization, use_vad)
+    return True
+
+
+def _log_model_preload_result(future: asyncio.Future) -> None:
+    if future.cancelled():
+        return
+    exc = future.exception()
+    if exc is not None:
+        logger.warning("ONNX model preload failed (error_type={})", type(exc).__name__)
+
+
+def start_model_preload(
+    model_name: str,
+    quantization: str = "int8",
+    use_vad: bool = False,
+) -> asyncio.Future:
+    """Load an already downloaded model while a recording is still running.
+
+    Otherwise the first transcription loads the model only after stop. A later
+    ``load_model`` call waits on the same lock and reuses the cached session.
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.run_in_executor(_executor, _preload_downloaded_model, model_name, quantization, use_vad)
+    future.add_done_callback(_log_model_preload_result)
+    return future
+
+
 def _load_model_impl(
     model_name: str = DEFAULT_MODEL,
     quantization: str = "int8",

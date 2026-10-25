@@ -1868,8 +1868,14 @@ Packaging and scripts:
   Local ONNX file transcription uses the buffered Pipecat service with bounded
   30-second flush chunks. Pipecat no longer carries the legacy transport
   `vad_analyzer` parameter, so file transcription must not depend on transport
-  VAD frames to trigger ONNX recognition. Long files must flush completed
-  chunks instead of dropping earlier PCM at the live-recording buffer limit.
+  VAD frames to trigger ONNX recognition. Long files and Live Mic dictations
+  beyond five minutes must flush completed chunks instead of dropping earlier
+  PCM; each chunk ends in the quietest 100 ms of its last 10 seconds so no word
+  is split. CancelFrame and the terminal-transcription skip mark discard the
+  buffer without inference. Live Mic starts loading an already downloaded
+  model at StartFrame (never a download), and its stop budget is
+  `max(30, 8 + 0.35 × recording length)` seconds, capped at 600, because the
+  buffered recording is transcribed locally after stop.
   Primeline Parakeet support uses ready Hugging Face artifacts only; Scriber
   must not quantize this model on end-user machines. Preserve `fp32` through
   `geier/deskscribe-parakeet-primeline-onnx` with the manifest/checksum-backed

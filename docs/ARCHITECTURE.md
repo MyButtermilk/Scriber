@@ -2232,10 +2232,14 @@ standard build bundles the CPU ONNX local-ASR runtime through `onnx-asr`. ONNX
 is the only local STT provider exposed in Settings; full NeMo/Torch remains
 excluded from the standard sidecar because it would dominate installer size.
 ONNX file jobs decode media to mono PCM and feed the buffered service in
-bounded 30-second chunks. Each completed chunk emits a final transcript frame,
-and the terminal frame flushes the remainder. This path does not rely on the
-removed Pipecat transport-level VAD hook and does not discard earlier audio
-from long files when the buffer limit is reached.
+bounded 30-second chunks; Live Mic uses five-minute chunks. Each completed
+chunk ends in the quietest 100 ms of its last 10 seconds and emits a final
+transcript frame, and the terminal frame flushes the remainder. This path does
+not rely on the removed Pipecat transport-level VAD hook and does not discard
+earlier audio from long files or dictations when the buffer limit is reached.
+A cancelled or aborted session discards its buffer without inference. Live Mic
+loads an already downloaded model while the user speaks, so the first
+dictation after startup does not pay the model load after stop.
 The German Primeline Parakeet model is offered through prepared ONNX artifacts
 instead of exporting `primeline/parakeet-primeline` on user machines. The
 `fp32` option uses the prepared `geier/deskscribe-parakeet-primeline-onnx`
