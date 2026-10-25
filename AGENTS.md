@@ -252,6 +252,14 @@ Backend and runtime:
   persistent podcast worker.
   `src/api/podcast_routes.py` owns the strict controller-free HTTP boundary and
   local collaborator port; never add scheduler logic or private paths to the UI.
+  Episode listening state (`seen_at`, `read_at`, `played_at`) lives in the same
+  store. Only post-subscription refreshes create unseen episodes; the schema
+  migration marks existing rows seen/read so an upgrade never floods users.
+  The page marks episodes seen only while visible, keeps their New marker for
+  that visit, and opening a transcript anywhere marks it read. One refresh pass
+  publishes one `podcast_episodes_discovered` event; each completion publishes
+  `podcast_episode_ready`. Their bounded titles reach only the WebSocket, never
+  logs, and a notification failure must not affect refresh or processing.
 - `src/data/job_store.py`: persistent file/YouTube jobs.
 - `src/data/latency_metrics_store.py`: hot-path metrics.
 - `src/core/`: contracts, state machine, circuit breaker, logging, tracing.

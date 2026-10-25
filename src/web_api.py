@@ -21228,7 +21228,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
     register_file_transcription_routes(app, controller=controller)
     register_podcast_routes(
         app,
-        factory=lambda: PodcastService(data_dir() / "podcasts", PodcastProcessor(controller)),
+        factory=lambda: PodcastService(
+            data_dir() / "podcasts",
+            PodcastProcessor(controller),
+            notify=getattr(controller, "broadcast", None),
+        ),
     )
 
     register_onnx_routes(app, controller=controller)

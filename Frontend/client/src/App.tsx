@@ -9,6 +9,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { BackendStatusProvider, useBackendOnline } from "@/hooks/use-backend-status";
 import { useDeviceChangeRefresh } from "@/hooks/use-device-change-refresh";
 import { BackendOfflineBanner } from "@/components/BackendOfflineBanner";
+import { PodcastNotificationBridge } from "@/components/PodcastNotificationBridge";
 import { useSharedWebSocket, WebSocketProvider, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import {
   failedSessionToastMessage,
@@ -587,6 +588,7 @@ function RuntimeShell() {
       <PostProcessingFallbackToastBridge />
       <TranscriptHistoryInvalidationBridge />
       <MeetingDetectionBridge />
+      <PodcastNotificationBridge />
       <TrayRecordingStateBridge />
       <TauriNavigationBridge />
       <DesktopUpdateAutoCheckBridge />

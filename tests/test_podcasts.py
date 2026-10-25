@@ -348,17 +348,181 @@ def test_store_initial_subscription_queues_only_latest_and_refresh_deduplicates(
     assert store.add("https://example.com/feed", _feed(3, 2, 1), auto_process=True) == identifier
     rows = store.episodes(identifier)["items"]
     assert [row["title"] for row in rows if row["status"] == "queued"] == ["Episode 3"]
-    assert store.refresh(identifier, _feed(3, 2, 1)) == 0
+    assert store.refresh(identifier, _feed(3, 2, 1)).queued == 0
     future = (datetime.now(UTC) + timedelta(minutes=1)).isoformat()
     updated = replace(
         _feed(3, 2, 1),
         episodes=tuple(_episode(index, published=future) for index in (8, 7, 6, 5, 4)) + _feed(3, 2, 1).episodes,
     )
-    assert store.refresh(identifier, updated) == 5
-    assert store.refresh(identifier, updated) == 0
+    assert store.refresh(identifier, updated) == (5, 5)
+    assert store.refresh(identifier, updated) == (0, 0)
     assert store.active_count() == 6
     store.set_subscription(identifier, auto_process=False)
     assert store.active_count() == 0
+
+
+def _counts(store: PodcastStore) -> tuple[int, int, int]:
+    row = store.subscriptions()[0]
+    return row["new_count"], row["unread_count"], row["attention_count"]
+
+
+def test_new_unread_and_listening_state_follows_the_user(tmp_path: Path) -> None:
+    store = PodcastStore(tmp_path / "podcasts.db")
+    store.initialize()
+    identifier = store.add("https://example.com/feed", _feed(3, 2, 1), auto_process=False)
+    # The back catalogue the user just subscribed to is not new.
+    assert _counts(store) == (0, 0, 0)
+    future = (datetime.now(UTC) + timedelta(minutes=1)).isoformat()
+    updated = replace(
+        _feed(3, 2, 1), episodes=tuple(_episode(index, published=future) for index in (5, 4)) + _feed(3, 2, 1).episodes
+    )
+    assert store.refresh(identifier, updated) == (0, 2)
+    rows = {row["title"]: row for row in store.episodes(identifier)["items"]}
+    assert [title for title, row in rows.items() if not row["seen_at"]] == ["Episode 5", "Episode 4"]
+    assert _counts(store) == (2, 0, 2)
+
+    assert store.mark_seen([rows["Episode 5"]["id"], rows["Episode 5"]["id"], "f" * 32]) == 1
+    old = rows["Episode 3"]["id"]
+    store.update(old, status="completed", transcript_id="c" * 32)
+    # Episode 4 is still new; Episode 3 is ready but unread.
+    assert _counts(store) == (1, 1, 2)
+    assert [row["id"] for row in store.episodes(identifier, unread_only=True)["items"]] == [old]
+
+    assert store.set_progress(old, played=True)
+    assert store.episode(old)["played_at"]
+    assert _counts(store) == (1, 0, 1)
+    assert store.episodes(identifier, unread_only=True)["total"] == 0
+    assert store.set_progress(old, read=False, played=False)
+    assert _counts(store) == (1, 1, 2)
+
+    assert store.mark_transcript_read("c" * 32) is True
+    assert store.mark_transcript_read("c" * 32) is False
+    assert store.mark_transcript_read("") is False
+    assert _counts(store) == (1, 0, 1)
+
+    store.update(rows["Episode 4"]["id"], status="completed")
+    assert store.mark_subscription_read(identifier) == 1
+    assert _counts(store) == (0, 0, 0)
+    assert store.episode(rows["Episode 4"]["id"])["read_at"]
+
+
+def test_upgrade_keeps_existing_episodes_out_of_new_and_unread(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = tmp_path / "podcasts.db"
+    with sqlite3.connect(path) as con:
+        con.executescript("""
+            CREATE TABLE subscriptions (
+                id TEXT PRIMARY KEY, feed_url TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
+                author TEXT NOT NULL, description TEXT NOT NULL, website_url TEXT NOT NULL,
+                auto_process INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
+                last_checked_at TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE episodes (
+                id TEXT PRIMARY KEY, subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+                guid TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL,
+                media_url TEXT NOT NULL, extension TEXT NOT NULL, published_at TEXT NOT NULL,
+                duration_seconds INTEGER, discovered_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'available',
+                transcript_id TEXT NOT NULL DEFAULT '', downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+                error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
+                UNIQUE(subscription_id, guid), UNIQUE(subscription_id, media_url)
+            );
+            INSERT INTO subscriptions VALUES ('s','https://example.com/feed','A','B','C','',1,'2026-08-01','','');
+            INSERT INTO episodes (id,subscription_id,guid,title,description,media_url,extension,published_at,
+                discovered_at,status,updated_at)
+            VALUES ('a','s','g1','Done','','https://example.com/1.mp3','.mp3','2026-08-02','2026-08-02',
+                'completed','2026-08-03'),
+                   ('b','s','g2','Open','','https://example.com/2.mp3','.mp3','2026-08-04','2026-08-04',
+                'available','2026-08-04');
+        """)
+    store = PodcastStore(path)
+    store.initialize()
+    store.initialize()
+    assert _counts(store) == (0, 0, 0)
+    assert store.episode("a")["read_at"] == "2026-08-03"
+    assert store.episode("b")["seen_at"] == "2026-08-04"
+
+
+@pytest.mark.asyncio
+async def test_refresh_and_completion_announce_new_and_ready_episodes(tmp_path: Path) -> None:
+    from src.core.ws_contracts import validate_event_payload
+
+    published: list[dict] = []
+
+    async def notify(payload: dict) -> None:
+        validate_event_payload(payload)
+        published.append(payload)
+
+    controller = FakeController(tmp_path)
+    transport = FakeTransport()
+    service = PodcastService(
+        tmp_path / "podcasts",
+        PodcastProcessor(controller, poll_seconds=0.001),
+        transport=transport,
+        startup_delay=0,
+        notify=notify,
+    )
+    try:
+        identifier = await service.subscribe("https://example.com/feed")
+        await service._refresh()
+        assert published == []
+        future = (datetime.now(UTC) + timedelta(minutes=1)).isoformat()
+        transport.current_feed = replace(
+            _feed(3, 2, 1),
+            title="Morning briefing",
+            episodes=tuple(_episode(index, published=future) for index in (5, 4)) + _feed(3, 2, 1).episodes,
+        )
+        await service._refresh()
+        assert [event["type"] for event in published] == ["podcast_episodes_discovered"]
+        assert published[0]["count"] == 2
+        assert published[0]["queuedCount"] == 2
+        assert published[0]["podcasts"] == [{"subscriptionId": identifier, "title": "Morning briefing", "count": 2}]
+        library = await service.library()
+        assert (library["newCount"], library["attentionCount"]) == (2, 2)
+
+        episode = next(row for row in (await service.episodes(identifier))["items"] if row["title"] == "Episode 5")
+        await service._process(episode)
+        ready = published[-1]
+        assert ready["type"] == "podcast_episode_ready"
+        assert ready["episodeId"] == episode["id"]
+        assert ready["transcriptId"] == controller.started[-1]
+        assert ready["title"] == "Episode 5"
+        assert ready["podcastTitle"] == "Morning briefing"
+        assert (await service.library())["unreadCount"] == 1
+
+        # Downloading audio again for a finished episode is not a new episode.
+        assert await service.remove_download(episode["id"])
+        assert await service.queue(episode["id"])
+        before = len(published)
+        await service._process(service._store.episode(episode["id"]))
+        assert len(published) == before
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_notification_never_breaks_refresh_or_processing(tmp_path: Path) -> None:
+    async def notify(_payload: dict) -> None:
+        raise RuntimeError("socket closed")
+
+    controller = FakeController(tmp_path)
+    transport = FakeTransport()
+    service = PodcastService(
+        tmp_path / "podcasts", PodcastProcessor(controller), transport=transport, startup_delay=0, notify=notify
+    )
+    try:
+        identifier = await service.subscribe("https://example.com/feed")
+        future = (datetime.now(UTC) + timedelta(minutes=1)).isoformat()
+        transport.current_feed = replace(
+            _feed(3, 2, 1), episodes=(_episode(4, published=future), *_feed(3, 2, 1).episodes)
+        )
+        await service._refresh()
+        episode = (await service.episodes(identifier))["items"][0]
+        await service._process(episode)
+        assert service._store.episode(episode["id"])["status"] == "completed"
+        assert service._store.subscription(identifier)["error"] == ""
+    finally:
+        await service.close()
 
 
 def test_store_claim_is_exclusive_and_restart_retains_transcript_identity(tmp_path: Path) -> None:
@@ -904,6 +1068,29 @@ async def test_podcast_http_contract_strict_inputs_and_redacted_projection(tmp_p
         assert result.status == 400
         result = await client.get(f"/api/podcasts/subscriptions/{identifier}/episodes?offset=-1")
         assert result.status == 400
+        assert (await client.get(f"/api/podcasts/subscriptions/{identifier}/episodes?view=new")).status == 400
+        first = page["items"][0]
+        assert (first["isNew"], first["isUnread"], first["readAt"], first["playedAt"]) == (False, False, "", "")
+        for body in ({"ids": []}, {"ids": "x"}, {"ids": ["not-an-id"]}, {"ids": [first["id"]] * 201}, {"other": 1}):
+            assert (await client.post("/api/podcasts/episodes/seen", json=body)).status == 400
+        assert await (await client.post("/api/podcasts/episodes/seen", json={"ids": [first["id"]]})).json() == {
+            "updated": 0
+        }
+        for body in ({}, {"read": "yes"}, {"played": 1}, {"read": True, "seen": True}):
+            assert (await client.patch(f"/api/podcasts/episodes/{first['id']}", json=body)).status == 400
+        assert (await client.patch(f"/api/podcasts/episodes/{'f' * 32}", json={"read": True})).status == 404
+        service._store.update(first["id"], status="completed", transcript_id="c" * 32)
+        unread = await (await client.get(f"/api/podcasts/subscriptions/{identifier}/episodes?view=unread")).json()
+        assert [item["id"] for item in unread["items"]] == [first["id"]]
+        assert unread["items"][0]["isUnread"] is True
+        assert (await client.patch(f"/api/podcasts/episodes/{first['id']}", json={"played": True})).status == 200
+        assert (await (await client.get("/api/podcasts")).json())["unreadCount"] == 0
+        assert (await client.patch(f"/api/podcasts/episodes/{first['id']}", json={"played": False})).status == 200
+        assert await (await client.post(f"/api/podcasts/transcripts/{'c' * 32}/read")).json() == {"updated": True}
+        assert await (await client.post(f"/api/podcasts/transcripts/{'d' * 32}/read")).json() == {"updated": False}
+        assert (await client.post("/api/podcasts/transcripts/invalid/read")).status == 404
+        assert await (await client.post(f"/api/podcasts/subscriptions/{identifier}/read")).json() == {"updated": 0}
+        service._store.update(first["id"], status="failed", transcript_id="")
         assert (await client.get("/api/podcasts/episodes/invalid/audio")).status == 404
         assert (await client.get("/api/podcasts/transcripts/invalid")).status == 404
         transcript_id = "b" * 32

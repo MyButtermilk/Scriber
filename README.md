@@ -160,9 +160,15 @@ Privacy details are documented in the
 Search podcasts without another account or API key, or paste a public RSS feed.
 Subscribing with automatic processing starts the latest episode; older episodes
 remain available for manual processing. Scriber checks feeds every 30 minutes
-while running and processes new episodes one at a time using the transcription
-provider and summary model selected in Settings. Those providers' normal usage
-charges still apply.
+while running and processes up to three new episodes at a time using the
+transcription provider and summary model selected in Settings. Those providers'
+normal usage charges still apply.
+
+New episodes are marked **New** until you have seen them, and ready episodes stay
+**Unread** until you open the transcript or play the audio. The Podcasts tab
+counts both, an **Unread** filter lists what is left to read, and you can mark an
+episode or a whole podcast as read. A notification announces newly found episodes
+and every episode that becomes ready to read, with a direct link to it.
 
 Pause automatic processing for an individual subscription, play downloaded
 audio, open transcripts and summaries, retry a failed step, or remove downloads.

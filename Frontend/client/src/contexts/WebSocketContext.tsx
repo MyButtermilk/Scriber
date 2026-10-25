@@ -194,7 +194,23 @@ export type ScriberWebSocketMessage =
       meetingId?: string;
     })
   | (BaseWsMessage & { type: "meeting_chat_delta"; meetingId: string; threadId: string; delta: string })
-  | (BaseWsMessage & { type: "meeting_delivery_updated"; meetingId: string; delivery: Record<string, unknown> });
+  | (BaseWsMessage & { type: "meeting_delivery_updated"; meetingId: string; delivery: Record<string, unknown> })
+  | (BaseWsMessage & {
+      type: "podcast_episodes_discovered";
+      eventId: string;
+      count: number;
+      queuedCount: number;
+      podcasts: Array<{ subscriptionId: string; title: string; count: number }>;
+    })
+  | (BaseWsMessage & {
+      type: "podcast_episode_ready";
+      eventId: string;
+      episodeId: string;
+      subscriptionId: string;
+      transcriptId: string;
+      title: string;
+      podcastTitle: string;
+    });
 
 type MessageHandler = (data: ScriberWebSocketMessage) => void;
 

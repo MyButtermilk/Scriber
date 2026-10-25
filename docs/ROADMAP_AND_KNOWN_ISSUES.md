@@ -128,6 +128,8 @@ September runtime and workflow work:
   restart recovery are implemented. Feed checks run while Scriber is running;
   there is no separate Windows background scheduler. The configured provider's
   ordinary usage charges still apply, and unsupported/private feeds are rejected.
+  Durable New/Unread episode state, an Unread filter, read/unread controls, a
+  Podcasts tab attention count, and toasts for new and ready episodes exist.
 - Debug Console now has workflow filtering, indexed metadata search, virtualized
   rows, separate stage timings, and a bounded redacted snapshot cache. A persisted
   diagnostic-logging opt-out covers Python, shell output, and timing persistence.

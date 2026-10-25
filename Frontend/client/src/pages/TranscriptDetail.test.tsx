@@ -17,6 +17,8 @@ vi.mock("react-markdown", async (importOriginal) => {
 
 vi.mock("@/hooks/use-transcript-auto-refresh", () => ({ useTranscriptAutoRefresh: () => ({ isWsConnected: true }) }));
 vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }));
+const { markPodcastTranscriptRead } = vi.hoisted(() => ({ markPodcastTranscriptRead: vi.fn(async () => {}) }));
+vi.mock("@/lib/podcast-progress", () => ({ markPodcastTranscriptRead }));
 vi.mock("@/lib/fetch-with-timeout", () => ({
   fetchWithTimeout: vi.fn(async () => new Response(JSON.stringify({ episode: null }))),
 }));
@@ -89,6 +91,18 @@ describe("failed transcript", () => {
     );
     expect(await screen.findByRole("heading", { name: "Revised summary" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Original summary" })).not.toBeInTheDocument();
+  });
+
+  it("counts opening a completed file transcript as reading its podcast episode", async () => {
+    const { client } = mount("Transcript text.", "", "", "file", { id: "c".repeat(32), status: "completed" });
+    await screen.findByText("Transcript text.");
+    await waitFor(() => expect(markPodcastTranscriptRead).toHaveBeenCalledWith(client, "c".repeat(32)));
+  });
+
+  it("does not mark failed transcripts as read", async () => {
+    mount("", "Podcast processing failed.", "", "file", { id: "c".repeat(32) });
+    await screen.findByText("Podcast processing failed.");
+    expect(markPodcastTranscriptRead).not.toHaveBeenCalled();
   });
 
   it("offers transcription retry beside the error for an ordinary uploaded file", async () => {

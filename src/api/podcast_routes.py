@@ -12,6 +12,7 @@ from aiohttp import web
 from loguru import logger
 
 from src.podcasts.feeds import PodcastError
+from src.podcasts.store import MAX_SEEN_BATCH
 
 
 class PodcastServicePort(Protocol):
@@ -31,7 +32,17 @@ class PodcastServicePort(Protocol):
 
     async def unsubscribe(self, identifier: str) -> bool: ...
 
-    async def episodes(self, identifier: str, *, offset: int = 0) -> dict[str, Any]: ...
+    async def episodes(self, identifier: str, *, offset: int = 0, unread_only: bool = False) -> dict[str, Any]: ...
+
+    async def mark_seen(self, identifiers: list[str]) -> int: ...
+
+    async def set_episode_progress(
+        self, identifier: str, *, read: bool | None = None, played: bool | None = None
+    ) -> bool: ...
+
+    async def mark_subscription_read(self, identifier: str) -> int: ...
+
+    async def mark_transcript_read(self, transcript_id: str) -> bool: ...
 
     async def queue(self, identifier: str) -> bool: ...
 
@@ -84,6 +95,9 @@ def _subscription(row: dict[str, Any]) -> dict[str, Any]:
         "error": row["error"],
         "episodeCount": row["episode_count"],
         "completedCount": row["completed_count"],
+        "newCount": row["new_count"],
+        "unreadCount": row["unread_count"],
+        "attentionCount": row["attention_count"],
     }
 
 
@@ -98,6 +112,10 @@ def _episode(row: dict[str, Any]) -> dict[str, Any]:
         "transcriptId": row["transcript_id"],
         "downloadedBytes": row["downloaded_bytes"],
         "error": row["error"],
+        "isNew": not row["seen_at"],
+        "readAt": row["read_at"],
+        "playedAt": row["played_at"],
+        "isUnread": row["status"] == "completed" and not row["read_at"] and not row["played_at"],
     }
 
 
@@ -141,9 +159,45 @@ async def podcast_episodes(request: web.Request) -> web.Response:
             raise ValueError
     except ValueError as exc:
         raise PodcastError("Invalid episode page.") from exc
-    result = await request.app[APP_PODCASTS].episodes(_id(request), offset=offset)
+    view = request.query.get("view", "all")
+    if view not in {"all", "unread"}:
+        raise PodcastError("Invalid episode filter.")
+    result = await request.app[APP_PODCASTS].episodes(_id(request), offset=offset, unread_only=view == "unread")
     result["items"] = [_episode(row) for row in result["items"]]
     return web.json_response(result)
+
+
+async def podcast_episodes_seen(request: web.Request) -> web.Response:
+    body = await _body(request, {"ids"})
+    identifiers = body.get("ids")
+    if (
+        not isinstance(identifiers, list)
+        or not identifiers
+        or len(identifiers) > MAX_SEEN_BATCH
+        or not all(isinstance(value, str) and _ID.fullmatch(value) for value in identifiers)
+    ):
+        raise PodcastError("Provide the episode IDs that were shown.")
+    return web.json_response({"updated": await request.app[APP_PODCASTS].mark_seen(identifiers)})
+
+
+async def podcast_episode_progress(request: web.Request) -> web.Response:
+    body = await _body(request, {"read", "played"})
+    if not body or any(type(value) is not bool for value in body.values()):
+        raise PodcastError("Provide a valid read or played state.")
+    updated = await request.app[APP_PODCASTS].set_episode_progress(
+        _id(request), read=body.get("read"), played=body.get("played")
+    )
+    if not updated:
+        raise web.HTTPNotFound()
+    return web.json_response({"ok": True})
+
+
+async def podcast_subscription_read(request: web.Request) -> web.Response:
+    return web.json_response({"updated": await request.app[APP_PODCASTS].mark_subscription_read(_id(request))})
+
+
+async def podcast_transcript_read(request: web.Request) -> web.Response:
+    return web.json_response({"updated": await request.app[APP_PODCASTS].mark_transcript_read(_id(request))})
 
 
 async def podcast_transcript_episode(request: web.Request) -> web.Response:
@@ -209,7 +263,11 @@ def register_podcast_routes(app: web.Application, *, factory: Callable[[], Podca
     app.router.add_patch("/api/podcasts/subscriptions/{id}", guarded(podcast_subscription_update))
     app.router.add_delete("/api/podcasts/subscriptions/{id}", guarded(podcast_unsubscribe))
     app.router.add_get("/api/podcasts/subscriptions/{id}/episodes", guarded(podcast_episodes))
+    app.router.add_post("/api/podcasts/subscriptions/{id}/read", guarded(podcast_subscription_read))
+    app.router.add_post("/api/podcasts/episodes/seen", guarded(podcast_episodes_seen))
+    app.router.add_patch("/api/podcasts/episodes/{id}", guarded(podcast_episode_progress))
     app.router.add_post("/api/podcasts/episodes/{id}/queue", guarded(podcast_queue))
     app.router.add_get("/api/podcasts/transcripts/{id}", guarded(podcast_transcript_episode))
+    app.router.add_post("/api/podcasts/transcripts/{id}/read", guarded(podcast_transcript_read))
     app.router.add_get("/api/podcasts/episodes/{id}/audio", guarded(podcast_audio))
     app.router.add_delete("/api/podcasts/episodes/{id}/audio", guarded(podcast_remove_download))

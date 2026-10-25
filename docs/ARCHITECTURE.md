@@ -1172,6 +1172,22 @@ summary stages overlap across up to three episodes, with independent durable
 identities and active-removal guards. The controller-free `src/api/podcast_routes.py` maps strict bounded
 requests onto this domain; the frontend does not own its scheduler.
 
+Episode listening state is durable in the same store. `seen_at` records that a
+visible episode list showed the episode; only feed refreshes after subscribing
+create unseen episodes, so neither the initial back catalogue nor an upgraded
+library floods the user. `read_at` is set when the transcript is opened from any
+entry point, `played_at` when its downloaded audio starts; a ready episode
+without either is unread. The library and each subscription expose
+`newCount`, `unreadCount`, and `attentionCount`, the episode list accepts
+`?view=unread`, and explicit read/unread, seen, and mark-all routes are strict
+and bounded. One refresh pass publishes a single versioned
+`podcast_episodes_discovered` event, and every completed transcription publishes
+`podcast_episode_ready`; their bounded title fields go only to the authenticated
+WebSocket and never into logs. A failed notification never affects refresh or
+processing. The app-global `PodcastNotificationBridge` turns them into
+deduplicated toasts that open the podcast or transcript, and the Podcasts tab
+shows the attention count.
+
 Diagnostic collection and writing have separate owners. `operation_diagnostics`
 times authenticated mutations using registered route templates, never concrete
 path parameters, request bodies, query strings, or exception messages. HTTP
