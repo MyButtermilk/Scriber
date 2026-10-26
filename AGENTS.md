@@ -267,6 +267,11 @@ Backend and runtime:
   publishes one `podcast_episodes_discovered` event; each completion publishes
   `podcast_episode_ready`. Their bounded titles reach only the WebSocket, never
   logs, and a notification failure must not affect refresh or processing.
+  The Podcast overview separates newly discovered episodes from ready episodes
+  still neither read nor played, and links each count to a matching podcast.
+  Sidebar attention counts deduplicate their overlap; their description exposes
+  both counts. Keep read and played indicators independent, and never treat
+  merely displaying the episode list as consuming a ready episode.
 - `src/data/job_store.py`: persistent file/YouTube jobs.
 - `src/data/latency_metrics_store.py`: hot-path metrics.
 - `src/core/`: contracts, state machine, circuit breaker, logging, tracing.

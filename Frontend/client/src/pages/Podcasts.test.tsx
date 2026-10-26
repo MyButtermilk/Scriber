@@ -198,11 +198,11 @@ describe("Podcasts", () => {
   });
 
   it("highlights new episodes for this visit and records that they were seen", async () => {
-    const fresh = episode({ isNew: true });
+    const fresh = episode({ status: "completed", isNew: true, isUnread: true });
     request.mockImplementation(async (_method: string, path: string) => ({
       json: async () => (path.includes("/episodes?") ? { items: [fresh], total: 1 } : { updated: 1 }),
     }));
-    mount([subscription({ newCount: 1, attentionCount: 1 })]);
+    mount([subscription({ newCount: 1, unreadCount: 1, attentionCount: 1 })]);
     const row = (await screen.findByText("Understanding tomorrow")).closest("article");
     expect(row).toHaveAttribute("data-new", "true");
     expect(within(row!).getByText("New")).toBeVisible();
@@ -211,6 +211,13 @@ describe("Podcasts", () => {
       expect(request).toHaveBeenCalledWith("POST", "/api/podcasts/episodes/seen", { ids: [fresh.id] }),
     );
     expect(request.mock.calls.filter(([, path]) => path === "/api/podcasts/episodes/seen")).toHaveLength(1);
+    expect(row).toHaveAttribute("data-unread", "true");
+    expect(within(row!).getByText("Not read or listened")).toBeVisible();
+    expect(within(row!).queryByText("Read")).toBeNull();
+    expect(within(row!).queryByText("Listened")).toBeNull();
+    expect(request.mock.calls.some(([method, path]) => method === "PATCH" || String(path).endsWith("/read"))).toBe(
+      false,
+    );
   });
 
   it("does not mark episodes as seen while Scriber is in the background", async () => {
@@ -240,17 +247,17 @@ describe("Podcasts", () => {
     mount([subscription({ unreadCount: 2, attentionCount: 2 })]);
     const row = (await screen.findByText("Understanding tomorrow")).closest("article");
     expect(row).toHaveAttribute("data-unread", "true");
-    expect(within(row!).getByText("Unread")).toBeVisible();
-    expect(screen.getByText("2 unread")).toBeVisible();
+    expect(within(row!).getByText("Not read or listened")).toBeVisible();
+    expect(screen.getByText("2 still open")).toBeVisible();
 
-    fireEvent.click(screen.getByRole("button", { name: "Unread (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Still open (2)" }));
     await waitFor(() =>
       expect(request).toHaveBeenCalledWith(
         "GET",
         `/api/podcasts/subscriptions/${"a".repeat(32)}/episodes?offset=0&view=unread`,
       ),
     );
-    expect(screen.getByRole("button", { name: "Unread (2)" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Still open (2)" })).toHaveAttribute("aria-pressed", "true");
 
     fireEvent.keyDown(await screen.findByRole("button", { name: "Episode options" }), { key: "Enter" });
     fireEvent.click(await screen.findByRole("menuitem", { name: "Mark as read" }));
@@ -281,7 +288,7 @@ describe("Podcasts", () => {
         played: false,
       }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Unread" }));
+    fireEvent.click(screen.getByRole("button", { name: "Still open" }));
     expect(await screen.findByText(/You're all caught up/)).toBeVisible();
   });
 
@@ -314,7 +321,7 @@ describe("Podcasts", () => {
       };
     });
     const { container } = mount([subscription({ unreadCount: 1, attentionCount: 1 })]);
-    fireEvent.click(await screen.findByRole("button", { name: "Unread (1)" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Still open (1)" }));
     fireEvent.click(await screen.findByRole("button", { name: "Listen" }));
     fireEvent.play(container.querySelector("audio")!);
     await waitFor(() =>
@@ -349,6 +356,71 @@ describe("Podcasts", () => {
         timeoutMs: 60_000,
       }),
     );
+  });
+
+  it("shows separate overview counts and opens a matching podcast in the appropriate view", async () => {
+    const caughtUp = subscription();
+    const open = subscription({ id: "e".repeat(32), title: "Open show", unreadCount: 3, attentionCount: 3 });
+    const fresh = subscription({
+      id: "f".repeat(32),
+      title: "New show",
+      newCount: 2,
+      unreadCount: 1,
+      attentionCount: 2,
+    });
+    mount([caughtUp, open, fresh]);
+    const overview = await screen.findByRole("region", { name: "Episode overview" });
+    const newEpisodes = within(overview).getByRole("button", { name: "Show 2 new episodes" });
+    const openEpisodes = within(overview).getByRole("button", { name: "Show 4 open episodes" });
+    expect(within(newEpisodes).getByText("2")).toBeVisible();
+    expect(within(openEpisodes).getByText("4")).toBeVisible();
+    expect(within(overview).getByText(/Viewing the list does not mark them as read/)).toBeVisible();
+
+    fireEvent.click(openEpisodes);
+    expect(await screen.findByRole("heading", { name: "Open show", level: 2 })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Still open (3)" })).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith(
+        "GET",
+        `/api/podcasts/subscriptions/${open.id}/episodes?offset=0&view=unread`,
+      ),
+    );
+
+    fireEvent.click(newEpisodes);
+    expect(await screen.findByRole("heading", { name: "New show", level: 2 })).toBeVisible();
+    expect(screen.getByRole("button", { name: "All episodes" })).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith("GET", `/api/podcasts/subscriptions/${fresh.id}/episodes?offset=0`),
+    );
+  });
+
+  it("disables overview shortcuts when no new or open episodes exist", async () => {
+    mount([subscription()]);
+    const overview = await screen.findByRole("region", { name: "Episode overview" });
+    const newEpisodes = within(overview).getByRole("button", { name: "Show 0 new episodes" });
+    const openEpisodes = within(overview).getByRole("button", { name: "Show 0 open episodes" });
+    expect(newEpisodes).toBeDisabled();
+    expect(openEpisodes).toBeDisabled();
+    fireEvent.click(newEpisodes);
+    fireEvent.click(openEpisodes);
+    expect(screen.getByRole("button", { name: "All episodes" })).toHaveAttribute("aria-pressed", "true");
+    expect(request.mock.calls.some(([method]) => method !== "GET")).toBe(false);
+  });
+
+  it("keeps both read and listened markers visible for an episode consumed in both ways", async () => {
+    const consumed = episode({
+      status: "completed",
+      readAt: "2026-09-08T10:00:00Z",
+      playedAt: "2026-09-08T11:00:00Z",
+    });
+    request.mockImplementation(async (_method: string, path: string) => ({
+      json: async () => (path.includes("/episodes?") ? { items: [consumed], total: 1 } : {}),
+    }));
+    mount([subscription()]);
+    const row = (await screen.findByText("Understanding tomorrow")).closest("article");
+    expect(within(row!).getByText("Read")).toBeVisible();
+    expect(within(row!).getByText("Listened")).toBeVisible();
+    expect(within(row!).queryByText("Not read or listened")).toBeNull();
   });
 
   it("opens the podcast named by a notification link and consumes the request", async () => {
