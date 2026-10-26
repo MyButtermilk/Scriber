@@ -45,6 +45,7 @@ import {
 import { useI18n } from "@/i18n";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { ApiRequestError } from "@/lib/request-errors";
 import { apiUrl } from "@/lib/backend";
 import { cn } from "@/lib/utils";
 import {
@@ -212,6 +213,15 @@ export default function Podcasts() {
     void queryClient.invalidateQueries({ queryKey: LIBRARY_KEY });
     void queryClient.invalidateQueries({ queryKey: [PODCAST_EPISODES_KEY] });
   };
+  const showActionError = (error: Error) => {
+    const message = t(error.message);
+    const reference = error instanceof ApiRequestError ? error.reference : undefined;
+    toast({
+      title: t("Podcast action failed"),
+      description: reference ? `${message} ${t("Reference: {{id}}", { id: reference })}` : message,
+      variant: "destructive",
+    });
+  };
   const progress = useMutation({
     mutationFn: async ({ id, body }: { id: string; body: EpisodeProgress }) =>
       (await apiRequest("PATCH", `/api/podcasts/episodes/${id}`, body)).json(),
@@ -221,8 +231,7 @@ export default function Podcasts() {
       );
       refreshData();
     },
-    onError: (error) =>
-      toast({ title: t("Podcast action failed"), description: t(error.message), variant: "destructive" }),
+    onError: showActionError,
   });
   const listedEpisodes = episodes.data?.items ?? [];
   const shownEpisodes =
@@ -250,8 +259,7 @@ export default function Podcasts() {
       }
       refreshData();
     },
-    onError: (error) =>
-      toast({ title: t("Podcast action failed"), description: t(error.message), variant: "destructive" }),
+    onError: showActionError,
   });
 
   const subscribe = (url: string) =>

@@ -15,6 +15,17 @@ const INVALID_ARGUMENT_TOKENS = ["errno 22", "invalid argument"];
 const PREFIX_PATTERN = /^\[(error|timeout|download error|storage error)\]\s*/i;
 const STATUS_PREFIX_PATTERN = /^\d{3}:\s*/;
 
+/** Optional content-free backend reference; never carry arbitrary response metadata. */
+export class ApiRequestError extends Error {
+  readonly reference?: string;
+
+  constructor(message: string, reference?: unknown, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ApiRequestError";
+    this.reference = typeof reference === "string" && /^[0-9a-f]{32}$/.test(reference) ? reference : undefined;
+  }
+}
+
 export function requiresYouTubeSignIn(message: string): boolean {
   const normalized = message.toLowerCase().replaceAll("’", "'");
   return (
@@ -43,14 +54,10 @@ export function friendlyRequestMessage(rawMessage: string, fallback = "Request f
     normalized.includes("the page needs to be reloaded") ||
     normalized.includes("youtube rejected playback extraction.")
   ) {
-    return translateNow(
-      "YouTube rejected playback extraction. Connect a fresh YouTube sign-in below to try again.",
-    );
+    return translateNow("YouTube rejected playback extraction. Connect a fresh YouTube sign-in below to try again.");
   }
   if (requiresYouTubeSignIn(message)) {
-    return translateNow(
-      "YouTube requires sign-in. Connect your YouTube account below to continue.",
-    );
+    return translateNow("YouTube requires sign-in. Connect your YouTube account below to continue.");
   }
 
   if (NETWORK_ERROR_TOKENS.some((token) => normalized.includes(token))) {
@@ -86,7 +93,7 @@ export function friendlyError(error: unknown, fallback = "Request failed."): str
   return translateNow(fallback);
 }
 
-export async function responseDetailMessage(res: Response): Promise<string> {
+async function responseDetails(res: Response): Promise<{ message: string; reference?: unknown }> {
   const contentType = (res.headers.get("content-type") || "").toLowerCase();
 
   if (contentType.includes("application/json")) {
@@ -96,19 +103,27 @@ export async function responseDetailMessage(res: Response): Promise<string> {
       (typeof payload?.error === "string" && payload.error) ||
       "";
     if (message) {
-      return message;
+      return { message, reference: payload?.reference };
     }
   }
 
-  return ((await res.text().catch(() => "")) || "").trim();
+  return { message: ((await res.text().catch(() => "")) || "").trim() };
+}
+
+export async function responseDetailMessage(res: Response): Promise<string> {
+  return (await responseDetails(res)).message;
+}
+
+export async function responseRequestError(res: Response): Promise<ApiRequestError> {
+  const detail = await responseDetails(res);
+  return new ApiRequestError(
+    `${res.status}: ${detail.message || res.statusText || translateNow("Request failed")}`,
+    detail.reference,
+  );
 }
 
 export async function responseErrorMessage(res: Response): Promise<string> {
-  const detail = await responseDetailMessage(res);
-  if (detail) {
-    return `${res.status}: ${detail}`;
-  }
-  return `${res.status}: ${res.statusText || translateNow("Request failed")}`;
+  return (await responseRequestError(res)).message;
 }
 
 /** Legacy failed records stored only their failure text as transcript content. */

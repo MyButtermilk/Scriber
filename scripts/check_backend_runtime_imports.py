@@ -24,6 +24,7 @@ CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("audioop", "PCM16 RMS runtime supplied by audioop-lts"),
     ("loudness", "Pipecat ITU-R BS.1770 loudness dependency"),
     ("sentencex", "Pipecat sentence segmentation dependency"),
+    ("truststore", "native system certificate verification for podcast HTTPS"),
     ("wave", "Meeting device-test in-memory WAV construction"),
     ("winsound", "Windows Meeting device-test tone playback"),
     ("onnxruntime", "Silero VAD native runtime dependency"),
@@ -100,6 +101,7 @@ PYTHON314_NATIVE_RUNTIME_IMPORTS: tuple[str, ...] = (
     "sounddevice",
     "sqlite3",
     "ssl",
+    "truststore",
 )
 
 BLOCKED_FROZEN_UNUSED_PROVIDER_IMPORTS: tuple[str, ...] = (
@@ -482,11 +484,20 @@ def check_python314_native_runtime(
             active_module = module_name
             loaded[module_name] = import_module(module_name)
 
+        active_module = "truststore"
+        ssl = loaded["ssl"]
+        truststore = loaded["truststore"]
+        context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        if context.verify_mode != ssl.CERT_REQUIRED or context.check_hostname is not True:
+            raise RuntimeError("Native podcast TLS verification is disabled")
+        context.wrap_bio(ssl.MemoryBIO(), ssl.MemoryBIO(), server_hostname="example.invalid")
+
         aiohttp = loaded["aiohttp"]
 
         async def exercise_aiohttp() -> None:
             timeout = aiohttp.ClientTimeout(total=0.01)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            connector = aiohttp.TCPConnector(ssl=context)
+            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
                 if session.closed:
                     raise RuntimeError("aiohttp session closed before use")
             if not session.closed:

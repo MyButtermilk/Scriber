@@ -123,6 +123,8 @@ export const podcastTranslations: TranslationCatalog = {
     "Die Podcast-Verarbeitung ist fehlgeschlagen. Prüfe die Anbietereinstellungen und versuche es erneut.",
   "This episode is already queued or processed.": "Diese Folge ist bereits vorgemerkt oder verarbeitet.",
   "Podcast request failed. Please try again.": "Die Podcast-Anfrage ist fehlgeschlagen. Bitte versuche es erneut.",
+  "The podcast host's TLS certificate could not be verified. Check your network or proxy settings and try again.":
+    "Das TLS-Zertifikat des Podcast-Anbieters konnte nicht geprüft werden. Prüfe die Netzwerk- oder Proxy-Einstellungen und versuche es erneut.",
   Unread: "Ungelesen",
   Read: "Gelesen",
   Listened: "Angehört",

@@ -336,6 +336,7 @@ datas += copy_metadata("onnx-asr")
 datas += copy_metadata("huggingface-hub")
 datas += copy_metadata("yt-dlp")
 datas += copy_metadata("yt-dlp-ejs")
+datas += copy_metadata("truststore")
 
 for package in ("pipecat", "yt_dlp", "yt_dlp_ejs"):
     try:

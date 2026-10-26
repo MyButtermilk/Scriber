@@ -240,7 +240,11 @@ Backend and runtime:
 - `src/database.py`: SQLite WAL persistence, metadata loading, FTS5 search.
 - `src/podcasts/`: public-only RSS/directory transport, durable subscription and
   episode state, retained downloads, independent feed refresh, and three concurrent
-  processing workers. Downloads serialize their capacity check and write to preserve
+  processing workers. Its own `truststore` TLS client context uses native system
+  certificate-chain and hostname verification, including managed Windows trust.
+  Never inject this context globally or disable TLS verification; retain the
+  public-address resolver and redirect checks. Downloads serialize their capacity
+  check and write to preserve
   the shared cache limit. Terminal completion and media-ownership release precede
   best-effort ready notifications; a delayed notification must not block download
   removal or clear a successor retry's ownership. Its processor alone adapts to

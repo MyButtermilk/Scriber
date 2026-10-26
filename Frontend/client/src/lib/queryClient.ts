@@ -1,7 +1,7 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 import { apiUrl } from "./backend";
 import { fetchWithTimeout } from "./fetch-with-timeout";
-import { friendlyError, responseErrorMessage } from "./request-errors";
+import { ApiRequestError, friendlyError, responseRequestError } from "./request-errors";
 import { translateNow } from "@/i18n";
 
 const DEFAULT_API_REQUEST_TIMEOUT_MS = 30_000;
@@ -18,7 +18,7 @@ interface ApiRequestOptions {
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
-    throw new Error(await responseErrorMessage(res));
+    throw await responseRequestError(res);
   }
 }
 
@@ -44,7 +44,11 @@ export async function apiRequest(
     return res;
   } catch (error) {
     // Re-throw with a friendlier message
-    throw new Error(friendlyError(error, "An unexpected error occurred."), { cause: error });
+    throw new ApiRequestError(
+      friendlyError(error, "An unexpected error occurred."),
+      error instanceof ApiRequestError ? error.reference : undefined,
+      { cause: error },
+    );
   }
 }
 

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import ssl
 import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from backend_runtime.contract import RUNTIME_CONTRACT_REVISION, RUNTIME_REQUIRED_IMPORTS
 from backend_runtime.launcher import check_imports as check_frozen_imports
@@ -144,6 +147,40 @@ def test_runtime_import_gates_reject_missing_meeting_tone_dependencies():
             assert missing[0]["error"] == f"ModuleNotFoundError: No module named '{missing_module}'"
 
 
+def test_runtime_import_gates_reject_missing_native_podcast_tls():
+    def without_truststore(module_name: str) -> object:
+        if module_name == "truststore":
+            raise ModuleNotFoundError("No module named 'truststore'")
+        return object()
+
+    for gate in (check_imports, check_frozen_imports):
+        assert [item["module"] for item in gate(import_module=without_truststore)] == ["truststore"]
+
+
+@pytest.mark.parametrize("missing_verification", ["hostname", "certificate"])
+def test_native_runtime_gate_rejects_nonvalidating_podcast_tls(missing_verification):
+    def invalid_context(protocol):
+        context = ssl.SSLContext(protocol)
+        context.check_hostname = False
+        if missing_verification == "certificate":
+            context.verify_mode = ssl.CERT_NONE
+        return context
+
+    def import_with_invalid_truststore(module_name):
+        if module_name == "truststore":
+            return SimpleNamespace(SSLContext=invalid_context)
+        return importlib.import_module(module_name)
+
+    errors = check_python314_native_runtime(import_module=import_with_invalid_truststore)
+    assert errors == [
+        {
+            "module": "python314-native-runtime:truststore",
+            "reason": "functional CPython 3.14 source/frozen native dependency surface",
+            "error": "RuntimeError: native runtime probe failed",
+        }
+    ]
+
+
 def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     required_modules = {module for module, _reason in REQUIRED_IMPORTS}
 
@@ -187,7 +224,7 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
 def test_frozen_runtime_contract_covers_direct_pipecat_pipeline_imports():
     frozen_modules = {module for module, _reason in RUNTIME_REQUIRED_IMPORTS}
 
-    assert RUNTIME_CONTRACT_REVISION == 10
+    assert RUNTIME_CONTRACT_REVISION == 11
     assert {
         "pipecat.pipeline.pipeline",
         "pipecat.pipeline.worker",

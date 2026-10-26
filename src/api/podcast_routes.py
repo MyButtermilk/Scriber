@@ -7,10 +7,12 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
-from aiohttp import web
+from aiohttp import ClientConnectorCertificateError, web
 from loguru import logger
 
+from src.core.logging_setup import emit_event
 from src.podcasts.feeds import PodcastError
 from src.podcasts.store import MAX_SEEN_BATCH
 
@@ -229,6 +231,30 @@ async def podcast_remove_download(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+def _failure_response(request: web.Request, exc: Exception, *, message: str, status: int) -> web.Response:
+    # One content-free reference connects the toast to the Podcast console
+    # entry. The HTTP middleware separately records completion and timing.
+    reference = uuid4().hex
+    resource = request.match_info.route.resource
+    emit_event(
+        logger.bind(component="podcasts"),
+        "Podcast TLS certificate verification failed"
+        if isinstance(exc, ClientConnectorCertificateError)
+        else "Podcast request rejected"
+        if status < 500
+        else "Podcast request failed",
+        level="ERROR" if status >= 500 else "WARNING",
+        event="podcast.request.failed",
+        workflow="podcasts",
+        stage="http",
+        trace_id=reference,
+        outcome="failure" if status >= 500 else "rejected",
+        error_category=type(exc).__name__,
+        meta={"method": request.method, "route": resource.canonical if resource else "", "status": status},
+    )
+    return web.json_response({"message": message, "reference": reference}, status=status)
+
+
 def register_podcast_routes(app: web.Application, *, factory: Callable[[], PodcastServicePort]) -> None:
     # Construction is deferred until the aiohttp lifecycle starts; create_app
     # remains safe with narrow route fakes and does no disk or network work.
@@ -246,12 +272,21 @@ def register_podcast_routes(app: web.Application, *, factory: Callable[[], Podca
             try:
                 return await handler(request)
             except PodcastError as exc:
-                return web.json_response({"message": str(exc)}, status=400)
+                return _failure_response(request, exc, message=str(exc), status=400)
+            except ClientConnectorCertificateError as exc:
+                return _failure_response(
+                    request,
+                    exc,
+                    message=(
+                        "The podcast host's TLS certificate could not be verified. "
+                        "Check your network or proxy settings and try again."
+                    ),
+                    status=503,
+                )
             except web.HTTPException:
                 raise
             except Exception as exc:
-                logger.warning("Podcast HTTP request failed (error_type={})", type(exc).__name__)
-                return web.json_response({"message": "Podcast request failed. Please try again."}, status=503)
+                return _failure_response(request, exc, message="Podcast request failed. Please try again.", status=503)
 
         return call
 

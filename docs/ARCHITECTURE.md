@@ -1159,7 +1159,10 @@ items.
 Podcast subscriptions form a separate domain under `src/podcasts`. `feeds.py`
 owns public HTTP/RSS parsing and the cached, rate-limited Apple directory search;
 the actual connector DNS results and every redirect must resolve to public
-addresses. `store.py` owns subscription/episode state in a separate WAL database.
+addresses. A client-local `truststore` TLS context validates certificate chains
+and hostnames using the system policy, including Windows-managed trust. It does
+not replace global SSL behavior or disable certificate checks. `store.py` owns
+subscription/episode state in a separate WAL database.
 `service.py` supervises three concurrent processors and an independent 30-minute
 feed checker, starting after the initial desktop startup window. The first
 subscription queues only its latest episode; subsequent genuinely new episodes
@@ -1177,6 +1180,10 @@ reserve. Downloads serialize the capacity check and write; transcription and
 summary stages overlap across up to three episodes, with independent durable
 identities and active-removal guards. The controller-free `src/api/podcast_routes.py` maps strict bounded
 requests onto this domain; the frontend does not own its scheduler.
+Rejected and failed Podcast requests emit structured Podcast diagnostics; a
+random reference links the response/toast to its console entry. Certificate
+failures have an explicit translated message and ERROR entry. Logs retain the
+exception type and route template, never feed URLs or exception contents.
 
 Episode listening state is durable in the same store. `seen_at` records that a
 visible episode list showed the episode; only feed refreshes after subscribing
