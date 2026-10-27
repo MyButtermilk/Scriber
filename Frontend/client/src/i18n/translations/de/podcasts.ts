@@ -123,7 +123,21 @@ export const podcastTranslations: TranslationCatalog = {
     "Die Podcast-Verarbeitung ist fehlgeschlagen. Prüfe die Anbietereinstellungen und versuche es erneut.",
   "This episode is already queued or processed.": "Diese Folge ist bereits vorgemerkt oder verarbeitet.",
   "Podcast request failed. Please try again.": "Die Podcast-Anfrage ist fehlgeschlagen. Bitte versuche es erneut.",
+  "The podcast host's TLS certificate could not be verified. Check your network or proxy settings and try again.":
+    "Das TLS-Zertifikat des Podcast-Anbieters konnte nicht geprüft werden. Prüfe die Netzwerk- oder Proxy-Einstellungen und versuche es erneut.",
   Unread: "Ungelesen",
+  "Episode overview": "Folgenübersicht",
+  "New episodes": "Neue Folgen",
+  "Still open": "Noch offen",
+  "Still open ({{count}})": "Noch offen ({{count}})",
+  "{{count}} still open": "{{count}} noch offen",
+  "Not read or listened": "Noch nicht gelesen oder angehört",
+  "Show {{count}} new episodes": "{{count}} neue Folgen anzeigen",
+  "Show {{count}} open episodes": "{{count}} offene Folgen anzeigen",
+  "Open episodes are ready to read or listen to. Viewing the list does not mark them as read.":
+    "Offene Folgen sind zum Lesen oder Anhören bereit. Das Öffnen der Liste markiert sie nicht als gelesen.",
+  "{{newCount}} new · {{unreadCount}} not read or listened":
+    "{{newCount}} neu · {{unreadCount}} noch nicht gelesen oder angehört",
   Read: "Gelesen",
   Listened: "Angehört",
   "Mark as read": "Als gelesen markieren",

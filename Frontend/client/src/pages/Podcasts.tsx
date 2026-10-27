@@ -45,6 +45,7 @@ import {
 import { useI18n } from "@/i18n";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { ApiRequestError } from "@/lib/request-errors";
 import { apiUrl } from "@/lib/backend";
 import { cn } from "@/lib/utils";
 import {
@@ -137,6 +138,7 @@ export default function Podcasts() {
   const [player, setPlayer] = useState<{ episode: PodcastEpisode; index: number } | null>(null);
   const playingId = player?.episode.id ?? null;
   const [removeId, setRemoveId] = useState<string | null>(null);
+  const episodeSectionRef = useRef<HTMLElement>(null);
   // Episodes stay marked "New" for this visit after the server records them as seen.
   const [newThisVisit, setNewThisVisit] = useState<ReadonlySet<string>>(() => new Set());
   const seenRequestedRef = useRef<Set<string>>(new Set());
@@ -212,6 +214,17 @@ export default function Podcasts() {
     void queryClient.invalidateQueries({ queryKey: LIBRARY_KEY });
     void queryClient.invalidateQueries({ queryKey: [PODCAST_EPISODES_KEY] });
   };
+  const requestErrorMessage = (error: Error, message = t(error.message)) => {
+    const reference = error instanceof ApiRequestError ? error.reference : undefined;
+    return reference ? `${message} ${t("Reference: {{id}}", { id: reference })}` : message;
+  };
+  const showActionError = (error: Error) => {
+    toast({
+      title: t("Podcast action failed"),
+      description: requestErrorMessage(error),
+      variant: "destructive",
+    });
+  };
   const progress = useMutation({
     mutationFn: async ({ id, body }: { id: string; body: EpisodeProgress }) =>
       (await apiRequest("PATCH", `/api/podcasts/episodes/${id}`, body)).json(),
@@ -221,8 +234,7 @@ export default function Podcasts() {
       );
       refreshData();
     },
-    onError: (error) =>
-      toast({ title: t("Podcast action failed"), description: t(error.message), variant: "destructive" }),
+    onError: showActionError,
   });
   const listedEpisodes = episodes.data?.items ?? [];
   const shownEpisodes =
@@ -250,8 +262,7 @@ export default function Podcasts() {
       }
       refreshData();
     },
-    onError: (error) =>
-      toast({ title: t("Podcast action failed"), description: t(error.message), variant: "destructive" }),
+    onError: showActionError,
   });
 
   const subscribe = (url: string) =>
@@ -271,11 +282,18 @@ export default function Podcasts() {
     setOffset(0);
     setPlayer(null);
   };
+  const showOverviewEpisodes = (kind: "new" | "unread") => {
+    const target = subscriptions.find((item) => (kind === "new" ? item.newCount : item.unreadCount) > 0);
+    if (!target) return;
+    selectedChange(target.id);
+    setView(kind === "unread" ? "unread" : "all");
+    episodeSectionRef.current?.scrollIntoView?.({ block: "start" });
+    episodeSectionRef.current?.focus({ preventScroll: true });
+  };
 
   const renderEpisode = (episode: PodcastEpisode, index: number) => {
     const busy = podcastEpisodeIsBusy(episode.status);
     const isNew = episode.isNew || newThisVisit.has(episode.id);
-    const consumedLabel = episode.readAt ? "Read" : episode.playedAt ? "Listened" : "";
     const canMarkRead = episode.status === "completed" || Boolean(episode.readAt || episode.playedAt);
     return (
       <article
@@ -315,15 +333,20 @@ export default function Podcasts() {
               {episode.isUnread ? (
                 <span className="flex items-center gap-1.5 font-medium text-primary">
                   <span className="h-1.5 w-1.5 rounded-full bg-primary" aria-hidden="true" />
-                  {t("Unread")}
+                  {t("Not read or listened")}
                 </span>
-              ) : (
-                consumedLabel && (
-                  <span className="flex items-center gap-1">
-                    <CheckCheck className="h-3.5 w-3.5" aria-hidden="true" />
-                    {t(consumedLabel)}
-                  </span>
-                )
+              ) : null}
+              {episode.readAt && (
+                <span className="flex items-center gap-1">
+                  <CheckCheck className="h-3.5 w-3.5" aria-hidden="true" />
+                  {t("Read")}
+                </span>
+              )}
+              {episode.playedAt && (
+                <span className="flex items-center gap-1">
+                  <Headphones className="h-3.5 w-3.5" aria-hidden="true" />
+                  {t("Listened")}
+                </span>
               )}
             </div>
             <h3
@@ -480,6 +503,44 @@ export default function Podcasts() {
         </div>
       </header>
 
+      {library.data && subscriptions.length > 0 && !library.error && (
+        <section aria-label={t("Episode overview")} className="space-y-2">
+          <div className="grid divide-y divide-border/70 overflow-hidden rounded-2xl border border-border/70 bg-card sm:grid-cols-2 sm:divide-x sm:divide-y-0">
+            {(["new", "unread"] as const).map((kind) => {
+              const count = kind === "new" ? library.data.newCount : library.data.unreadCount;
+              const Icon = kind === "new" ? Radio : Headphones;
+              return (
+                <button
+                  key={kind}
+                  type="button"
+                  disabled={!count}
+                  onClick={() => showOverviewEpisodes(kind)}
+                  aria-label={t(kind === "new" ? "Show {{count}} new episodes" : "Show {{count}} open episodes", {
+                    count: formatNumber(count),
+                  })}
+                  className="flex items-center gap-3 px-4 py-4 text-left outline-none hover:enabled:bg-muted/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-5"
+                >
+                  <Icon
+                    className={cn("h-5 w-5 shrink-0", count ? "text-primary" : "text-muted-foreground")}
+                    aria-hidden="true"
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-xs text-muted-foreground">
+                      {t(kind === "new" ? "New episodes" : "Still open")}
+                    </span>
+                    <span className="mt-0.5 block text-2xl font-semibold tabular-nums">{formatNumber(count)}</span>
+                  </span>
+                  {count > 0 && <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />}
+                </button>
+              );
+            })}
+          </div>
+          <p className="px-1 text-xs leading-relaxed text-muted-foreground">
+            {t("Open episodes are ready to read or listen to. Viewing the list does not mark them as read.")}
+          </p>
+        </section>
+      )}
+
       <section className="rounded-2xl border border-border/70 bg-card p-4 sm:p-5" aria-label={t("Find a podcast")}>
         <form onSubmit={searchSubmit} className="flex flex-wrap gap-2">
           <div className="relative min-w-52 flex-1">
@@ -546,7 +607,7 @@ export default function Podcasts() {
         )}
         {search.error && (
           <p role="alert" className="mt-4 text-sm text-muted-foreground">
-            {t(search.error.message)}
+            {requestErrorMessage(search.error)}
           </p>
         )}
         {submittedSearch && search.data && (
@@ -604,7 +665,7 @@ export default function Podcasts() {
 
       {library.error ? (
         <div role="alert" className="rounded-2xl border border-border p-6 text-sm text-muted-foreground">
-          {t("Your podcast library could not be loaded.")}
+          {requestErrorMessage(library.error, t("Your podcast library could not be loaded."))}
           <Button variant="ghost" size="sm" className="ml-2" onClick={() => void library.refetch()}>
             {t("Retry")}
           </Button>
@@ -629,8 +690,8 @@ export default function Podcasts() {
           </p>
         </section>
       ) : (
-        <div className="grid items-start gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
-          <aside className="space-y-3" aria-label={t("Your subscriptions")}>
+        <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
+          <aside className="min-w-0 space-y-3" aria-label={t("Your subscriptions")}>
             <div className="flex items-center justify-between px-1">
               <h2 className="text-xs font-medium text-muted-foreground">{t("Your subscriptions")}</h2>
               <span className="text-xs tabular-nums text-muted-foreground">{formatNumber(subscriptions.length)}</span>
@@ -657,7 +718,7 @@ export default function Podcasts() {
                     </span>
                     <span className="mt-1 block text-ui-micro text-muted-foreground">
                       {item.unreadCount
-                        ? t("{{count}} unread", { count: formatNumber(item.unreadCount) })
+                        ? t("{{count}} still open", { count: formatNumber(item.unreadCount) })
                         : t("{{count}} ready", { count: formatNumber(item.completedCount) })}
                       {!item.autoProcess && ` · ${t("Paused")}`}
                     </span>
@@ -687,6 +748,8 @@ export default function Podcasts() {
           </aside>
 
           <section
+            ref={episodeSectionRef}
+            tabIndex={-1}
             className="min-w-0 rounded-2xl border border-border/70 bg-card px-4 sm:px-6"
             aria-label={selected.title}
           >
@@ -754,8 +817,8 @@ export default function Podcasts() {
                       {option === "all"
                         ? t("All episodes")
                         : selected.unreadCount
-                          ? t("Unread ({{count}})", { count: formatNumber(selected.unreadCount) })
-                          : t("Unread")}
+                          ? t("Still open ({{count}})", { count: formatNumber(selected.unreadCount) })
+                          : t("Still open")}
                     </button>
                   ))}
                 </div>
@@ -790,7 +853,7 @@ export default function Podcasts() {
               </div>
             ) : episodes.error ? (
               <p role="alert" className="py-6 text-sm text-muted-foreground">
-                {t("Episodes could not be loaded. Try again.")}
+                {requestErrorMessage(episodes.error, t("Episodes could not be loaded. Try again."))}
               </p>
             ) : shownEpisodes.length ? (
               shownEpisodes.map(renderEpisode)

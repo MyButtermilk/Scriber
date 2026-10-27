@@ -240,7 +240,11 @@ Backend and runtime:
 - `src/database.py`: SQLite WAL persistence, metadata loading, FTS5 search.
 - `src/podcasts/`: public-only RSS/directory transport, durable subscription and
   episode state, retained downloads, independent feed refresh, and three concurrent
-  processing workers. Downloads serialize their capacity check and write to preserve
+  processing workers. Its own `truststore` TLS client context uses native system
+  certificate-chain and hostname verification, including managed Windows trust.
+  Never inject this context globally or disable TLS verification; retain the
+  public-address resolver and redirect checks. Downloads serialize their capacity
+  check and write to preserve
   the shared cache limit. Terminal completion and media-ownership release precede
   best-effort ready notifications; a delayed notification must not block download
   removal or clear a successor retry's ownership. Its processor alone adapts to
@@ -263,6 +267,11 @@ Backend and runtime:
   publishes one `podcast_episodes_discovered` event; each completion publishes
   `podcast_episode_ready`. Their bounded titles reach only the WebSocket, never
   logs, and a notification failure must not affect refresh or processing.
+  The Podcast overview separates newly discovered episodes from ready episodes
+  still neither read nor played, and links each count to a matching podcast.
+  Sidebar attention counts deduplicate their overlap; their description exposes
+  both counts. Keep read and played indicators independent, and never treat
+  merely displaying the episode list as consuming a ready episode.
 - `src/data/job_store.py`: persistent file/YouTube jobs.
 - `src/data/latency_metrics_store.py`: hot-path metrics.
 - `src/core/`: contracts, state machine, circuit breaker, logging, tracing.

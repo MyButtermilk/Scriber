@@ -773,6 +773,14 @@ scripts\project-python.cmd scripts\smoke_diarization_worker_resource.py `
   modules and includes the `audioop-lts` PCM RMS runtime, while preserving the
   revision-4 bounded installer-research YouTube holdout probe and revision-3
   `pipecat.transports.base_input` boundary.
+- Runtime contract revision 11 adds the pinned `truststore` package for Podcast
+  HTTPS. Both source and frozen import gates reject a missing package; the
+  functional native-runtime gate creates its TLS client context and aiohttp
+  connector, requiring certificate and hostname verification. Windows uses its
+  native certificate-chain policy instead of weakening OpenSSL verification
+  flags. This context is local to the Podcast client, with no process-wide SSL
+  monkey patch. Dependency changes must remain identical in the release and
+  test constraint files so an older cached runtime cannot omit the package.
 - Provider tests for custom Pipecat services must run with deprecation warnings
   promoted to errors and assert complete Pipecat `STTSettings`. Lifecycle
   coverage also verifies that only the expected Windows Proactor WinError 10054

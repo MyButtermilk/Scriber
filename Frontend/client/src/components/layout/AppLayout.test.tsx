@@ -32,7 +32,7 @@ vi.mock("@/components/ui/sheet", () => ({
   SheetTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
-function renderLayout(path: string, attentionCount = 0) {
+function renderLayout(path: string, attentionCount = 0, newCount = 0, unreadCount = 0) {
   const location = memoryLocation({ path });
   const client = new QueryClient({
     defaultOptions: {
@@ -40,7 +40,7 @@ function renderLayout(path: string, attentionCount = 0) {
         retry: false,
         queryFn: async ({ queryKey }) => {
           if (queryKey[0] !== "/api/podcasts") throw new Error(`Unexpected query ${String(queryKey[0])}`);
-          return { subscriptions: [], attentionCount };
+          return { subscriptions: [], attentionCount, newCount, unreadCount };
         },
       },
     },
@@ -95,14 +95,45 @@ describe("AppLayout navigation", () => {
     }
   });
 
-  it("counts new or unread podcast episodes on the Podcasts tab", async () => {
-    const { findAllByLabelText, getAllByRole } = renderLayout("/file", 3);
+  it("counts overlapping new and unread episodes once and explains both states", async () => {
+    const { findAllByLabelText, getAllByRole } = renderLayout("/file", 3, 2, 2);
     const badges = await findAllByLabelText("3 new or unread podcast episodes");
     expect(badges).toHaveLength(2);
+    for (const badge of badges) {
+      expect(badge).toHaveTextContent("3");
+      expect(badge).toHaveAttribute("title", "2 new · 2 not read or listened");
+      expect(badge).toHaveAccessibleDescription("2 new · 2 not read or listened");
+    }
     for (const navigation of getAllByRole("navigation", { name: "Main navigation" })) {
       const podcastsLink = within(navigation).getByRole("link", { name: /^Podcasts/ });
       expect(within(podcastsLink).getByText("3")).toBeVisible();
     }
+  });
+
+  it("updates the state breakdown even when the deduplicated badge count stays unchanged", async () => {
+    const { client, findAllByLabelText, queryAllByLabelText } = renderLayout("/file", 3, 2, 2);
+    await findAllByLabelText("3 new or unread podcast episodes");
+    client.setQueryData(["/api/podcasts"], {
+      subscriptions: [],
+      attentionCount: 3,
+      newCount: 0,
+      unreadCount: 3,
+    });
+    await waitFor(() => {
+      const badges = queryAllByLabelText("3 new or unread podcast episodes");
+      expect(badges).toHaveLength(2);
+      for (const badge of badges) {
+        expect(badge).toHaveAccessibleDescription("0 new · 3 not read or listened");
+        expect(badge).toHaveAttribute("title", "0 new · 3 not read or listened");
+      }
+    });
+    client.setQueryData(["/api/podcasts"], {
+      subscriptions: [],
+      attentionCount: 0,
+      newCount: 0,
+      unreadCount: 0,
+    });
+    await waitFor(() => expect(queryAllByLabelText(/new or unread podcast/)).toHaveLength(0));
   });
 
   it("keeps the Podcasts tab quiet when nothing needs attention", async () => {

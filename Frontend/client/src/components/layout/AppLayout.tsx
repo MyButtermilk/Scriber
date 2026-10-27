@@ -48,23 +48,35 @@ type NavigationItem = {
 /** Episodes that are new or ready but unread; podcast events refresh it immediately. */
 function PodcastAttentionBadge() {
   const { t, formatNumber } = useI18n();
-  const { data: count = 0 } = useQuery<PodcastLibrary, Error, number>({
-    queryKey: PODCAST_LIBRARY_KEY,
-    select: (library) => library.attentionCount ?? 0,
-    staleTime: 60_000,
-    refetchInterval: 5 * 60_000,
-    refetchIntervalInBackground: false,
-  });
+  const { data } = useQuery<PodcastLibrary, Error, Pick<PodcastLibrary, "attentionCount" | "newCount" | "unreadCount">>(
+    {
+      queryKey: PODCAST_LIBRARY_KEY,
+      select: (library) => ({
+        attentionCount: library.attentionCount ?? 0,
+        newCount: library.newCount ?? 0,
+        unreadCount: library.unreadCount ?? 0,
+      }),
+      staleTime: 60_000,
+      refetchInterval: 5 * 60_000,
+      refetchIntervalInBackground: false,
+    },
+  );
+  const count = data?.attentionCount ?? 0;
   if (!count) return null;
   const label =
     count === 1
       ? t("1 new or unread podcast episode")
       : t("{{count}} new or unread podcast episodes", { count: formatNumber(count) });
+  const details = t("{{newCount}} new · {{unreadCount}} not read or listened", {
+    newCount: formatNumber(data?.newCount ?? 0),
+    unreadCount: formatNumber(data?.unreadCount ?? 0),
+  });
   return (
     <span
       className="ml-auto shrink-0 rounded-full bg-primary px-1.5 py-0.5 text-[11px] font-semibold leading-none tabular-nums text-primary-foreground"
       aria-label={label}
-      title={label}
+      aria-description={details}
+      title={details}
     >
       {count > 99 ? "99+" : formatNumber(count)}
     </span>

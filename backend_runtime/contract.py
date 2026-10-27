@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 RUNTIME_CONTRACT_NAME = "scriber-frozen-python-runtime"
-RUNTIME_CONTRACT_REVISION = 10
+RUNTIME_CONTRACT_REVISION = 11
 APPLICATION_LAYER_SCHEMA_VERSION = 1
 RUNTIME_LAYER_SCHEMA_VERSION = 1
 APPLICATION_ENTRY_POINT = "src.backend_worker:main"
@@ -82,6 +82,7 @@ RUNTIME_REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
     ("sqlite3", "CPython SQLite persistence runtime"),
     ("ssl", "CPython OpenSSL transport runtime"),
     ("tqdm", "model download progress runtime"),
+    ("truststore", "native system certificate verification for podcast HTTPS"),
     ("wave", "Meeting device-test in-memory WAV construction"),
     ("websockets.asyncio.client", "provider WebSocket client runtime"),
     ("winsound", "Windows Meeting device-test tone playback"),
@@ -119,6 +120,7 @@ APPLICATION_EXTERNAL_IMPORT_ROOTS = frozenset(
         "reportlab",
         "sounddevice",
         "tqdm",
+        "truststore",
         "websockets",
         "yt_dlp",
     }

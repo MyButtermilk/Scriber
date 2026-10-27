@@ -7,6 +7,7 @@ import ipaddress
 import json
 import re
 import socket
+import ssl
 import time
 import xml.etree.ElementTree as ET
 from contextlib import suppress
@@ -20,6 +21,7 @@ from typing import Any
 from urllib.parse import quote, urlencode, urljoin, urlsplit, urlunsplit
 
 import aiohttp
+import truststore
 from aiohttp.abc import AbstractResolver
 from aiohttp.resolver import DefaultResolver
 
@@ -204,8 +206,11 @@ class PodcastHttp:
 
     def _client(self) -> aiohttp.ClientSession:
         if self._session is None:
+            # Use the OS certificate policy, including managed Windows trust,
+            # without changing TLS settings for unrelated provider clients.
+            tls = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             self._session = aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(resolver=PublicResolver(), limit=3, ttl_dns_cache=60),
+                connector=aiohttp.TCPConnector(resolver=PublicResolver(), limit=3, ttl_dns_cache=60, ssl=tls),
                 timeout=aiohttp.ClientTimeout(total=45, connect=15, sock_read=20),
                 headers={"User-Agent": "Scriber-Podcasts/1.0", "Accept-Encoding": "identity"},
                 trust_env=False,
