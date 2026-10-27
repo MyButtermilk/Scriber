@@ -1720,14 +1720,21 @@ actionlint v1.7.12 invocation ignores only its known pre-`concurrency.queue`
 schema error; GitHub documents `queue: max`, and every other actionlint check
 remains active.
 
-Before creating a version tag, dispatch `.github/workflows/release-qualification.yml`
-on `main`. It captures `github.sha` once and runs the existing six reusable
-quality gates, including Windows real-browser File upload, followed by an API
-contract check. It has read-only repository permissions and no signing,
-installer build, or release publication. A PR's synthetic merge SHA, a different
-main commit, or an ordinary Hybrid PR Checks run cannot replace this qualification.
+Before creating a version tag, reuse a successful, still-fresh
+`.github/workflows/release-qualification.yml` run for the exact current main SHA,
+or dispatch it once on `main`. It captures `github.sha` and first looks for a
+canonical main CI run with the same SHA and immutable workflow provenance.
+Discovery allows three minutes for a delayed main run; pending runs are awaited
+within a bounded 20-minute planning window. It reuses all six successful quality gates,
+including Windows real-browser File upload. Only missing or unusable source
+evidence starts its own six gates; known matching failures block qualification.
+The final API contract always checks the selected path. The workflow has read-only
+repository permissions and no signing, installer build, or release publication.
+A PR's synthetic merge SHA or a different main commit cannot supply this evidence;
+ordinary main CI still needs the lightweight qualification record before tagging.
 
 ```powershell
+# Dispatch only when no matching valid qualification is already available.
 gh workflow run release-qualification.yml --repo MyButtermilk/Scriber --ref main
 gh run list --repo MyButtermilk/Scriber --workflow release-qualification.yml --limit 5
 gh run watch <qualification-run-id> --repo MyButtermilk/Scriber --exit-status
@@ -1744,7 +1751,12 @@ and contract jobs, all earlier attempts, immutable reusable-workflow provenance,
 and 24-hour freshness before creating an annotated tag at that exact SHA. It
 also requires any fresh matching main CI run to have completed successfully,
 so a separate green qualification cannot hide a main failure the release would
-reject. If main CI is still running, wait before qualifying/tagging.
+reject. Qualification may start while matching main CI is running; tagging waits
+for its successful completion. A successful
+`Reuse canonical main quality (<run>/<attempt>)` job exposes the pinned main run
+and attempt through the GitHub API. The contract and tag helper revalidate that
+source and its six jobs rather than trusting a downloaded JSON report. Missing,
+ambiguous, failed or changed bindings cannot authorize skipped local gates.
 It never force-pushes or replaces tags. If main advances, qualify the new commit
 before tagging. Failed attempts cannot be erased with a failed-job rerun.
 
@@ -1752,7 +1764,8 @@ The release planner requires a successful qualification completed before the
 tag workflow's original creation time. It fails closed on unavailable API data,
 incomplete pagination, pending/failed/skipped jobs, changed attempts, stale data,
 or post-tag qualification. Before signing it rechecks the pinned qualification
-run and attempt, jobs, provenance and freshness. Uploaded JSON is diagnostic
+run and attempt, its selected main source when reused, jobs, provenance and
+freshness. Uploaded JSON is diagnostic
 output, never authorization. All existing quality/signing/installer/publication
 barriers remain active. Direct `git tag`/`git push` bypasses the safe creation
 helper and can still consume a tag; the release rejects such an unqualified tag.

@@ -634,19 +634,27 @@ Packaging and scripts:
 - `.github/workflows/release-windows.yml`: adaptive release DAG.
   Official tags additionally require a completed `release-qualification.yml`
   main dispatch for the identical SHA, created within 24 hours and completed
-  before the tag run began. That read-only pre-tag workflow runs the same six
-  reusable quality/browser gates and API contract. Create tags only through
+  before the tag run began. That read-only pre-tag workflow reuses the six
+  quality/browser gates from a verified canonical main run for the identical SHA,
+  allowing three minutes for delayed main-run discovery and waiting boundedly
+  for pending work. Only missing or unusable source evidence
+  starts its own six gates; known matching failures remain blockers. A successful
+  `Reuse canonical main quality (<run>/<attempt>)` API job binds the selected
+  source independently of diagnostic artifacts. The qualification contract,
+  tag helper and pre-signing boundary revalidate that exact source and all six
+  jobs; intentional skipped local gates are valid only with this binding.
+  Create tags only through
   `scripts/ci/pre_tag_qualification.py create-tag` after it succeeds. Planning
   and the pre-signing boundary revalidate its run/attempt/provenance and jobs;
   missing, failed, pending, stale or post-tag evidence cannot fall back to local
   checks. Existing signing, quality, installer and publication gates remain mandatory.
-  The read-only qualification contract waits up to 20 minutes for a matching
-  main push run that is still pending; real failures remain immediate blockers.
+  Read-only qualification planning and its contract wait up to 20 minutes for
+  a matching main push run that is still pending; real failures remain immediate blockers.
   Tag/signing verification itself never waits away pending or failed evidence.
   Planning may
   select canonical main quality evidence for the identical SHA, under 24 hours
   old, with immutable reusable-workflow provenance. Missing evidence starts
-  the complete local suite; a known failed matching run blocks release.
+  the complete release-run suite; a known failed matching run blocks release.
   Cold producers and final-job dependency preparation start after planning.
   The packager accepts exact current-run artifact IDs after successful producer
   build/upload steps without waiting for optional cache export. Before assembly

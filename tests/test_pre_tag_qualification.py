@@ -375,14 +375,28 @@ def test_tag_creation_occurs_only_after_qualification_and_uses_exact_sha(monkeyp
         assert not any("tag" in command or "push" in command for command in calls)
 
 
-def test_workflow_runs_shared_six_gates_without_signing_or_publication():
+def test_workflow_reuses_main_or_runs_shared_six_gates_without_signing_or_publication():
     root = Path(__file__).resolve().parents[1]
     payload = yaml.safe_load((root / gate.WORKFLOW).read_text())
     assert (payload.get("on") or payload[True]) == {"workflow_dispatch": None}
     assert payload["permissions"] == {"contents": "read"}
     assert payload["jobs"]["quality-gates"]["uses"] == "./.github/workflows/quality-gates.yml"
     assert payload["jobs"]["quality-gates"]["needs"] == "qualification-plan"
-    assert payload["jobs"]["qualification-contract"]["needs"] == "quality-gates"
+    assert payload["jobs"]["quality-gates"]["if"] == "needs.qualification-plan.outputs.reuse-quality == 'false'"
+    reuse = payload["jobs"]["reuse-main-quality"]
+    assert reuse["if"] == "needs.qualification-plan.outputs.reuse-quality == 'true'"
+    assert reuse["name"] == (
+        "Reuse canonical main quality (${{ needs.qualification-plan.outputs.quality-source-run-id }}/"
+        "${{ needs.qualification-plan.outputs.quality-source-run-attempt }})"
+    )
+    contract = payload["jobs"]["qualification-contract"]
+    assert contract["needs"] == ["qualification-plan", "quality-gates", "reuse-main-quality"]
+    assert contract["if"] == "always()"
+    guard = contract["steps"][0]
+    assert 'test "$REUSE_RESULT" = success' in guard["run"]
+    assert 'test "$LOCAL_RESULT" = skipped' in guard["run"]
+    assert 'test "$LOCAL_RESULT" = success' in guard["run"]
+    assert 'test "$REUSE_RESULT" = skipped' in guard["run"]
     text = (root / gate.WORKFLOW).read_text()
     assert "github.ref == 'refs/heads/main'" in text
     for prohibited in ["secrets.", "contents: write", "actions: write", "build_windows.ps1", "publish", "signing"]:
@@ -527,3 +541,314 @@ def test_tag_release_requires_qualification_at_plan_and_before_signing_and_prese
     assert not barrier.get("continue-on-error")
     assert "release_quality_source wait" in text
     assert (payload.get("on") or payload[True])["push"]["tags"] == ["v*"]
+
+
+class ReusedGitHub(GitHub):
+    def __init__(self):
+        super().__init__()
+        self.main = {**deepcopy(self.source), "id": 400, "path": SOURCE_WORKFLOW, "event": "push"}
+        self.main.update(created_at="2026-10-02T07:00:00Z", updated_at="2026-10-02T08:20:00Z")
+        self.main_jobs = [{**job, "run_id": 400} for job in self.jobs[:-1]]
+        self.main_runs = [self.main]
+        self.main_prior = {}
+        self.source["referenced_workflows"] = []
+        self.marker = {**self.jobs[-1], "id": 100, "name": f"{gate.REUSE_JOB_PREFIX} (400/1)"}
+        self.jobs = [
+            self.marker,
+            self.jobs[-1],
+            {**self.jobs[0], "name": "Reusable quality gates", "conclusion": "skipped"},
+        ]
+        self.clock = 0.0
+        self.sleeps = []
+
+    def api(self, endpoint, timeout):
+        if "/runs/400/jobs?" in endpoint:
+            return {"jobs": deepcopy(self.main_jobs), "total_count": len(self.main_jobs)}
+        if endpoint.startswith(f"repos/{gate.REPOSITORY}/actions/runs/400/attempts/"):
+            return deepcopy(self.main_prior[int(endpoint.rsplit("/", 1)[1])])
+        return super().api(endpoint, timeout)
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.clock += seconds
+
+    def plan(self, tmp_path, **kwargs):
+        self.source.update(status="in_progress", conclusion=None)
+        arguments = dict(
+            repo=gate.REPOSITORY,
+            run_id=SOURCE_ID,
+            attempt=1,
+            head_sha=SHA,
+            evidence_path=tmp_path / "plan.json",
+            api=self.api,
+            now=lambda: NOW,
+            monotonic=lambda: self.clock,
+            sleep=self.sleep,
+            timeout_seconds=10,
+            discovery_grace_seconds=0,
+        )
+        arguments.update(kwargs)
+        return gate.plan_qualification(**arguments)
+
+
+def test_planner_reuses_completed_main_gates_without_own_workflow_provenance(tmp_path):
+    github = ReusedGitHub()
+    result = github.plan(tmp_path)
+    assert result["status"] == "success"
+    assert result["decision"] == "reuse"
+    assert result["sourceRunId"] == 400
+    assert result["sourceRunAttempt"] == 1
+    assert len(result["jobs"]) == 6
+    assert not github.sleeps
+
+
+@pytest.mark.parametrize("appears", [False, True])
+def test_planner_waits_for_delayed_main_discovery_before_fallback(tmp_path, appears):
+    github = ReusedGitHub()
+    github.main_runs = []
+
+    def sleep(seconds):
+        github.sleep(seconds)
+        if appears:
+            github.main_runs = [github.main]
+
+    result = github.plan(tmp_path, discovery_grace_seconds=5, sleep=sleep)
+    assert github.clock == 5
+    assert result["status"] == "success"
+    assert result["decision"] == ("reuse" if appears else "local")
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "timeout"])
+def test_planner_waits_for_pending_main_before_provenance_and_jobs_materialize(tmp_path, outcome):
+    github = ReusedGitHub()
+    references, jobs = github.main["referenced_workflows"], github.main_jobs
+    github.main.update(status="queued", conclusion=None, referenced_workflows=[])
+    github.main_jobs = []
+
+    def sleep(seconds):
+        github.sleep(seconds)
+        if outcome != "timeout":
+            github.main.update(status="completed", conclusion=outcome, referenced_workflows=references)
+            github.main_jobs = jobs
+
+    result = github.plan(tmp_path, sleep=sleep)
+    assert result["status"] == ("success" if outcome == "success" else "failure")
+    assert github.clock == (10 if outcome == "timeout" else 5)
+    if outcome == "success":
+        assert result["decision"] == "reuse"
+    else:
+        assert result["reason"] == (
+            "qualification_planning_timeout" if outcome == "timeout" else "matching_main_run_unsuccessful"
+        )
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "rerun"])
+def test_planner_rediscovers_source_that_changes_during_a_snapshot(tmp_path, outcome):
+    github = ReusedGitHub()
+    github.main.update(status="in_progress", conclusion=None)
+    original = github.api
+    source_reads = 0
+
+    def api(endpoint, timeout):
+        nonlocal source_reads
+        if endpoint.endswith("/runs/400"):
+            source_reads += 1
+            if source_reads == 2:
+                github.main.update(status="completed", conclusion="success", updated_at="2026-10-02T08:21:00Z")
+                if outcome == "failure":
+                    github.main["conclusion"] = "failure"
+                elif outcome == "rerun":
+                    github.main_prior[1] = {**github.main, "conclusion": "failure"}
+                    github.main["run_attempt"] = 2
+        return original(endpoint, timeout)
+
+    result = github.plan(tmp_path, api=api)
+    assert github.clock == 5
+    assert result["status"] == ("success" if outcome == "success" else "failure")
+    if outcome == "success":
+        assert result["decision"] == "reuse"
+    else:
+        assert result["reason"].startswith("matching_main_")
+
+
+@pytest.mark.parametrize("missing", ["provenance", "job", "source", "api"])
+def test_planner_uses_local_gates_when_source_evidence_is_unavailable(tmp_path, missing):
+    github = ReusedGitHub()
+    if missing == "provenance":
+        github.main["referenced_workflows"] = []
+    elif missing == "job":
+        github.main_jobs.pop()
+    elif missing == "source":
+        github.main_runs = []
+    original = github.api
+
+    def api(endpoint, timeout):
+        if missing == "api" and "/workflows/hybrid-pr-checks.yml/" in endpoint:
+            raise GateError("github_request_failed")
+        return original(endpoint, timeout)
+
+    result = github.plan(tmp_path, api=api)
+    assert result["status"] == "success"
+    assert result["decision"] == "local"
+    assert result["sourceRunId"] == result["sourceRunAttempt"] == 0
+
+
+@pytest.mark.parametrize("failure", ["run", "job", "prior-attempt", "other-run"])
+def test_planner_never_falls_back_past_a_known_failure(tmp_path, failure):
+    github = ReusedGitHub()
+    if failure == "run":
+        github.main.update(conclusion="failure", referenced_workflows=[])
+    elif failure == "job":
+        github.main.update(status="in_progress", conclusion=None, referenced_workflows=[])
+        github.main_jobs[0]["conclusion"] = "failure"
+    elif failure == "prior-attempt":
+        github.main_prior[1] = {**github.main, "conclusion": "failure"}
+        github.main["run_attempt"] = 2
+    else:
+        github.main["referenced_workflows"] = []
+        github.main_runs.append({**github.main, "id": 401, "conclusion": "failure"})
+    result = github.plan(tmp_path)
+    assert result["status"] == "failure"
+    assert result["reason"].startswith("matching_main_")
+
+
+@pytest.mark.parametrize("operation", ["select", "verify", "release", "qualify"])
+def test_reused_qualification_rechecks_api_bound_source_at_every_boundary(tmp_path, operation):
+    github = ReusedGitHub()
+    kwargs = {}
+    if operation == "qualify":
+        # GitHub can leave updated_at at dispatch time while its contract runs.
+        # The selected main run completes later, during the planner's wait.
+        github.source.update(status="in_progress", conclusion=None, updated_at=github.source["created_at"])
+        kwargs["run_id"] = SOURCE_ID
+    result = github.check(tmp_path, operation, **kwargs)
+    assert result["status"] == "success"
+    assert result["sourceRunId"] == SOURCE_ID
+    assert result["qualitySourceRunId"] == 400
+    assert result["qualitySourceRunAttempt"] == 1
+    assert result["qualityMode"] == "main"
+    assert len(result["jobs"]) == 6
+
+
+@pytest.mark.parametrize(
+    "mutation", ["missing", "duplicate", "failed", "skipped", "wrong-run", "attempt", "sha", "id", "malformed", "mixed"]
+)
+def test_reuse_marker_must_be_unique_successful_and_bound_to_this_qualification(tmp_path, mutation):
+    github = ReusedGitHub()
+    if mutation == "missing":
+        github.jobs.remove(github.marker)
+    elif mutation == "duplicate":
+        github.jobs.append(deepcopy(github.marker))
+    elif mutation in {"failed", "skipped"}:
+        github.marker["conclusion"] = mutation
+    elif mutation == "wrong-run":
+        github.marker["run_id"] = 999
+    elif mutation == "attempt":
+        github.marker["run_attempt"] = 2
+    elif mutation == "sha":
+        github.marker["head_sha"] = "b" * 40
+    elif mutation == "id":
+        github.marker["id"] = -1
+    elif mutation == "malformed":
+        github.marker["name"] = gate.REUSE_JOB_PREFIX + " (400/01)"
+    else:
+        github.jobs.append({**github.main_jobs[0], "run_id": SOURCE_ID})
+    assert github.check(tmp_path)["status"] == "failure"
+
+
+@pytest.mark.parametrize("mutation", ["rerun", "failed", "provenance", "expired", "too-late", "missing-browser"])
+def test_reused_source_cannot_change_or_be_replaced_by_a_newer_green_run(tmp_path, mutation):
+    github = ReusedGitHub()
+    assert github.check(tmp_path)["status"] == "success"
+    if mutation == "rerun":
+        github.main["run_attempt"] = 2
+    elif mutation == "failed":
+        github.main["conclusion"] = "failure"
+    elif mutation == "provenance":
+        github.main["referenced_workflows"] = []
+    elif mutation == "expired":
+        github.main["created_at"] = (NOW - timedelta(hours=25)).isoformat()
+    elif mutation == "too-late":
+        github.main["updated_at"] = "2026-10-02T08:31:00Z"
+    else:
+        github.main_jobs = [job for job in github.main_jobs if "real-browser" not in job["name"]]
+    github.main_runs.append({**GitHub().source, "id": 401, "path": SOURCE_WORKFLOW, "event": "push"})
+    assert github.check(tmp_path, "release")["status"] == "failure"
+
+
+def test_explicit_local_fallback_uses_own_gates_without_trusting_incompatible_main(tmp_path):
+    github = ReusedGitHub()
+    github.jobs = GitHub().jobs + [{**github.marker, "name": gate.REUSE_JOB_PREFIX + " (0/0)", "conclusion": "skipped"}]
+    github.source["referenced_workflows"] = GitHub().source["referenced_workflows"]
+    github.main["referenced_workflows"] = []
+    result = github.check(tmp_path)
+    assert result["status"] == "success"
+    assert result["qualityMode"] == "local"
+    assert "qualitySourceRunId" not in result
+    github.main["conclusion"] = "failure"
+    assert github.check(tmp_path)["reason"] == "matching_main_run_unsuccessful"
+
+
+def test_final_local_fallback_still_rejects_unavailable_main_failure_audit(tmp_path):
+    github = ReusedGitHub()
+    github.jobs = GitHub().jobs + [{**github.marker, "name": gate.REUSE_JOB_PREFIX + " (0/0)", "conclusion": "skipped"}]
+    github.source["referenced_workflows"] = GitHub().source["referenced_workflows"]
+    original = github.api
+
+    def api(endpoint, timeout):
+        if "/workflows/hybrid-pr-checks.yml/" in endpoint:
+            raise GateError("github_request_failed")
+        return original(endpoint, timeout)
+
+    assert github.check(tmp_path, "release", api=api)["reason"] == "github_request_failed"
+
+
+def test_reuse_job_revalidates_the_planners_pinned_source(tmp_path):
+    github = ReusedGitHub()
+    github.source.update(status="in_progress", conclusion=None)
+    arguments = dict(
+        repo=gate.REPOSITORY,
+        run_id=SOURCE_ID,
+        attempt=1,
+        head_sha=SHA,
+        source_run_id=400,
+        source_attempt=1,
+        evidence_path=tmp_path / "reuse.json",
+        api=github.api,
+        now=lambda: NOW,
+    )
+    assert gate.reuse_main_quality(**arguments)["status"] == "success"
+    github.main["run_attempt"] = 2
+    assert gate.reuse_main_quality(**arguments)["reason"] == "source_run_identity_mismatch"
+
+
+def test_plan_cli_publishes_only_api_verified_source_ids(monkeypatch, tmp_path):
+    evidence = tmp_path / "plan.json"
+    output = tmp_path / "outputs"
+    github = ReusedGitHub()
+    github.source.update(status="in_progress", conclusion=None)
+    original = gate.plan_qualification
+    monkeypatch.setattr(
+        gate, "plan_qualification", lambda **kwargs: original(**kwargs, api=github.api, now=lambda: NOW)
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "pre_tag_qualification",
+            "plan",
+            "--repo",
+            gate.REPOSITORY,
+            "--run-id",
+            str(SOURCE_ID),
+            "--run-attempt",
+            "1",
+            "--head-sha",
+            SHA,
+            "--evidence",
+            str(evidence),
+            "--github-output",
+            str(output),
+        ],
+    )
+    assert gate.main() == 0
+    assert output.read_text() == "reuse-quality=true\nquality-source-run-id=400\nquality-source-run-attempt=1\n"
