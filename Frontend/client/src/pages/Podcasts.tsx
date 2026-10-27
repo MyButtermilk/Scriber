@@ -214,12 +214,14 @@ export default function Podcasts() {
     void queryClient.invalidateQueries({ queryKey: LIBRARY_KEY });
     void queryClient.invalidateQueries({ queryKey: [PODCAST_EPISODES_KEY] });
   };
-  const showActionError = (error: Error) => {
-    const message = t(error.message);
+  const requestErrorMessage = (error: Error, message = t(error.message)) => {
     const reference = error instanceof ApiRequestError ? error.reference : undefined;
+    return reference ? `${message} ${t("Reference: {{id}}", { id: reference })}` : message;
+  };
+  const showActionError = (error: Error) => {
     toast({
       title: t("Podcast action failed"),
-      description: reference ? `${message} ${t("Reference: {{id}}", { id: reference })}` : message,
+      description: requestErrorMessage(error),
       variant: "destructive",
     });
   };
@@ -605,7 +607,7 @@ export default function Podcasts() {
         )}
         {search.error && (
           <p role="alert" className="mt-4 text-sm text-muted-foreground">
-            {t(search.error.message)}
+            {requestErrorMessage(search.error)}
           </p>
         )}
         {submittedSearch && search.data && (
@@ -663,7 +665,7 @@ export default function Podcasts() {
 
       {library.error ? (
         <div role="alert" className="rounded-2xl border border-border p-6 text-sm text-muted-foreground">
-          {t("Your podcast library could not be loaded.")}
+          {requestErrorMessage(library.error, t("Your podcast library could not be loaded."))}
           <Button variant="ghost" size="sm" className="ml-2" onClick={() => void library.refetch()}>
             {t("Retry")}
           </Button>
@@ -851,7 +853,7 @@ export default function Podcasts() {
               </div>
             ) : episodes.error ? (
               <p role="alert" className="py-6 text-sm text-muted-foreground">
-                {t("Episodes could not be loaded. Try again.")}
+                {requestErrorMessage(episodes.error, t("Episodes could not be loaded. Try again."))}
               </p>
             ) : shownEpisodes.length ? (
               shownEpisodes.map(renderEpisode)

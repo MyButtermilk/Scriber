@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { LocaleProvider, LANGUAGE_STORAGE_KEY } from "@/i18n";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { LocaleProvider, LANGUAGE_STORAGE_KEY, initializeLocaleCatalog } from "@/i18n";
 import {
   podcastStatusLabels,
   type PodcastEpisode,
@@ -9,9 +9,13 @@ import {
   type PodcastSubscription,
 } from "@/lib/podcast-types";
 import { germanTranslations } from "@/i18n/translations/de";
+import { ApiRequestError } from "@/lib/request-errors";
 import Podcasts from "./Podcasts";
 
-const { request, toast } = vi.hoisted(() => ({ request: vi.fn(), toast: vi.fn() }));
+const { request, toast } = vi.hoisted(() => {
+  window.localStorage.setItem("scriber-ui-locale", "de");
+  return { request: vi.fn(), toast: vi.fn() };
+});
 vi.mock("@/lib/queryClient", () => ({ apiRequest: request }));
 vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast }) }));
 vi.mock("@/lib/backend", () => ({ apiUrl: (path: string) => path }));
@@ -54,7 +58,7 @@ function episode(overrides: Partial<PodcastEpisode> = {}): PodcastEpisode {
   };
 }
 
-function mount(subscriptions: PodcastSubscription[] = []) {
+function mount(subscriptions: PodcastSubscription[] = [], libraryError?: Error) {
   const library: PodcastLibrary = {
     subscriptions,
     newCount: subscriptions.reduce((total, item) => total + item.newCount, 0),
@@ -66,7 +70,17 @@ function mount(subscriptions: PodcastSubscription[] = []) {
     running: true,
     refreshing: false,
   };
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, queryFn: async () => library } } });
+  const client = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+        queryFn: async () => {
+          if (libraryError) throw libraryError;
+          return library;
+        },
+      },
+    },
+  });
   return render(
     <QueryClientProvider client={client}>
       <LocaleProvider>
@@ -77,6 +91,8 @@ function mount(subscriptions: PodcastSubscription[] = []) {
 }
 
 describe("Podcasts", () => {
+  beforeAll(() => initializeLocaleCatalog());
+
   it("shows the linked attempt reference beside an episode error", async () => {
     const failed = episode({ status: "failed", transcriptId: "c".repeat(32), error: "Podcast processing failed." });
     request.mockImplementation(async (_method: string, path: string) => ({
@@ -137,6 +153,34 @@ describe("Podcasts", () => {
         { timeoutMs: 60_000 },
       ),
     );
+  });
+
+  it.each([
+    ["library", "Deine Podcast-Bibliothek konnte nicht geladen werden."],
+    ["episodes", "Folgen konnten nicht geladen werden. Versuche es erneut."],
+    ["search", "Die Podcast-Anfrage ist fehlgeschlagen. Bitte versuche es erneut."],
+  ])("shows the diagnostic reference beside a translated %s query error", async (query, message) => {
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, "de");
+    const reference = "d".repeat(32);
+    const error = new ApiRequestError("Podcast request failed. Please try again.", reference);
+    request.mockRejectedValue(error);
+    mount(query === "episodes" ? [subscription()] : [], query === "library" ? error : undefined);
+    if (query === "search") {
+      fireEvent.change(screen.getByRole("textbox", { name: "Podcast finden" }), { target: { value: "science" } });
+      fireEvent.click(screen.getByRole("button", { name: "Suchen" }));
+    }
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(`${message} Referenz: ${reference}`);
+    expect(alert).not.toHaveTextContent(error.message);
+  });
+
+  it("keeps the safe library fallback without exposing unvalidated diagnostic metadata", async () => {
+    mount([], new ApiRequestError("Internal details must not be rendered", "https://private.example/feed"));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Your podcast library could not be loaded.");
+    expect(alert).not.toHaveTextContent("Internal details");
+    expect(alert).not.toHaveTextContent("private.example");
+    expect(alert).not.toHaveTextContent("Reference:");
   });
 
   it("pauses new automatic work and offers an explicit retry for a failed episode", async () => {
