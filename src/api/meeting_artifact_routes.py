@@ -17,6 +17,7 @@ from src.core.rest_contracts import REST_API_VERSION
 from src.data.meeting_store import MeetingNotFound
 from src.meeting_export import (
     build_eml_draft,
+    build_meeting_document_model,
     build_meeting_email,
     build_meeting_markdown,
     build_meeting_summary_markdown,
@@ -162,7 +163,7 @@ async def export_meeting(request: web.Request) -> web.StreamResponse:
     deps = _deps(request)
     meeting_id = request.match_info.get("id", "")
     export_format = request.match_info.get("format", "json").lower()
-    if export_format not in {"json", "md", "pdf", "docx", "audio"}:
+    if export_format not in {"json", "md", "pdf", "docx", "audio", "document"}:
         return web.json_response(
             {"message": "Meeting export supports json, md, pdf, docx, or compressed audio"},
             status=400,
@@ -184,6 +185,16 @@ async def export_meeting(request: web.Request) -> web.StreamResponse:
                 "Content-Type": "audio/ogg",
                 "Content-Disposition": attachment_content_disposition(f"{safe_title} - audio.opus"),
             },
+        )
+    if export_format == "document":
+        # The WebView typesets this structured model as a PDF; it is a render
+        # input, not a download, so it carries no attachment disposition.
+        return web.json_response(
+            {
+                **build_meeting_document_model(detail, fallback_language=deps.fallback_language),
+                "filename": f"{safe_title}.pdf",
+            },
+            headers={"Cache-Control": "private, no-store"},
         )
     if export_format == "json":
         body = json.dumps(detail, ensure_ascii=False, indent=2).encode("utf-8")

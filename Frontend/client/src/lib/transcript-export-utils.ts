@@ -1,6 +1,6 @@
 import { translateNow } from "@/i18n";
 
-const TRANSCRIPT_EXPORT_API_PATH = /^\/api\/transcripts\/[A-Za-z0-9_-]{1,128}\/export\/(?:pdf|docx)$/;
+const TRANSCRIPT_EXPORT_API_PATH = /^\/api\/transcripts\/[A-Za-z0-9_-]{1,128}\/export\/(?:pdf|docx|document)$/;
 
 export function transcriptExportApiPath(path: string): string {
   if (!TRANSCRIPT_EXPORT_API_PATH.test(path)) {

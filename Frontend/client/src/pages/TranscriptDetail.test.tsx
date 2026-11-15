@@ -19,6 +19,11 @@ vi.mock("@/hooks/use-transcript-auto-refresh", () => ({ useTranscriptAutoRefresh
 vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }));
 const { markPodcastTranscriptRead } = vi.hoisted(() => ({ markPodcastTranscriptRead: vi.fn(async () => {}) }));
 vi.mock("@/lib/podcast-progress", () => ({ markPodcastTranscriptRead }));
+const { saveTranscriptExport, saveTranscriptPdfExport } = vi.hoisted(() => ({
+  saveTranscriptExport: vi.fn(async () => ({ status: "cancelled" as const })),
+  saveTranscriptPdfExport: vi.fn(async (_request: unknown) => ({ status: "cancelled" as const })),
+}));
+vi.mock("@/lib/transcript-export", () => ({ saveTranscriptExport, saveTranscriptPdfExport }));
 vi.mock("@/lib/fetch-with-timeout", () => ({
   fetchWithTimeout: vi.fn(async () => new Response(JSON.stringify({ episode: null }))),
 }));
@@ -146,6 +151,42 @@ describe("failed transcript", () => {
       summaryStatus: "failed",
     });
     expect(await screen.findByRole("button", { name: "Retry Summary" })).toBeEnabled();
+  });
+
+  it("exports the summary of a YouTube transcript as its own PDF with localized labels", async () => {
+    const user = userEvent.setup();
+    mount("Transcript text.", "", "## Thema\n\nAbsatz.", "youtube", {
+      status: "completed",
+      summaryStatus: "completed",
+    });
+    await user.click(await screen.findByRole("button", { name: "Export" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Export summary as PDF" }));
+
+    await waitFor(() => expect(saveTranscriptPdfExport).toHaveBeenCalledTimes(1));
+    const request = saveTranscriptPdfExport.mock.calls[0][0] as {
+      transcriptId: string;
+      variant: string;
+      labels: { locale: string; summary: string; date: string; pageOf: string; speaker: (n: number) => string };
+    };
+    expect(request.transcriptId).toBe("failed-mic");
+    expect(request.variant).toBe("summary");
+    expect(request.labels.locale).toBe("en-US");
+    expect(request.labels.summary).toBe("Summary");
+    expect(request.labels.date).toBe("Date");
+    expect(request.labels.pageOf).toBe("Page {page} of {total}");
+    expect(request.labels.speaker(2)).toBe("Speaker 2");
+    expect(saveTranscriptExport).not.toHaveBeenCalled();
+  });
+
+  it("routes the PDF export through the WebView typesetter and offers no summary PDF without a summary", async () => {
+    const user = userEvent.setup();
+    mount("Transcript text.", "", "", "file", { status: "completed" });
+    await user.click(await screen.findByRole("button", { name: "Export" }));
+    expect(screen.queryByRole("menuitem", { name: "Export summary as PDF" })).toBeNull();
+    await user.click(await screen.findByRole("menuitem", { name: "Export as PDF" }));
+
+    await waitFor(() => expect(saveTranscriptPdfExport).toHaveBeenCalledTimes(1));
+    expect((saveTranscriptPdfExport.mock.calls[0][0] as { variant: string }).variant).toBe("full");
   });
 
   it("does not show stale summary processing after the transcription failed", async () => {

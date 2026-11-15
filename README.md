@@ -188,7 +188,7 @@ Drop in audio, video, or several files at once. Scriber extracts audio, compress
 - Automatic audio extraction from video
 - Provider-aware preparation for large inputs
 - Progress, cancellation, retry, and durable job state
-- PDF and DOCX export from completed transcripts
+- PDF and DOCX export from completed transcripts, plus a summary-only PDF
 
 ### 👥 Capture meetings without a joining bot
 

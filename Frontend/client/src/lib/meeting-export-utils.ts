@@ -4,8 +4,9 @@ export const MAX_NATIVE_MEETING_EXPORT_BYTES = 64 * 1024 * 1024;
 export type MeetingEmailDraftAttachment = "" | "md" | "pdf" | "docx";
 
 const MEETING_EXPORT_API_PATH =
-  /^\/api\/meetings\/[A-Za-z0-9_-]{1,128}\/(?:export\/(?:json|md|pdf|docx|audio)|export-email(?:\?attachment=(?:pdf|docx|md))?)$/;
+  /^\/api\/meetings\/[A-Za-z0-9_-]{1,128}\/(?:export\/(?:json|md|pdf|docx|audio|document)|export-email(?:\?attachment=(?:pdf|docx|md))?)$/;
 const MEETING_AUDIO_EXPORT_API_PATH = /^\/api\/meetings\/([A-Za-z0-9_-]{1,128})\/export\/audio$/;
+const MEETING_PDF_EXPORT_API_PATH = /^\/api\/meetings\/([A-Za-z0-9_-]{1,128})\/export\/pdf$/;
 const NATIVE_MEETING_EXPORT_ERROR_CODE = /^meeting_export_[a-z_]{1,64}$/;
 const MAX_NATIVE_ERROR_MESSAGE_LENGTH = 320;
 
@@ -57,6 +58,11 @@ export function meetingExportNativeCommandError(error: unknown, fallback: string
 
 export function meetingAudioExportMeetingId(path: string): string | null {
   return path.match(MEETING_AUDIO_EXPORT_API_PATH)?.[1] || null;
+}
+
+/** The Meeting whose PDF export the WebView can typeset itself, if any. */
+export function meetingPdfExportMeetingId(path: string): string | null {
+  return path.match(MEETING_PDF_EXPORT_API_PATH)?.[1] || null;
 }
 
 export function meetingEmailDraftPath(meetingId: string, attachment: MeetingEmailDraftAttachment): string {

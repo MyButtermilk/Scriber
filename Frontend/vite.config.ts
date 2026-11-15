@@ -124,6 +124,12 @@ export default defineConfig(({ mode }) => {
             ) {
               return "vendor-upload";
             }
+            if (normalizedId.includes("/node_modules/@formepdf/")) {
+              // Only the lazily imported PDF export uses the layout engine.
+              // Leaving it unassigned keeps it in that lazy chunk instead of
+              // the eagerly preloaded shared vendor chunk.
+              return undefined;
+            }
             return "vendor";
           },
         },

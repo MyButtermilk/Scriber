@@ -1684,6 +1684,16 @@ Packaging and scripts:
 - Settings obtains exact effective provider model names from the backend and
   shows `Model Name` under the current provider. Do not invent a model slug for
   APIs without a model selector; label that case as the provider default.
+- Interactive PDF exports are typeset in the WebView with the vendored pdfcn
+  Forme components under `Frontend/client/src/components/pdf/` (re-add or
+  update them with `npx shadcn add @pdfcn/forme/<name>`; keep them unedited
+  apart from formatting) and `Frontend/client/src/lib/pdf-export/`. The
+  backend supplies only the versioned `export/document` JSON render input and
+  must never put Outlook or speaker-mapping addresses in it. Keep the engine,
+  WASM, and fonts out of eagerly loaded chunks; the CSP permits WebAssembly
+  compilation via `'wasm-unsafe-eval'` only, never `'unsafe-eval'`. Full
+  transcript and Meeting PDFs fall back to the backend renderer on any
+  typesetting failure; `.eml` attachments always use the backend renderer.
 - New File and YouTube summaries are stored as safe semantic HTML. The editable
   content prompt is always followed by Scriber's mandatory HTML output
   contract, which owns the editorial hierarchy while the frontend owns all
