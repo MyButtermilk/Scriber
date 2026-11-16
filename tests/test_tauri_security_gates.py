@@ -75,7 +75,9 @@ def test_tauri_csp_restricts_webview_to_local_backend_and_assets() -> None:
 
     directives = parse_csp(csp)
     assert directives["default-src"] == ["'self'"]
-    assert directives["script-src"] == ["'self'"]
+    # 'wasm-unsafe-eval' only permits compiling WebAssembly: the bundled PDF
+    # layout engine needs it. JavaScript eval stays blocked by the check above.
+    assert directives["script-src"] == ["'self'", "'wasm-unsafe-eval'"]
     assert directives["object-src"] == ["'none'"]
     assert directives["base-uri"] == ["'none'"]
     assert directives["form-action"] == ["'none'"]

@@ -2,7 +2,7 @@ import { useParams, Link, useLocation } from "wouter";
 import { TranscriptionDiarizationNotice } from "@/components/transcription-diarization-notice";
 import { TranscriptionBoundaryNotice } from "@/components/transcription-boundary-notice";
 import { FileTranscriptResumeButton } from "@/components/file-transcript-resume-button";
-import { ArrowLeft, Download, Copy, Check, Sparkles, FileText, Youtube, ExternalLink } from "lucide-react";
+import { ArrowLeft, Download, Copy, Check, Sparkles, FileText, ScrollText, Youtube, ExternalLink } from "lucide-react";
 import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { Button } from "@/components/ui/button";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -36,7 +36,7 @@ import {
 } from "@/lib/request-errors";
 import { prepareSummaryHtml } from "@/lib/summary-html";
 import { summaryTableOfContentsTitle } from "@/lib/summary-document-language";
-import { saveTranscriptExport } from "@/lib/transcript-export";
+import { saveTranscriptExport, saveTranscriptPdfExport } from "@/lib/transcript-export";
 import { markPodcastTranscriptRead } from "@/lib/podcast-progress";
 import type { SettingsResponse, TranscriptDetailResponse, TranscriptHistoryItem } from "@/lib/api-types";
 import { useI18n } from "@/i18n";
@@ -334,7 +334,7 @@ export default function TranscriptDetail() {
   const { id } = useParams();
   const [, setLocation] = useLocation();
   const { toast } = useToast();
-  const { formatDate, formatLegacyDate, formatNumber, t } = useI18n();
+  const { formatDate, formatLegacyDate, formatNumber, localeTag, t } = useI18n();
   const [copied, setCopied] = useState(false);
   const [copiedSummary, setCopiedSummary] = useState(false);
   const copyResetTimerRef = useRef<number | null>(null);
@@ -632,14 +632,29 @@ export default function TranscriptDetail() {
   }, [summaryCopyText, t, toast]);
 
   const handleExport = useCallback(
-    async (format: "pdf" | "docx") => {
+    async (format: "pdf" | "docx" | "summary-pdf") => {
       if (!id || isExporting || !hasExportableContent) return;
+      if (format === "summary-pdf" && !hasSummary) return;
       setIsExporting(true);
       try {
-        const result = await saveTranscriptExport(
-          `/api/transcripts/${id}/export/${format}`,
-          `${transcript?.title || t("Transcript")}.${format}`,
-        );
+        const title = transcript?.title || t("Transcript");
+        const result =
+          format === "docx"
+            ? await saveTranscriptExport(`/api/transcripts/${id}/export/docx`, `${title}.docx`)
+            : await saveTranscriptPdfExport({
+                transcriptId: id,
+                variant: format === "summary-pdf" ? "summary" : "full",
+                fallbackName: `${title}.pdf`,
+                labels: {
+                  locale: localeTag,
+                  transcript: t("Transcript"),
+                  summary: t("Summary"),
+                  date: t("Date"),
+                  duration: t("Duration"),
+                  pageOf: t("Page {{page}} of {{total}}", { page: "{page}", total: "{total}" }),
+                  speaker: (speakerNumber) => t("Speaker {{number}}", { number: formatNumber(speakerNumber) }),
+                },
+              });
         if (result.status === "saved") {
           toast({
             title: result.desktop ? t("Export saved") : t("Download started"),
@@ -658,7 +673,7 @@ export default function TranscriptDetail() {
         setIsExporting(false);
       }
     },
-    [hasExportableContent, id, isExporting, t, toast, transcript?.title],
+    [formatNumber, hasExportableContent, hasSummary, id, isExporting, localeTag, t, toast, transcript?.title],
   );
 
   const getBackLink = () => {
@@ -785,6 +800,16 @@ export default function TranscriptDetail() {
                   )}{" "}
                   {t("Export as PDF")}
                 </DropdownMenuItem>
+                {hasSummary && (
+                  <DropdownMenuItem disabled={isExporting} onSelect={() => void handleExport("summary-pdf")}>
+                    {isExporting ? (
+                      <WavePhysicsLoader className="mr-2" size="inline" />
+                    ) : (
+                      <ScrollText className="w-4 h-4 mr-2" />
+                    )}{" "}
+                    {t("Export summary as PDF")}
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem
                   disabled={isExporting || !hasExportableContent}
                   onSelect={() => void handleExport("docx")}
@@ -851,6 +876,16 @@ export default function TranscriptDetail() {
                   )}{" "}
                   {t("Export as PDF")}
                 </DropdownMenuItem>
+                {hasSummary && (
+                  <DropdownMenuItem disabled={isExporting} onSelect={() => void handleExport("summary-pdf")}>
+                    {isExporting ? (
+                      <WavePhysicsLoader className="mr-2" size="inline" />
+                    ) : (
+                      <ScrollText className="w-4 h-4 mr-2" />
+                    )}{" "}
+                    {t("Export summary as PDF")}
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem
                   disabled={isExporting || !hasExportableContent}
                   onSelect={() => void handleExport("docx")}

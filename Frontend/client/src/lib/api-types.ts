@@ -1243,3 +1243,68 @@ export interface DiarizationComponentStatus {
   byteSize: number;
   license: string;
 }
+
+/** `GET /api/transcripts/{id}/export/document`: the WebView's PDF render input. */
+export interface TranscriptExportDocument {
+  apiVersion: "1";
+  kind: "transcript";
+  title: string;
+  date: string;
+  duration: string;
+  content: string;
+  summary: string;
+  summaryFormat: SummaryFormat;
+  filenameStem: string;
+}
+
+export interface MeetingExportDocumentEntry {
+  text: string;
+  owner: string;
+  dueDate: string;
+  /** Localized status word; empty outside the action-items section. */
+  status: string;
+  /** Untranslated state: "open", "done", "dismissed", or empty. */
+  statusKey: string;
+}
+
+export interface MeetingExportDocumentSection {
+  key: "decisions" | "action_items" | "open_questions" | "risks";
+  heading: string;
+  items: MeetingExportDocumentEntry[];
+}
+
+/** `GET /api/meetings/{id}/export/document`: the WebView's PDF render input. */
+export interface MeetingExportDocument {
+  apiVersion: "1";
+  kind: "meeting";
+  language: string;
+  title: string;
+  date: string;
+  duration: string;
+  segmentCount: number;
+  timingQuality: string;
+  labels: Record<
+    | "meeting"
+    | "unknown"
+    | "executive_summary"
+    | "notes"
+    | "owner"
+    | "due"
+    | "status"
+    | "date"
+    | "duration"
+    | "transcript"
+    | "timestamped_segments"
+    | "timing_quality"
+    | "timestamped_transcript"
+    | "estimated_timing"
+    | "summary"
+    | "page_of",
+    string
+  >;
+  executiveSummary: string;
+  sections: MeetingExportDocumentSection[];
+  notes: Array<{ at: string; body: string }>;
+  segments: Array<{ start: string; end: string; speaker: string; text: string; estimated: boolean }>;
+  filename: string;
+}

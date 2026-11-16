@@ -13,6 +13,7 @@ import {
   meetingExportFolderName,
   meetingExportNativeCommandError,
   meetingExportNativeLimitErrorMessage,
+  meetingPdfExportMeetingId,
 } from "./meeting-export-utils";
 
 before(() => initializeLocaleCatalog());
@@ -48,6 +49,10 @@ test("meeting export only fetches scoped meeting export endpoints", () => {
   assert.equal(meetingExportApiPath("/api/meetings/abc123/export/audio"), "/api/meetings/abc123/export/audio");
   assert.equal(meetingAudioExportMeetingId("/api/meetings/abc123/export/audio"), "abc123");
   assert.equal(meetingAudioExportMeetingId("/api/meetings/abc123/export/pdf"), null);
+  assert.equal(meetingExportApiPath("/api/meetings/abc123/export/document"), "/api/meetings/abc123/export/document");
+  assert.equal(meetingPdfExportMeetingId("/api/meetings/abc123/export/pdf"), "abc123");
+  assert.equal(meetingPdfExportMeetingId("/api/meetings/abc123/export/docx"), null);
+  assert.equal(meetingPdfExportMeetingId("/api/meetings/abc123/export-email?attachment=pdf"), null);
   const localizedAddressError = {
     message: "Diese Meeting-Exportadresse ist nicht zulässig.",
   };

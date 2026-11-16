@@ -12,6 +12,10 @@ test("transcript export paths are restricted to one transcript and supported for
     transcriptExportApiPath("/api/transcripts/123e4567-e89b-12d3-a456-426614174000/export/docx"),
     "/api/transcripts/123e4567-e89b-12d3-a456-426614174000/export/docx",
   );
+  assert.equal(
+    transcriptExportApiPath("/api/transcripts/file_123/export/document"),
+    "/api/transcripts/file_123/export/document",
+  );
   assert.throws(() => transcriptExportApiPath("https://example.com/report.pdf"));
   assert.throws(() => transcriptExportApiPath("/api/transcripts/../settings/export/pdf"));
   assert.throws(() => transcriptExportApiPath("/api/transcripts/abc/export/exe"));

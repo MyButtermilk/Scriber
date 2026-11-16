@@ -46,7 +46,11 @@ export default tseslint.config(
   },
   {
     files: ["client/src/App.tsx", "client/src/pages/**/*.tsx", "client/src/components/**/*.tsx"],
-    ignores: ["client/src/components/ui/**", "client/src/components/theme-provider.tsx"],
+    ignores: [
+      "client/src/components/ui/**",
+      "client/src/components/pdf/**",
+      "client/src/components/theme-provider.tsx",
+    ],
     rules: {
       "react-refresh/only-export-components": [
         "error",
@@ -54,6 +58,14 @@ export default tseslint.config(
           allowConstantExport: true,
         },
       ],
+    },
+  },
+  {
+    // pdfcn registry components are kept as the shadcn CLI installs them;
+    // their disable comments target the registry's own lint rules.
+    files: ["client/src/components/pdf/**/*.{ts,tsx}"],
+    linterOptions: {
+      reportUnusedDisableDirectives: "off",
     },
   },
 );

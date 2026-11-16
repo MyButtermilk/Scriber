@@ -41,6 +41,7 @@ _EXPORT_LABELS: dict[str, dict[str, str]] = {
         "attached": "Attached: {name} contains the full timestamped transcript.",
         "available_in_scriber": "The full timestamped transcript remains available in Scriber.",
         "regards": "Best regards",
+        "page_of": "Page {page} of {total}",
     },
     "de": {
         "meeting": "Besprechung",
@@ -74,6 +75,7 @@ _EXPORT_LABELS: dict[str, dict[str, str]] = {
         "attached": "Im Anhang: {name} enthält das vollständige Transkript mit Zeitstempeln.",
         "available_in_scriber": "Das vollständige Transkript mit Zeitstempeln bleibt in Scriber verfügbar.",
         "regards": "Viele Grüße",
+        "page_of": "Seite {page} von {total}",
     },
     "es": {
         "meeting": "Reunión",
@@ -107,6 +109,7 @@ _EXPORT_LABELS: dict[str, dict[str, str]] = {
         "attached": "Adjunto: {name} contiene la transcripción completa con marcas de tiempo.",
         "available_in_scriber": "La transcripción completa con marcas de tiempo sigue disponible en Scriber.",
         "regards": "Saludos",
+        "page_of": "Página {page} de {total}",
     },
     "fr": {
         "meeting": "Réunion",
@@ -140,6 +143,7 @@ _EXPORT_LABELS: dict[str, dict[str, str]] = {
         "attached": "Pièce jointe : {name} contient la transcription horodatée complète.",
         "available_in_scriber": "La transcription horodatée complète reste disponible dans Scriber.",
         "regards": "Cordialement",
+        "page_of": "Page {page} sur {total}",
     },
     "it": {
         "meeting": "Riunione",
@@ -173,6 +177,7 @@ _EXPORT_LABELS: dict[str, dict[str, str]] = {
         "attached": "In allegato: {name} contiene la trascrizione completa con marcatori temporali.",
         "available_in_scriber": "La trascrizione completa con marcatori temporali resta disponibile in Scriber.",
         "regards": "Cordiali saluti",
+        "page_of": "Pagina {page} di {total}",
     },
 }
 
@@ -262,6 +267,43 @@ def meeting_duration_ms(detail: dict[str, Any]) -> int:
     return max((int(item.get("endMs", 0)) for item in detail.get("segments", [])), default=0)
 
 
+def _meeting_summary_sections(
+    detail: dict[str, Any],
+    analysis: dict[str, Any],
+    labels: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Return the non-empty brief sections shared by every document template."""
+
+    sources = (
+        (labels["decisions"], "decisions", analysis.get("decisions", [])),
+        (labels["action_items"], "action_items", detail.get("actionItems", [])),
+        (labels["open_questions"], "open_questions", analysis.get("openQuestions", [])),
+        (labels["risks"], "risks", analysis.get("risks", [])),
+    )
+    sections: list[dict[str, Any]] = []
+    for heading, section_key, items in sources:
+        if not isinstance(items, list) or not items:
+            continue
+        entries: list[dict[str, str]] = []
+        for item in items:
+            text = _item_text(item)
+            if not text:
+                continue
+            entry = {"text": text, "owner": "", "dueDate": "", "status": "", "statusKey": ""}
+            if isinstance(item, dict):
+                if item.get("owner"):
+                    entry["owner"] = str(item["owner"])
+                if item.get("dueDate"):
+                    entry["dueDate"] = str(item["dueDate"])
+                if section_key == "action_items":
+                    raw_status = str(item.get("status") or "open").strip().lower()
+                    entry["status"] = labels.get(f"status_{raw_status}", raw_status)
+                    entry["statusKey"] = raw_status
+            entries.append(entry)
+        sections.append({"key": section_key, "heading": heading, "items": entries})
+    return sections
+
+
 def build_meeting_summary_markdown(detail: dict[str, Any], *, fallback_language: str = "en") -> str:
     analysis = _analysis(detail)
     labels = meeting_export_labels(detail, fallback_language=fallback_language)
@@ -270,32 +312,18 @@ def build_meeting_summary_markdown(detail: dict[str, Any], *, fallback_language:
     if summary:
         lines.extend([f"## {labels['executive_summary']}", "", summary, ""])
 
-    sections = (
-        (labels["decisions"], "decisions", analysis.get("decisions", [])),
-        (labels["action_items"], "action_items", detail.get("actionItems", [])),
-        (labels["open_questions"], "open_questions", analysis.get("openQuestions", [])),
-        (labels["risks"], "risks", analysis.get("risks", [])),
-    )
-    for heading, section_key, items in sections:
-        if not isinstance(items, list) or not items:
-            continue
-        lines.extend([f"## {heading}", ""])
-        for item in items:
-            text = _item_text(item)
-            if not text:
-                continue
+    for section in _meeting_summary_sections(detail, analysis, labels):
+        lines.extend([f"## {section['heading']}", ""])
+        for entry in section["items"]:
             metadata: list[str] = []
-            if isinstance(item, dict):
-                if item.get("owner"):
-                    metadata.append(f"{labels['owner']}: {item['owner']}")
-                if item.get("dueDate"):
-                    metadata.append(f"{labels['due']}: {item['dueDate']}")
-                if section_key == "action_items":
-                    raw_status = str(item.get("status") or "open").strip().lower()
-                    status = labels.get(f"status_{raw_status}", raw_status)
-                    metadata.append(f"{labels['status']}: {status}")
+            if entry["owner"]:
+                metadata.append(f"{labels['owner']}: {entry['owner']}")
+            if entry["dueDate"]:
+                metadata.append(f"{labels['due']}: {entry['dueDate']}")
+            if entry["status"]:
+                metadata.append(f"{labels['status']}: {entry['status']}")
             suffix = f" ({'; '.join(metadata)})" if metadata else ""
-            lines.append(f"- {text}{suffix}")
+            lines.append(f"- {entry['text']}{suffix}")
         lines.append("")
 
     notes = [item for item in detail.get("notes", []) if str(item.get("body", "")).strip()]
@@ -306,6 +334,69 @@ def build_meeting_summary_markdown(detail: dict[str, Any], *, fallback_language:
         lines.append("")
 
     return "\n".join(lines).strip()
+
+
+_MEETING_DOCUMENT_LABEL_KEYS = (
+    "meeting",
+    "unknown",
+    "executive_summary",
+    "notes",
+    "owner",
+    "due",
+    "status",
+    "date",
+    "duration",
+    "transcript",
+    "timestamped_segments",
+    "timing_quality",
+    "timestamped_transcript",
+    "estimated_timing",
+    "summary",
+    "page_of",
+)
+
+
+def build_meeting_document_model(detail: dict[str, Any], *, fallback_language: str = "en") -> dict[str, Any]:
+    """Return the structured document the WebView typesets as a Meeting PDF.
+
+    This is the same content as the Markdown/PDF/DOCX templates above, kept
+    structured so the renderer can set tables and metadata instead of
+    re-parsing Markdown. It carries no participant addresses.
+    """
+
+    analysis = _analysis(detail)
+    language = meeting_export_language(detail, fallback_language=fallback_language)
+    labels = _EXPORT_LABELS[language]
+    segments = detail.get("segments", [])
+    estimated_count = sum(1 for segment in segments if segment.get("alignmentQuality") == "estimated")
+    return {
+        "apiVersion": "1",
+        "kind": "meeting",
+        "language": language,
+        "title": _single_line(detail.get("title"), limit=200) or labels["meeting"],
+        "date": str(detail.get("startedAt") or detail.get("createdAt") or ""),
+        "duration": format_offset(meeting_duration_ms(detail)),
+        "segmentCount": len(segments),
+        "timingQuality": labels["estimated_segments"].format(count=estimated_count) if estimated_count else "",
+        "labels": {key: labels[key] for key in _MEETING_DOCUMENT_LABEL_KEYS},
+        "executiveSummary": str(analysis.get("executiveSummary") or "").strip(),
+        "sections": _meeting_summary_sections(detail, analysis, labels),
+        "notes": [
+            {"at": format_offset(note.get("atMs")), "body": str(note["body"]).strip()}
+            for note in detail.get("notes", [])
+            if str(note.get("body", "")).strip()
+        ],
+        "segments": [
+            {
+                "start": format_offset(int(segment.get("startMs", 0))),
+                "end": format_offset(int(segment.get("endMs", 0))),
+                "speaker": str(segment.get("speakerLabel") or segment.get("source") or labels["meeting"]),
+                "text": str(segment.get("text", "")).strip(),
+                "estimated": segment.get("alignmentQuality") == "estimated",
+            }
+            for segment in segments
+        ],
+    }
 
 
 def build_meeting_transcript_text(detail: dict[str, Any], *, fallback_language: str = "en") -> str:

@@ -140,6 +140,25 @@ async def test_exports_and_email_share_one_request_resolved_artifact_boundary(tm
         assert pdf.status == 200
         assert await pdf.read() == b"%PDF-artifact"
 
+        document = await client.get(f"/api/meetings/{meeting_id}/export/document")
+        assert document.status == 200
+        assert document.headers["Cache-Control"] == "private, no-store"
+        assert "Content-Disposition" not in document.headers
+        model = await document.json()
+        assert model["apiVersion"] == "1"
+        assert model["kind"] == "meeting"
+        assert model["filename"] == "Artifact Overview.pdf"
+        assert model["segments"] == [
+            {
+                "start": "0:00",
+                "end": "0:01",
+                "speaker": "Speaker 1",
+                "text": "Durable artifact content",
+                "estimated": False,
+            }
+        ]
+        assert rendered == ["pdf"]
+
         preview = await client.get(f"/api/meetings/{meeting_id}/email-preview")
         assert preview.status == 200
         assert (await preview.json())["apiVersion"] == "1"
@@ -155,7 +174,7 @@ async def test_exports_and_email_share_one_request_resolved_artifact_boundary(tm
         await client.close()
 
     assert rendered == ["pdf"]
-    assert provider_calls == 4
+    assert provider_calls == 5
 
 
 def test_store_adapter_matches_the_meeting_artifact_port(assert_protocol_contract) -> None:

@@ -343,6 +343,66 @@ async def test_export_reports_a_missing_renderer_dependency_as_500():
 
 
 @pytest.mark.asyncio
+async def test_document_export_returns_the_structured_webview_render_input():
+    controller = _StubController()
+    controller.view = replace(
+        _View(),
+        title='Q3 "review"/notes',
+        summary="<section><h2>Title</h2><p>Standfirst</p></section>",
+        summary_format="HTML",
+    )
+
+    class ExplodingRenderer:
+        async def render(
+            self,
+            command: TranscriptDocumentRenderCommand,
+        ) -> tuple[bytes, str, str]:
+            raise AssertionError("the structured document must not reach the byte renderer")
+
+    client = await _client(controller, renderer=ExplodingRenderer())
+    try:
+        response = await client.get("/api/transcripts/t-1/export/document")
+        assert response.status == 200
+        assert response.headers["Cache-Control"] == "private, no-store"
+        assert "Content-Disposition" not in response.headers
+        assert await response.json() == {
+            "apiVersion": "1",
+            "kind": "transcript",
+            "title": 'Q3 "review"/notes',
+            "date": "2026-08-14",
+            "duration": "00:10",
+            "content": "hello world",
+            "summary": "<section><h2>Title</h2><p>Standfirst</p></section>",
+            "summaryFormat": "html",
+            "filenameStem": "Q3 reviewnotes",
+        }
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_document_export_accepts_a_summary_without_transcript_text():
+    controller = _StubController()
+    controller.view = replace(_View(), content="", summary="## Heading")
+    client = await _client(controller)
+    try:
+        response = await client.get("/api/transcripts/t-1/export/document")
+        assert response.status == 200
+        payload = await response.json()
+        assert payload["content"] == ""
+        assert payload["summaryFormat"] == "markdown"
+
+        controller.view = replace(_View(), content="", summary="")
+        empty = await client.get("/api/transcripts/t-1/export/document")
+        assert empty.status == 400
+
+        controller.view = None
+        assert (await client.get("/api/transcripts/t-1/export/document")).status == 404
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_export_reports_an_unknown_transcript():
     controller = _StubController()
     controller.view = None

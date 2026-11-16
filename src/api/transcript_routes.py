@@ -290,6 +290,45 @@ async def stop_transcript(request: web.Request) -> web.Response:
     return web.json_response({"message": "Transcription is not running"}, status=400)
 
 
+def _export_filename_stem(title: str) -> str:
+    safe_title = "".join(c for c in (title or "transcript") if c.isalnum() or c in " -_").strip()[:50]
+    return safe_title or "transcript"
+
+
+async def export_transcript_document(request: web.Request) -> web.StreamResponse:
+    """Return the structured document the WebView typesets as a PDF.
+
+    The summary keeps its stored format so the renderer can set its sections,
+    lists, and tables; it is sanitized again in the WebView before rendering.
+    """
+    service = _service(request)
+    transcript_id = _transcript_id(request)
+    if not transcript_id:
+        return web.json_response({"message": "Missing transcript ID"}, status=400)
+
+    view = await service.controller.transcript_view(transcript_id)
+    if view is None:
+        return web.json_response({"message": "Transcript not found"}, status=404)
+    if not view.content and not view.summary:
+        return web.json_response({"message": "Transcript has no content to export"}, status=400)
+
+    summary_format = (view.summary_format or "markdown").strip().lower()
+    return web.json_response(
+        {
+            "apiVersion": "1",
+            "kind": "transcript",
+            "title": view.title or "Transcript",
+            "date": view.date or "",
+            "duration": view.duration or "",
+            "content": view.content or "",
+            "summary": view.summary or "",
+            "summaryFormat": "html" if summary_format == "html" else "markdown",
+            "filenameStem": _export_filename_stem(view.title),
+        },
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
 async def export_transcript(request: web.Request) -> web.StreamResponse:
     """Export transcript as PDF or DOCX."""
     service = _service(request)
@@ -298,6 +337,8 @@ async def export_transcript(request: web.Request) -> web.StreamResponse:
 
     if not transcript_id:
         return web.json_response({"message": "Missing transcript ID"}, status=400)
+    if export_format == "document":
+        return await export_transcript_document(request)
     if export_format not in _EXPORT_FORMATS:
         return web.json_response({"message": "Invalid format. Use 'pdf' or 'docx'"}, status=400)
 
@@ -319,8 +360,7 @@ async def export_transcript(request: web.Request) -> web.StreamResponse:
                 duration=view.duration,
             )
         )
-        safe_title = "".join(c for c in (view.title or "transcript") if c.isalnum() or c in " -_").strip()[:50]
-        filename = f"{safe_title or 'transcript'}.{ext}"
+        filename = f"{_export_filename_stem(view.title)}.{ext}"
         return web.Response(
             body=data,
             content_type=content_type,

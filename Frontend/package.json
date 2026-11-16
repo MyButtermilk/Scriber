@@ -34,6 +34,8 @@
   "dependencies": {
     "@carrot-kpi/switzer-font": "^0.1.0",
     "@fontsource/inter": "^5.2.8",
+    "@formepdf/core": "^0.31.0",
+    "@formepdf/react": "^0.31.0",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",
     "@radix-ui/react-dialog": "^1.1.15",

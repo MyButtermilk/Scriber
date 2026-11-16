@@ -266,6 +266,11 @@ export const transcriptionTranslations = {
   Export: "Exportieren",
   "Export as DOCX": "Als DOCX exportieren",
   "Export as PDF": "Als PDF exportieren",
+  "Export summary as PDF": "Zusammenfassung als PDF exportieren",
+  "Scriber could not create the summary PDF. Please try again.":
+    "Scriber konnte das PDF der Zusammenfassung nicht erstellen. Bitte versuche es erneut.",
+  "Page {{page}} of {{total}}": "Seite {{page}} von {{total}}",
+  Date: "Datum",
   "Export saved": "Export gespeichert",
   "Failed to stop": "Beenden fehlgeschlagen",
   "Failed to stop task.": "Die Aufgabe konnte nicht beendet werden.",

@@ -579,6 +579,17 @@ bytes.
    PDF/DOCX exports use the same authenticated fetch plus native Save As
    boundary in Tauri; they never depend on a WebView popup or browser
    navigation. Browser-only runs still download the returned blob.
+   Interactive PDF exports (transcript, summary-only, and Meeting) are typeset
+   in the WebView with pdfcn's Forme components (`components/pdf`, installed
+   from the `@pdfcn` shadcn registry) and the `@formepdf` WASM layout engine
+   (`lib/pdf-export`). The token-protected `export/document` routes return a
+   versioned JSON render input; File/YouTube summaries keep their stored HTML
+   and are sanitized again with the in-app summary rules before typesetting.
+   The engine and the app's bundled Inter faces load lazily on the first PDF
+   export; the CSP adds only `'wasm-unsafe-eval'`, so JavaScript `eval` stays
+   blocked. If typesetting fails, the full transcript and Meeting PDFs fall
+   back to the backend renderer; summary-only PDFs report the failure. Meeting
+   `.eml` PDF attachments keep the backend renderer.
 6. Optional speaker recognition is local and opt-in. The pinned WeSpeaker ONNX
    model is downloaded after installation, hash-verified before first use, and
    never included in transcript/export payloads. Settings can enroll a named

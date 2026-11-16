@@ -8,6 +8,7 @@ import pytest
 
 from src.meeting_export import (
     build_eml_draft,
+    build_meeting_document_model,
     build_meeting_email,
     build_meeting_markdown,
     build_meeting_summary_markdown,
@@ -155,6 +156,77 @@ def test_meeting_export_duration_preserves_silence_in_retained_recording(include
     assert meeting_duration_ms(detail) == 32_000
     assert "**Duration:** 0:32" in build_meeting_markdown(detail)
     assert "Duration: 0:32" in build_meeting_email(detail)["body"]
+
+
+def test_meeting_document_model_structures_the_same_brief_for_the_pdf_renderer():
+    detail = meeting_detail()
+    detail["segments"][1]["alignmentQuality"] = "estimated"
+
+    model = build_meeting_document_model(detail)
+
+    assert model["apiVersion"] == "1"
+    assert model["kind"] == "meeting"
+    assert model["language"] == "en"
+    assert model["duration"] == "0:08"
+    assert model["segmentCount"] == 2
+    assert model["timingQuality"] == "1 segment(s) use estimated intervals"
+    assert model["executiveSummary"] == "The team approved a Friday release."
+    assert [section["key"] for section in model["sections"]] == [
+        "decisions",
+        "action_items",
+        "open_questions",
+        "risks",
+    ]
+    assert model["sections"][1] == {
+        "key": "action_items",
+        "heading": "Action items",
+        "items": [
+            {
+                "text": "Send the customer update",
+                "owner": "Márta",
+                "dueDate": "2026-07-12",
+                "status": "open",
+                "statusKey": "open",
+            }
+        ],
+    }
+    assert model["notes"] == [{"at": "0:06", "body": "Confirm release owner."}]
+    assert model["segments"][1] == {
+        "start": "0:05",
+        "end": "0:08",
+        "speaker": "Márta",
+        "text": "I will send the customer update.",
+        "estimated": True,
+    }
+    assert model["title"] == "Roadmap review Bcc: ignored@example.com"
+    # The render input never carries calendar or speaker-mapping addresses.
+    rendered = repr(model).lower()
+    for address in ("owner@example.com", "marta@example.com", "safe@example.org", "mapping-only@example.net"):
+        assert address not in rendered
+
+    # The Markdown template stays a projection of the same sections.
+    summary = build_meeting_summary_markdown(detail)
+    for section in model["sections"]:
+        assert f"## {section['heading']}" in summary
+        for entry in section["items"]:
+            assert entry["text"] in summary
+    assert "- Send the customer update (Owner: Márta; Due: 2026-07-12; Status: open)" in summary
+
+
+def test_meeting_document_model_follows_the_export_language():
+    detail = meeting_detail()
+    detail["outputs"][0]["payload"]["outputLanguage"] = "de"
+    detail["segments"] = []
+
+    model = build_meeting_document_model(detail)
+
+    assert model["language"] == "de"
+    assert model["labels"]["executive_summary"] == "Kurzfassung"
+    assert model["labels"]["page_of"] == "Seite {page} von {total}"
+    assert model["sections"][1]["heading"] == "Aufgaben"
+    assert model["sections"][1]["items"][0]["status"] == "offen"
+    assert model["sections"][1]["items"][0]["statusKey"] == "open"
+    assert model["timingQuality"] == ""
 
 
 def test_meeting_export_duration_falls_back_to_segments_without_retained_mix():
