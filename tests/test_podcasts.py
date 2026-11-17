@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from aiohttp import web
@@ -298,6 +299,36 @@ async def test_redirect_to_private_host_rejected_before_second_request() -> None
 
 
 @pytest.mark.asyncio
+async def test_stream_ranges_survive_public_redirects_and_reject_private_redirects() -> None:
+    transport = PodcastHttp()
+    redirect = SimpleNamespace(status=302, headers={"Location": "https://cdn.example.com/audio"}, release=Mock())
+    partial = SimpleNamespace(status=206, headers={"Content-Type": "audio/mpeg"})
+    session = SimpleNamespace(get=AsyncMock(side_effect=[redirect, partial]))
+    transport._session = session
+    assert await transport.stream("https://example.com/audio", range_header="bytes=100-") is partial
+    redirect.release.assert_called_once()
+    for call in session.get.await_args_list:
+        assert call.kwargs["headers"] == {"Range": "bytes=100-"}
+        assert call.kwargs["allow_redirects"] is False
+        assert call.kwargs["timeout"].total is None
+    redirect.headers["Location"] = "http://127.0.0.1/private"
+    session.get = AsyncMock(return_value=redirect)
+    with pytest.raises(PodcastError):
+        await transport.stream("https://example.com/audio")
+    assert session.get.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["bytes=0-1,5-6", "bytes=-", "bytes=1-\r\nCookie: secret", "items=0-1"])
+async def test_stream_rejects_invalid_ranges_before_network(value: str) -> None:
+    transport = PodcastHttp()
+    transport._response = AsyncMock()
+    with pytest.raises(PodcastError, match="range"):
+        await transport.stream("https://example.com/audio", range_header=value)
+    transport._response.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_public_transport_disables_automatic_decompression_and_rejects_encoded_response() -> None:
     transport = PodcastHttp()
     session = transport._client()
@@ -490,11 +521,12 @@ async def test_refresh_and_completion_announce_new_and_ready_episodes(tmp_path: 
         assert ready["podcastTitle"] == "Morning briefing"
         assert (await service.library())["unreadCount"] == 1
 
-        # Downloading audio again for a finished episode is not a new episode.
-        assert await service.remove_download(episode["id"])
-        assert await service.queue(episode["id"])
+        # Listening to a finished episode is not a new processing attempt.
+        transport.stream = AsyncMock(return_value=object())
+        assert await service.audio_path(episode["id"]) is None
+        assert not await service.queue(episode["id"])
         before = len(published)
-        await service._process(service._store.episode(episode["id"]))
+        await service.open_audio(episode["id"])
         assert len(published) == before
     finally:
         await service.close()
@@ -698,7 +730,10 @@ async def test_service_end_to_end_queues_downloads_summarizes_and_unsubscribes(t
         ready = [row for row in rows if row["status"] == "completed"]
         assert len(ready) == 1
         assert len(controller.started) == len(controller.summaries) == len(transport.downloads) == 1
-        assert await service.audio_path(ready[0]["id"])
+        async with asyncio.timeout(2):
+            while await service.audio_path(ready[0]["id"]):
+                await asyncio.sleep(0.01)
+        assert (await service.episodes(identifier))["items"][0]["downloaded_bytes"] == 0
         assert await service.unsubscribe(identifier)
         assert (await service.library())["subscriptions"] == []
         assert not list((tmp_path / "podcasts" / "audio").glob("*.mp3"))
@@ -726,7 +761,10 @@ async def test_service_recovers_download_renamed_before_its_metadata_commit(tmp_
                 await asyncio.sleep(0.01)
         episode = (await service.episodes(identifier))["items"][0]
         assert episode["status"] == "completed"
-        assert episode["downloaded_bytes"] == cached.stat().st_size
+        async with asyncio.timeout(2):
+            while cached.exists():
+                await asyncio.sleep(0.01)
+        assert (await service.episodes(identifier))["items"][0]["downloaded_bytes"] == 0
         assert transport.downloads == []
     finally:
         await service.close()
@@ -736,26 +774,13 @@ async def test_service_recovers_download_renamed_before_its_metadata_commit(tmp_
 async def test_completed_download_releases_media_ownership_before_notification(tmp_path: Path) -> None:
     notifying = asyncio.Event()
     release_notification = asyncio.Event()
-    notification_returned = asyncio.Event()
-    downloading_again = asyncio.Event()
-    release_download = asyncio.Event()
 
     async def notify(_payload: dict) -> None:
         notifying.set()
         await release_notification.wait()
-        notification_returned.set()
 
     controller = FakeController(tmp_path)
     transport = FakeTransport()
-    original_download = transport.download
-
-    async def download(url, target, *, max_bytes):
-        if transport.downloads:
-            downloading_again.set()
-            await release_download.wait()
-        return await original_download(url, target, max_bytes=max_bytes)
-
-    transport.download = download
     service = PodcastService(
         tmp_path / "podcasts", PodcastProcessor(controller), transport=transport, startup_delay=0, notify=notify
     )
@@ -766,34 +791,19 @@ async def test_completed_download_releases_media_ownership_before_notification(t
         episode = (await service.episodes(subscription))["items"][0]
         assert episode["status"] == "completed"
         assert (await service.library())["activeCount"] == 0
-        assert await service.remove_download(episode["id"])
-        assert await service.queue(episode["id"])
-        await asyncio.wait_for(downloading_again.wait(), 10)
-
-        # Completing the old notification must not clear the new download's
-        # ownership, even though both attempts refer to the same episode.
-        release_notification.set()
-        await asyncio.wait_for(notification_returned.wait(), 10)
-        assert (await service.library())["activeCount"] == 1
-        with pytest.raises(PodcastError):
-            await service.remove_download(episode["id"])
-        with pytest.raises(PodcastError):
-            await service.unsubscribe(subscription)
-
-        release_download.set()
-        async with asyncio.timeout(10):
-            while (await service.library())["activeCount"]:
-                await asyncio.sleep(0.01)
+        assert episode["downloaded_bytes"] == 0
+        assert await service.audio_path(episode["id"]) is None
+        assert not await service.queue(episode["id"])
+        # A delayed notification must not retain ownership or block removal.
         assert len(controller.started) == len(controller.summaries) == 1
         assert await service.unsubscribe(subscription)
     finally:
         release_notification.set()
-        release_download.set()
         await service.close()
 
 
 @pytest.mark.asyncio
-async def test_removed_download_can_be_retried_without_any_new_transcription_or_summary(tmp_path: Path) -> None:
+async def test_completed_episode_streams_without_download_or_new_provider_work(tmp_path: Path) -> None:
     controller = FakeController(tmp_path)
     transport = FakeTransport()
     service = PodcastService(tmp_path / "podcasts", PodcastProcessor(controller), transport=transport, startup_delay=0)
@@ -808,26 +818,159 @@ async def test_removed_download_can_be_retried_without_any_new_transcription_or_
 
         await wait_idle()
         episode = (await service.episodes(identifier))["items"][0]
-        assert await service.remove_download(episode["id"])
-        # Even a separately deleted transcript or unavailable providers cannot
-        # turn an explicit audio-only download into a newly billed STT attempt.
+        # Playback is independent of transcripts and provider configuration.
         controller.views.clear()
-        controller.plan_file_upload = lambda **kwargs: pytest.fail("audio-only download requested a provider plan")
-        original_download = transport.download
-        transport.download = AsyncMock(side_effect=PodcastError("Download interrupted"))
-        assert await service.queue(episode["id"])
-        await wait_idle()
-        assert (await service.episodes(identifier))["items"][0]["status"] == "failed"
-        transport.download = original_download
-        assert await service.queue(episode["id"])
-        await wait_idle()
+        controller.plan_file_upload = lambda **kwargs: pytest.fail("playback requested a provider plan")
+        streamed = object()
+        transport.stream = AsyncMock(return_value=streamed)
+        assert await service.open_audio(episode["id"], range_header="bytes=100-") is streamed
+        transport.stream.assert_awaited_once_with(episode["media_url"], range_header="bytes=100-")
+        assert not await service.queue(episode["id"])
         restored = (await service.episodes(identifier))["items"][0]
-        assert restored["status"] == "completed" and restored["downloaded_bytes"] > 0
+        assert restored["status"] == "completed"
         assert restored["transcript_id"] == episode["transcript_id"]
         assert len(controller.started) == len(controller.summaries) == 1
-        assert len(transport.downloads) == 2
+        assert len(transport.downloads) == 1
     finally:
         await service.close()
+
+
+@pytest.mark.asyncio
+async def test_startup_reclaims_only_audio_with_completed_transcript_and_summary(tmp_path: Path) -> None:
+    root = tmp_path / "podcasts"
+    store = PodcastStore(root / "subscriptions.db")
+    store.initialize()
+    subscription = store.add("https://example.com/feed", _feed(5, 4, 3, 2, 1), auto_process=False)
+    episodes = store.episodes(subscription)["items"]
+    controller = FakeController(tmp_path)
+    (root / "audio").mkdir()
+    for index, episode in enumerate(episodes):
+        (root / "audio" / f"{episode['id']}.mp3").write_bytes(b"audio")
+        transcript_id = str(index) * 32
+        store.update(
+            episode["id"],
+            status="failed" if index == 4 else "completed",
+            transcript_id=transcript_id,
+            downloaded_bytes=5,
+        )
+        if index != 3:
+            controller.views[transcript_id] = _view(
+                transcript_id, status="failed" if index == 2 else "completed", summary="" if index == 1 else "Summary"
+            )
+    # An old explicitly requested playback download is now retired, not rerun.
+    with store._connect() as con:
+        con.execute("UPDATE episodes SET download_only=1,status='queued' WHERE id=?", (episodes[0]["id"],))
+    snapshots = dict(controller.views)
+    transport = FakeTransport()
+    service = PodcastService(root, PodcastProcessor(controller), transport=transport)
+    try:
+        await service.library()
+        assert not (root / "audio" / f"{episodes[0]['id']}.mp3").exists()
+        assert store.episode(episodes[0]["id"])["downloaded_bytes"] == 0
+        assert store.episode(episodes[0]["id"])["status"] == "completed"
+        for episode in episodes[1:]:
+            assert (root / "audio" / f"{episode['id']}.mp3").exists()
+        assert controller.views == snapshots
+        assert controller.started == controller.summaries == transport.downloads == []
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_does_not_fail_completed_work_and_recovers(tmp_path: Path, monkeypatch) -> None:
+    controller = FakeController(tmp_path)
+    transport = FakeTransport(_feed(1))
+    service = PodcastService(tmp_path / "podcasts", PodcastProcessor(controller), transport=transport)
+    subscription = await service.subscribe("https://example.com/feed")
+    episode = service._store.claim()
+    cleanup = service._discard_completed_audio
+    monkeypatch.setattr(service, "_discard_completed_audio", Mock(side_effect=PermissionError("locked")))
+    try:
+        await service._process(episode)
+        row = service._store.episode(episode["id"])
+        assert row["status"] == "completed" and row["error"] == ""
+        assert row["downloaded_bytes"] > 0
+        assert controller.views[row["transcript_id"]].summary == "Summary"
+        monkeypatch.setattr(service, "_discard_completed_audio", cleanup)
+        await service._prune_completed_audio()
+        assert await service.audio_path(episode["id"]) is None
+        assert (await service.episodes(subscription))["items"][0]["downloaded_bytes"] == 0
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_cleanup_finishes_deletion_without_requeuing(tmp_path: Path, monkeypatch) -> None:
+    controller = FakeController(tmp_path)
+    service = PodcastService(tmp_path / "podcasts", PodcastProcessor(controller), transport=FakeTransport(_feed(1)))
+    await service.subscribe("https://example.com/feed")
+    episode = service._store.claim()
+    entered = threading.Event()
+    release = threading.Event()
+    cleanup = service._discard_completed_audio
+
+    def blocked_cleanup(row):
+        entered.set()
+        assert release.wait(5)
+        cleanup(row)
+
+    monkeypatch.setattr(service, "_discard_completed_audio", blocked_cleanup)
+    task = asyncio.create_task(service._process(episode))
+    try:
+        async with asyncio.timeout(5):
+            while not entered.is_set():
+                await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        row = service._store.episode(episode["id"])
+        assert row["status"] == "completed" and row["downloaded_bytes"] == 0
+        assert await service.audio_path(episode["id"]) is None
+        assert controller.views[row["transcript_id"]].summary == "Summary"
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_summary_retry_needs_no_audio_download_and_preserves_transcript(tmp_path: Path) -> None:
+    controller = FakeController(tmp_path)
+    transport = FakeTransport(_feed(1))
+    service = PodcastService(tmp_path / "podcasts", PodcastProcessor(controller), transport=transport)
+    subscription = await service.subscribe("https://example.com/feed")
+    episode = service._store.claim()
+    transcript_id = "a" * 32
+    controller.views[transcript_id] = _view(transcript_id)
+    service._store.update(episode["id"], status="failed", transcript_id=transcript_id)
+    transport.download = AsyncMock(side_effect=AssertionError("must not download for summary"))
+    try:
+        assert await service.queue(episode["id"])
+        await service._process(service._store.claim())
+        row = (await service.episodes(subscription))["items"][0]
+        assert row["status"] == "completed" and row["downloaded_bytes"] == 0
+        assert row["transcript_id"] == transcript_id
+        assert controller.started == []
+        assert controller.summaries == [transcript_id]
+        transport.download.assert_not_awaited()
+    finally:
+        await service.close()
+
+
+def test_refresh_updates_stream_url_for_completed_episode_without_requeue(tmp_path: Path) -> None:
+    store = PodcastStore(tmp_path / "subscriptions.db")
+    store.initialize()
+    subscription = store.add("https://example.com/feed", _feed(1), auto_process=False)
+    episode = store.episodes(subscription)["items"][0]
+    store.update(episode["id"], status="completed", transcript_id="a" * 32)
+    refreshed = replace(_feed(1), episodes=(replace(_episode(1), media_url="https://example.com/new-url.mp3"),))
+    assert store.refresh(subscription, refreshed).queued == 0
+    row = store.episode(episode["id"])
+    assert row["media_url"] == "https://example.com/new-url.mp3"
+    assert row["status"] == "completed" and row["transcript_id"] == "a" * 32
 
 
 @pytest.mark.asyncio

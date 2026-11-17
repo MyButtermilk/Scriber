@@ -218,13 +218,18 @@ class PodcastHttp:
             )
         return self._session
 
-    async def _response(self, url: str, *, media: bool = False) -> aiohttp.ClientResponse:
+    async def _response(
+        self, url: str, *, media: bool = False, streaming: bool = False, range_header: str | None = None
+    ) -> aiohttp.ClientResponse:
         current = public_url(url)
         for _ in range(6):
             response = await self._client().get(
                 current,
                 allow_redirects=False,
-                timeout=aiohttp.ClientTimeout(total=900 if media else 45, connect=15, sock_read=30),
+                headers={"Range": range_header} if range_header else {},
+                timeout=aiohttp.ClientTimeout(
+                    total=None if streaming else (900 if media else 45), connect=15, sock_read=30
+                ),
             )
             if response.status in {301, 302, 303, 307, 308}:
                 target = response.headers.get("Location", "")
@@ -233,7 +238,7 @@ class PodcastHttp:
                     raise PodcastError("The podcast host returned an invalid redirect.")
                 current = public_url(urljoin(current, target))
                 continue
-            if response.status != 200:
+            if response.status not in ({200, 206, 416} if streaming else {200}):
                 response.release()
                 raise PodcastError(
                     "The podcast host is currently unavailable. Try again later.", status=response.status
@@ -243,6 +248,13 @@ class PodcastHttp:
                 raise PodcastError("The podcast host returned unsupported compressed data.")
             return response
         raise PodcastError("The podcast host redirected too many times.")
+
+    async def stream(self, url: str, *, range_header: str | None = None) -> aiohttp.ClientResponse:
+        # Only one bounded byte-range header crosses this boundary. Cookies,
+        # backend credentials and other browser headers never reach publishers.
+        if range_header is not None and not re.fullmatch(r"bytes=(?:\d{1,20}-\d{0,20}|-\d{1,20})", range_header):
+            raise PodcastError("Invalid podcast audio range.")
+        return await self._response(url, streaming=True, range_header=range_header)
 
     async def _bytes(self, url: str) -> bytes:
         response = await self._response(url)

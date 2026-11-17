@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
+from aiohttp import ClientResponse
 from loguru import logger
 
 from src.core.logging_setup import emit_event
@@ -63,6 +64,7 @@ class PodcastService:
         async with self._ready_lock:
             if not self._ready:
                 await to_thread_cancellation_barrier(self._store.initialize)
+                await self._prune_completed_audio()
                 self._ready = True
 
     def start(self) -> None:
@@ -180,13 +182,10 @@ class PodcastService:
         await self._ensure_ready()
         async with self._subscription_lock:
             episode = await asyncio.to_thread(self._store.episode, identifier)
-            if not episode or (
-                episode["status"] not in {"available", "failed"}
-                and not (episode["status"] == "completed" and episode["downloaded_bytes"] == 0)
-            ):
+            if not episode or episode["status"] not in {"available", "failed"}:
                 return False
             transcript_id = episode["transcript_id"]
-            if transcript_id and not episode["download_only"] and episode["status"] != "completed":
+            if transcript_id:
                 view = await self._processor.view(transcript_id)
                 if view is None or view.status in {"failed", "stopped", "canceled", "cancelled"}:
                     # Only this explicit user retry can allocate a new paid attempt.
@@ -221,6 +220,35 @@ class PodcastService:
             return None
         target = self._audio / f"{episode['id']}{episode['extension']}"
         return target if target.is_file() else None
+
+    async def open_audio(self, identifier: str, *, range_header: str | None = None) -> ClientResponse | None:
+        await self._ensure_ready()
+        episode = await asyncio.to_thread(self._store.episode, identifier)
+        if episode is None:
+            return None
+        return await self._http.stream(episode["media_url"], range_header=range_header)
+
+    def _discard_completed_audio(self, episode: dict[str, Any]) -> None:
+        target = self._audio / f"{episode['id']}{episode['extension']}"
+        if target.resolve().parent != self._audio.resolve() or target.is_symlink():
+            raise PodcastError("The podcast download could not be removed safely.")
+        target.unlink(missing_ok=True)
+        self._store.update(episode["id"], status="completed", downloaded_bytes=0)
+
+    async def _prune_completed_audio(self) -> None:
+        # Also releases downloads retained by older versions or an interrupted
+        # cleanup. Verify both durable results before removing any legacy audio.
+        async with self._subscription_lock:
+            for episode in await asyncio.to_thread(self._store.completed_downloads):
+                try:
+                    if episode["id"] in self._active_episodes:
+                        continue
+                    view = await self._processor.view(episode["transcript_id"])
+                    if view is not None and view.status == "completed" and view.summary.strip():
+                        async with self._download_lock:
+                            await to_thread_cancellation_barrier(self._discard_completed_audio, episode)
+                except Exception as exc:
+                    self._event("audio_cleanup", outcome="failed", meta={"errorType": type(exc).__name__})
 
     async def remove_download(self, identifier: str) -> bool:
         await self._ensure_ready()
@@ -338,8 +366,7 @@ class PodcastService:
             notification = await self._process_episode(episode)
         finally:
             # The source is no longer in use once processing has finished.
-            # Notifications must not retain media ownership or later clear a
-            # successor's claim when the completed download is retried.
+            # Notifications must not retain media ownership or block removal.
             self._active_episodes.discard(episode["id"])
         if notification is not None:
             await self._publish(notification)
@@ -381,13 +408,13 @@ class PodcastService:
             current_stage, stage_started = value, time.monotonic()
 
         try:
-            download_only = bool(episode["download_only"])
-            view = None if download_only else await self._processor.view(transcript_id)
+            view = await self._processor.view(transcript_id)
             plan = None
-            if view is None and not download_only:
+            if view is None:
                 plan = self._processor.plan()
             source_reused = target.is_file()
-            if not source_reused:
+            if view is None and not source_reused:
+                await self._prune_completed_audio()
                 # Serialize capacity checks with downloads, while provider work
                 # and summaries overlap. No two downloads spend the same space.
                 async with self._download_lock:
@@ -397,16 +424,22 @@ class PodcastService:
                         raise PodcastError("Podcast download storage is full. Remove an older download and retry.")
                     self._root.mkdir(parents=True, exist_ok=True)
                     free = (await asyncio.to_thread(shutil.disk_usage, self._root)).free
-                    provider_limit = plan.ingest_max_bytes if plan else MAX_AUDIO_BYTES
+                    provider_limit = (
+                        plan.ingest_max_bytes if plan and plan.ingest_max_bytes is not None else MAX_AUDIO_BYTES
+                    )
                     limit = min(MAX_AUDIO_BYTES, provider_limit, remaining, free - 256 * 1024 * 1024)
                     if limit <= 0:
                         raise PodcastError("There is not enough free disk space for a podcast download.")
                     size = await self._http.download(episode["media_url"], target, max_bytes=limit)
-            else:
+            elif target.is_file():
                 # A crash can occur after the atomic audio rename but before
-                # its byte-count commit. Recover playback without downloading
+                # its byte-count commit. Recover processing without downloading
                 # that already-owned file again.
                 size = (await asyncio.to_thread(target.stat)).st_size
+            else:
+                # Resuming a durable transcript/summary never needs another
+                # audio download, even if cleanup already removed the source.
+                size = 0
             await to_thread_cancellation_barrier(
                 self._store.update, identifier, status="downloading", downloaded_bytes=size
             )
@@ -418,21 +451,8 @@ class PodcastService:
                 duration_ms=(time.monotonic() - started) * 1000,
                 meta={"downloaded_bytes": size, "source_reused": source_reused},
             )
-            if not download_only:
-                await self._processor.process(target, episode["title"], transcript_id, plan, stage)
-            completed = None if download_only else await asyncio.to_thread(self._store.episode, identifier)
-            # Removal shares this lock and cannot observe a terminal row until
-            # the worker has resumed and can release its in-memory ownership.
-            async with self._subscription_lock:
-                await to_thread_cancellation_barrier(self._store.update, identifier, status="completed")
-            self._event(
-                "episode_completed",
-                outcome="success",
-                duration_ms=(time.monotonic() - started) * 1000,
-                episode_id=identifier,
-                transcript_id=transcript_id,
-                meta={"from_status": current_stage, "to_status": "completed"},
-            )
+            await self._processor.process(target, episode["title"], transcript_id, plan, stage)
+            completed = await asyncio.to_thread(self._store.episode, identifier)
         except asyncio.CancelledError:
             await to_thread_cancellation_barrier(self._store.update, identifier, status="queued")
             self._event(
@@ -461,6 +481,26 @@ class PodcastService:
                 meta={"from_status": current_stage, "to_status": "failed"},
             )
             return None
+
+        # Completion precedes cleanup and sits outside the retry handler:
+        # cancellation or a locked file must never requeue successful work.
+        async with self._subscription_lock:
+            await to_thread_cancellation_barrier(self._store.update, identifier, status="completed")
+        try:
+            async with self._download_lock:
+                await to_thread_cancellation_barrier(self._discard_completed_audio, episode)
+        except Exception as exc:
+            self._event(
+                "audio_cleanup", outcome="failed", episode_id=identifier, transcript_id=transcript_id, error=exc
+            )
+        self._event(
+            "episode_completed",
+            outcome="success",
+            duration_ms=(time.monotonic() - started) * 1000,
+            episode_id=identifier,
+            transcript_id=transcript_id,
+            meta={"from_status": current_stage, "to_status": "completed"},
+        )
         if completed is not None:
             return podcast_episode_ready_event(
                 uuid4().hex,

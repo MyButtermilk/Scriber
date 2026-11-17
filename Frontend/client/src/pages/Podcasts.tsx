@@ -118,6 +118,11 @@ function PodcastInfo() {
           "Search uses Apple's public podcast directory without an API key. Audio comes directly from the publisher's public RSS feed. Downloads are limited to 256 MB per episode and 2 GB in total.",
         )}
       </p>
+      <p>
+        {t(
+          "Audio is deleted after transcription and summary. Listen streams from the publisher and requires an internet connection.",
+        )}
+      </p>
     </InfoTooltip>
   );
 }
@@ -382,9 +387,7 @@ export default function Podcasts() {
                   </Link>
                 </Button>
               )}
-              {(episode.status === "available" ||
-                episode.status === "failed" ||
-                (episode.status === "completed" && episode.downloadedBytes === 0)) && (
+              {(episode.status === "available" || episode.status === "failed") && (
                 <Button
                   variant="outline"
                   size="sm"
@@ -399,26 +402,18 @@ export default function Podcasts() {
                   ) : (
                     <ArrowDownToLine className="h-3.5 w-3.5" />
                   )}
-                  {t(
-                    episode.status === "failed"
-                      ? "Retry episode"
-                      : episode.status === "completed"
-                        ? "Download audio again"
-                        : "Download & transcribe",
-                  )}
+                  {t(episode.status === "failed" ? "Retry episode" : "Download & transcribe")}
                 </Button>
               )}
-              {episode.downloadedBytes > 0 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 gap-1.5 text-xs"
-                  onClick={() => setPlayer(playingId === episode.id ? null : { episode, index })}
-                >
-                  {playingId === episode.id ? <X className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-                  {t(playingId === episode.id ? "Close player" : "Listen")}
-                </Button>
-              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1.5 text-xs"
+                onClick={() => setPlayer(playingId === episode.id ? null : { episode, index })}
+              >
+                {playingId === episode.id ? <X className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+                {t(playingId === episode.id ? "Close player" : "Listen")}
+              </Button>
               {!busy && (episode.downloadedBytes > 0 || canMarkRead) && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -461,8 +456,16 @@ export default function Podcasts() {
             {playingId === episode.id && (
               <audio
                 controls
-                preload="metadata"
+                autoPlay
+                preload="none"
                 src={apiUrl(`/api/podcasts/episodes/${episode.id}/audio`)}
+                onError={() =>
+                  toast({
+                    title: t("Podcast playback failed"),
+                    description: t("The audio stream is unavailable. Check your internet connection and try again."),
+                    variant: "destructive",
+                  })
+                }
                 className="mt-3 h-10 w-full max-w-lg"
                 aria-label={episode.title}
                 onPlay={() => markPlayed(episode)}
@@ -793,7 +796,7 @@ export default function Podcasts() {
                     }
                     aria-label={t("Automatically process new episodes")}
                   />
-                  {t("Automatic downloads, transcripts & summaries")}
+                  {t("Automatic transcripts & summaries")}
                 </label>
                 <PodcastInfo />
               </div>

@@ -82,6 +82,9 @@ class PodcastStore:
                 con.execute("UPDATE episodes SET read_at=updated_at WHERE status='completed'")
             if "played_at" not in columns:
                 con.execute("ALTER TABLE episodes ADD COLUMN played_at TEXT NOT NULL DEFAULT ''")
+            # Playback now streams. Retire old audio-only requests without
+            # turning them into new transcription/provider attempts.
+            con.execute("UPDATE episodes SET status='completed',download_only=0,error='' WHERE download_only=1")
             # A durable transcript ID is written before provider admission. Recovery
             # first checks that ID, so shutdown never turns an uncertain upload into
             # a second automatic paid request.
@@ -176,11 +179,12 @@ class PodcastStore:
                 queued += 1
             if not result.rowcount:
                 # Publishers may rotate signed enclosure URLs while keeping the
-                # stable GUID. Refresh unclaimed episodes without replaying work.
+                # stable GUID. Keep completed episodes streamable too, without
+                # changing processing state or an existing local file's suffix.
                 con.execute(
                     """UPDATE OR IGNORE episodes SET title=?,description=?,media_url=?,extension=CASE WHEN downloaded_bytes=0 THEN ? ELSE extension END,
                     published_at=?,duration_seconds=? WHERE subscription_id=? AND guid=?
-                    AND status IN ('available','failed')""",
+                    AND status IN ('available','failed','completed')""",
                     (
                         episode.title,
                         episode.description,
@@ -261,6 +265,13 @@ class PodcastStore:
             return [
                 (row["id"], row["extension"])
                 for row in con.execute("SELECT id,extension FROM episodes WHERE subscription_id=?", (identifier,))
+            ]
+
+    def completed_downloads(self) -> list[dict[str, Any]]:
+        with self._connect() as con:
+            return [
+                dict(row)
+                for row in con.execute("SELECT * FROM episodes WHERE status='completed' AND downloaded_bytes>0")
             ]
 
     def episodes(
@@ -367,9 +378,8 @@ class PodcastStore:
             return bool(
                 con.execute(
                     """UPDATE episodes SET
-                       download_only=CASE WHEN status='completed' THEN 1 ELSE download_only END,
                        status='queued',error='',updated_at=?,seen_at=CASE WHEN seen_at='' THEN ? ELSE seen_at END
-                       WHERE id=? AND (status IN ('available','failed') OR (status='completed' AND downloaded_bytes=0))""",
+                       WHERE id=? AND status IN ('available','failed')""",
                     (stamp, stamp, identifier),
                 ).rowcount
             )

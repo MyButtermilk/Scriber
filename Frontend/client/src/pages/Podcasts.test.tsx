@@ -102,19 +102,18 @@ describe("Podcasts", () => {
     expect(await screen.findByText(`Reference: ${failed.transcriptId}`)).toBeVisible();
   });
 
-  it("offers an audio-only download after a completed episode's local copy is removed", async () => {
+  it("streams completed episodes without queuing a download", async () => {
     const sub = subscription();
     const completed = episode({ status: "completed", transcriptId: "existing-transcript", downloadedBytes: 0 });
     request.mockImplementation(async (_method: string, path: string) => ({
       json: async () => (path.includes("/episodes?") ? { items: [completed], total: 1 } : { ok: true }),
     }));
-    mount([sub]);
-    fireEvent.click(await screen.findByRole("button", { name: "Download audio again" }));
-    await waitFor(() =>
-      expect(request).toHaveBeenCalledWith("POST", `/api/podcasts/episodes/${completed.id}/queue`, undefined, {
-        timeoutMs: 60_000,
-      }),
-    );
+    const { container } = mount([sub]);
+    fireEvent.click(await screen.findByRole("button", { name: "Listen" }));
+    expect(container.querySelector("audio")).toHaveAttribute("src", `/api/podcasts/episodes/${completed.id}/audio`);
+    expect(container.querySelector("audio")).toHaveAttribute("autoplay");
+    expect(screen.queryByRole("button", { name: "Download audio again" })).toBeNull();
+    expect(request.mock.calls.every(([method]) => method === "GET")).toBe(true);
   });
 
   it("provides German text for every server-side episode state", () => {
@@ -211,10 +210,10 @@ describe("Podcasts", () => {
     );
   });
 
-  it("opens existing transcripts and plays only downloaded local audio", async () => {
+  it("opens existing transcripts and streams audio on demand", async () => {
     request.mockResolvedValue({
       json: async () => ({
-        items: [episode({ status: "completed", transcriptId: "transcript-1", downloadedBytes: 500 })],
+        items: [episode({ status: "completed", transcriptId: "transcript-1", downloadedBytes: 0 })],
         total: 1,
       }),
     });
@@ -226,6 +225,8 @@ describe("Podcasts", () => {
     expect(container.querySelector("audio")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Listen" }));
     expect(container.querySelector("audio")).toHaveAttribute("src", `/api/podcasts/episodes/${"b".repeat(32)}/audio`);
+    fireEvent.error(container.querySelector("audio")!);
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Podcast playback failed" }));
     fireEvent.click(screen.getByRole("button", { name: "Close player" }));
     expect(container.querySelector("audio")).toBeNull();
   });
