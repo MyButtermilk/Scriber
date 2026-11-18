@@ -8,7 +8,12 @@ export const podcastTranslations: TranslationCatalog = {
   "The new attempt will appear in File history.": "Der neue Versuch erscheint im Dateiverlauf.",
   "Podcast retry failed": "Podcast konnte nicht erneut gestartet werden",
   "Retry transcription": "Transkription wiederholen",
-  "Download audio again": "Audio erneut laden",
+  "Audio is deleted after transcription and summary. Listen streams from the publisher and requires an internet connection.":
+    "Audio wird nach Transkription und Zusammenfassung gelöscht. Zum Anhören wird direkt vom Anbieter gestreamt; dafür ist eine Internetverbindung nötig.",
+  "Podcast playback failed": "Podcast-Wiedergabe fehlgeschlagen",
+  "The audio stream is unavailable. Check your internet connection and try again.":
+    "Der Audiostream ist nicht verfügbar. Prüfe deine Internetverbindung und versuche es erneut.",
+  "Invalid podcast audio range.": "Ungültiger Audiobereich für die Podcast-Wiedergabe.",
   "The podcast host returned unsupported compressed data.":
     "Der Podcast-Anbieter hat nicht unterstützte komprimierte Daten geliefert.",
   Podcasts: "Podcasts",
@@ -65,7 +70,7 @@ export const podcastTranslations: TranslationCatalog = {
   "Subscription options": "Abo-Optionen",
   Unsubscribe: "Abo beenden",
   "Automatically process new episodes": "Neue Folgen automatisch verarbeiten",
-  "Automatic downloads, transcripts & summaries": "Automatische Downloads, Transkripte & Zusammenfassungen",
+  "Automatic transcripts & summaries": "Automatische Transkripte & Zusammenfassungen",
   "Loading episodes…": "Folgen werden geladen…",
   "Episodes could not be loaded. Try again.": "Folgen konnten nicht geladen werden. Versuche es erneut.",
   "No audio episodes are available in this feed yet.": "Dieser Feed enthält noch keine verfügbaren Audiofolgen.",

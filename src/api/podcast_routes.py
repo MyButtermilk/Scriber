@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
-from aiohttp import ClientConnectorCertificateError, web
+from aiohttp import ClientConnectorCertificateError, ClientResponse, web
 from loguru import logger
 
 from src.core.logging_setup import emit_event
@@ -52,7 +51,7 @@ class PodcastServicePort(Protocol):
 
     async def request_refresh(self) -> None: ...
 
-    async def audio_path(self, identifier: str) -> Path | None: ...
+    async def open_audio(self, identifier: str, *, range_header: str | None = None) -> ClientResponse | None: ...
 
     async def remove_download(self, identifier: str) -> bool: ...
 
@@ -219,10 +218,33 @@ async def podcast_refresh(request: web.Request) -> web.Response:
 
 
 async def podcast_audio(request: web.Request) -> web.StreamResponse:
-    path = await request.app[APP_PODCASTS].audio_path(_id(request))
-    if path is None:
+    upstream = await request.app[APP_PODCASTS].open_audio(_id(request), range_header=request.headers.get("Range"))
+    if upstream is None:
         raise web.HTTPNotFound()
-    return web.FileResponse(path, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+    response = web.StreamResponse(status=upstream.status)
+    try:
+        response.headers.update({"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+        for name in ("Content-Length", "Content-Range", "Accept-Ranges"):
+            if name in upstream.headers:
+                response.headers[name] = upstream.headers[name]
+        mime = upstream.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        response.content_type = mime if mime.startswith("audio/") else "application/octet-stream"
+        await response.prepare(request)
+        if request.method != "HEAD":
+            async for chunk in upstream.content.iter_chunked(64 * 1024):
+                await response.write(chunk)
+        await response.write_eof()
+        return response
+    except Exception:
+        if not response.prepared:
+            raise
+        # Once media headers are sent, terminate a broken stream rather than
+        # append a JSON error to audio or attempt a second HTTP response.
+        if request.transport is not None:
+            request.transport.close()
+        return response
+    finally:
+        upstream.close()
 
 
 async def podcast_remove_download(request: web.Request) -> web.Response:

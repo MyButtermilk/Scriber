@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import ssl
-from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
-from aiohttp import ClientConnectorCertificateError, web
+from aiohttp import ClientConnectorCertificateError, ClientResponse, web
 from aiohttp.test_utils import TestClient, TestServer
 from loguru import logger
 
@@ -57,7 +59,7 @@ def test_podcast_service_matches_the_route_local_port(assert_protocol_contract) 
             "queue",
             "episode_for_transcript",
             "request_refresh",
-            "audio_path",
+            "open_audio",
             "remove_download",
         },
         returns={
@@ -76,7 +78,7 @@ def test_podcast_service_matches_the_route_local_port(assert_protocol_contract) 
             "queue": bool,
             "episode_for_transcript": dict[str, Any] | None,
             "request_refresh": type(None),
-            "audio_path": Path | None,
+            "open_audio": ClientResponse | None,
             "remove_download": bool,
         },
     )
@@ -188,3 +190,96 @@ async def test_podcast_failure_response_correlates_with_visible_content_free_dia
         assert "private" not in json.dumps(payload)
     finally:
         logger.remove(sink)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,body,range_value", [(200, b"audio", None), (206, b"dio", "bytes=2-"), (416, b"", "bytes=99-")]
+)
+async def test_audio_route_streams_with_ranges_without_forwarding_credentials(status, body, range_value) -> None:
+    chunks = []
+
+    class Content:
+        async def iter_chunked(self, size):
+            assert size == 64 * 1024
+            for chunk in (body[:1], body[1:]):
+                chunks.append(chunk)
+                yield chunk
+
+    headers = {
+        "Content-Type": "audio/mpeg",
+        "Content-Length": str(len(body)),
+        "Accept-Ranges": "bytes",
+        "Set-Cookie": "publisher=secret",
+        "Location": "https://publisher.example/private",
+    }
+    if status != 200:
+        headers["Content-Range"] = "bytes 2-4/5" if status == 206 else "bytes */5"
+    upstream = SimpleNamespace(status=status, headers=headers, content=Content(), close=Mock())
+    service = SimpleNamespace(start=Mock(), close=AsyncMock(), open_audio=AsyncMock(return_value=upstream))
+    app = web.Application()
+    register_podcast_routes(app, factory=lambda: service)
+    async with TestClient(TestServer(app)) as client:
+        request_headers = {"Authorization": "Bearer backend-secret", "Cookie": "backend=secret"}
+        if range_value:
+            request_headers["Range"] = range_value
+        response = await client.get(f"/api/podcasts/episodes/{'a' * 32}/audio", headers=request_headers)
+        assert response.status == status
+        assert await response.read() == body
+        assert response.headers["Cache-Control"] == "private, no-store"
+        assert response.headers["Accept-Ranges"] == "bytes"
+        assert "Set-Cookie" not in response.headers and "Location" not in response.headers
+        if status != 200:
+            assert response.headers["Content-Range"] == headers["Content-Range"]
+        service.open_audio.assert_awaited_once_with("a" * 32, range_header=range_value)
+        upstream.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_audio_head_closes_upstream_without_reading_body() -> None:
+    class Content:
+        async def iter_chunked(self, size):
+            pytest.fail("HEAD must not read audio")
+            yield b""
+
+    upstream = SimpleNamespace(
+        status=200, headers={"Content-Type": "audio/mpeg", "Content-Length": "5"}, content=Content(), close=Mock()
+    )
+    service = SimpleNamespace(start=Mock(), close=AsyncMock(), open_audio=AsyncMock(return_value=upstream))
+    app = web.Application()
+    register_podcast_routes(app, factory=lambda: service)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.head(f"/api/podcasts/episodes/{'a' * 32}/audio")
+        assert response.status == 200 and await response.read() == b""
+        upstream.close.assert_called_once()
+        service.open_audio.return_value = None
+        assert (await client.get(f"/api/podcasts/episodes/{'b' * 32}/audio")).status == 404
+
+
+@pytest.mark.asyncio
+async def test_audio_stream_delivers_first_chunk_before_upstream_finishes_and_closes_on_disconnect() -> None:
+    release = asyncio.Event()
+    closed = asyncio.Event()
+
+    class Content:
+        async def iter_chunked(self, size):
+            yield b"first"
+            await release.wait()
+            yield b"last"
+
+    upstream = SimpleNamespace(status=200, headers={"Content-Type": "audio/mpeg"}, content=Content(), close=closed.set)
+    service = SimpleNamespace(start=Mock(), close=AsyncMock(), open_audio=AsyncMock(return_value=upstream))
+    app = web.Application()
+    register_podcast_routes(app, factory=lambda: service)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.get(f"/api/podcasts/episodes/{'a' * 32}/audio")
+        try:
+            assert await asyncio.wait_for(response.content.readexactly(5), 2) == b"first"
+            assert not closed.is_set()
+            response.close()
+            await asyncio.sleep(0.05)
+            release.set()
+            await asyncio.wait_for(closed.wait(), 2)
+        finally:
+            release.set()
+            response.close()

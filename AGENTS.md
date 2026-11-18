@@ -239,7 +239,7 @@ Backend and runtime:
   from `PATH`.
 - `src/database.py`: SQLite WAL persistence, metadata loading, FTS5 search.
 - `src/podcasts/`: public-only RSS/directory transport, durable subscription and
-  episode state, retained downloads, independent feed refresh, and three concurrent
+  episode state, temporary processing downloads, independent feed refresh, and three concurrent
   processing workers. Its own `truststore` TLS client context uses native system
   certificate-chain and hostname verification, including managed Windows trust.
   Never inject this context globally or disable TLS verification; retain the
@@ -257,6 +257,15 @@ Backend and runtime:
   allocates a fresh transcript identity. Summary registration ends in the
   summary function's identity-checked `finally`, even when its caller is a
   persistent podcast worker.
+  Commit completion before deleting audio after successful transcription and
+  summary. Startup and pre-download cleanup verify both saved results before
+  reclaiming legacy completed audio, including files whose byte-count commit was
+  interrupted; failed work remains retryable. Listening
+  streams from the publisher through the public-only transport with bounded
+  chunks and byte-range support, never a download/provider job. Forward no
+  browser credentials and close upstream responses on every exit. Keep refreshed
+  enclosure URLs current for completed episodes too. Retire legacy audio-only
+  jobs without creating new transcription attempts.
   `src/api/podcast_routes.py` owns the strict controller-free HTTP boundary and
   local collaborator port; never add scheduler logic or private paths to the UI.
   Episode listening state (`seen_at`, `read_at`, `played_at`) lives in the same

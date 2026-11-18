@@ -1178,13 +1178,23 @@ subscription/episode state in a separate WAL database.
 feed checker, starting after the initial desktop startup window. The first
 subscription queues only its latest episode; subsequent genuinely new episodes
 queue automatically. Historical entries remain manual and automatic processing
-can be paused per subscription. Explicitly re-downloading removed audio uses a
-durable audio-only job and never reruns transcription or summary generation.
+can be paused per subscription. Playback proxies the publisher's audio on demand
+in bounded chunks without writing a local file or queuing provider work. The
+public-only DNS/redirect validation applies to streams too; only a validated
+single byte range is forwarded upstream, never browser credentials. The audio
+route preserves 200/206/416 and range headers, disables caching and closes the
+upstream on completion, disconnect or cancellation. Feed refresh updates media
+URLs for completed episodes as well. Legacy audio-only jobs retire at startup.
 
 `processor.py` is the only adapter to existing File admission and Transcript
 summary lifecycles. It commits a deterministic transcript identity before
 admission, reuses an already committed transcript after restart, and retains the
-download while the durable File job owns its separate upload copy. Failures do
+download while the durable File job owns its separate upload copy. After both
+transcription and summary succeed, completion commits before audio cleanup;
+cleanup failure or cancellation cannot requeue successful work. Startup and
+subsequent downloads reclaim older completed audio only after checking its
+saved transcript and summary. Failed/in-progress sources remain retryable, and
+summary retries use the existing transcript without requiring audio. Failures do
 not create repeated automatic paid attempts. Downloads have a 256-MiB episode
 limit, 2-GiB aggregate cache, provider-specific admission limits, and a free-space
 reserve. Downloads serialize the capacity check and write; transcription and
@@ -1200,7 +1210,7 @@ Episode listening state is durable in the same store. `seen_at` records that a
 visible episode list showed the episode; only feed refreshes after subscribing
 create unseen episodes, so neither the initial back catalogue nor an upgraded
 library floods the user. `read_at` is set when the transcript is opened from any
-entry point, `played_at` when its downloaded audio starts; a ready episode
+entry point, `played_at` when its audio stream starts; a ready episode
 without either is unread. The library and each subscription expose
 `newCount`, `unreadCount`, and `attentionCount`, the episode list accepts
 `?view=unread`, and explicit read/unread, seen, and mark-all routes are strict

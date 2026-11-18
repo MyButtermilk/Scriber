@@ -170,9 +170,12 @@ counts both, an **Unread** filter lists what is left to read, and you can mark a
 episode or a whole podcast as read. A notification announces newly found episodes
 and every episode that becomes ready to read, with a direct link to it.
 
-Pause automatic processing for an individual subscription, play downloaded
-audio, open transcripts and summaries, retry a failed step, or remove downloads.
-Downloads are limited to 256 MiB per episode and a 2 GiB local cache. Removing
+Pause automatic processing for an individual subscription, stream audio from the
+publisher, open transcripts and summaries, or retry a failed step. Listening
+requires an internet connection and does not queue a download or transcription.
+Processing downloads are deleted after both transcription and summary succeed;
+the saved text remains. Older completed downloads are also cleaned up after
+verifying their saved results. Downloads are limited to 256 MiB per episode and a 2 GiB local cache. Removing
 a subscription also removes its downloaded audio and keeps completed transcripts.
 An interrupted job retains its transcript identity; a failed transcription needs
 an explicit retry before Scriber creates another provider attempt.
