@@ -717,25 +717,30 @@ async def test_parallel_downloads_recheck_remaining_cache_before_writing(tmp_pat
 async def test_service_end_to_end_queues_downloads_summarizes_and_unsubscribes(tmp_path: Path) -> None:
     controller = FakeController(tmp_path)
     transport = FakeTransport()
+    completed = asyncio.Event()
+
+    async def notify(payload: dict) -> None:
+        if payload["type"] == "podcast_episode_ready":
+            completed.set()
+
     service = PodcastService(
-        tmp_path / "podcasts", PodcastProcessor(controller, poll_seconds=0.001), transport=transport, startup_delay=0
+        tmp_path / "podcasts",
+        PodcastProcessor(controller, poll_seconds=0.001),
+        transport=transport,
+        startup_delay=0,
+        notify=notify,
     )
     identifier = await service.subscribe("https://example.com/feed")
     service.start()
     try:
-        async with asyncio.timeout(10):
-            while (await service.library())["activeCount"]:
-                await asyncio.sleep(0.01)
+        # Ready is published after completion and media cleanup, unlike the
+        # terminal database status that deliberately commits before deletion.
+        await asyncio.wait_for(completed.wait(), timeout=30)
         rows = (await service.episodes(identifier))["items"]
         ready = [row for row in rows if row["status"] == "completed"]
         assert len(ready) == 1
         assert len(controller.started) == len(controller.summaries) == len(transport.downloads) == 1
-        async with asyncio.timeout(2):
-            while (
-                await service.audio_path(ready[0]["id"])
-                or (await service.episodes(identifier))["items"][0]["downloaded_bytes"]
-            ):
-                await asyncio.sleep(0.01)
+        assert await service.audio_path(ready[0]["id"]) is None
         assert (await service.episodes(identifier))["items"][0]["downloaded_bytes"] == 0
         assert await service.unsubscribe(identifier)
         assert (await service.library())["subscriptions"] == []
@@ -757,16 +762,13 @@ async def test_service_recovers_download_renamed_before_its_metadata_commit(tmp_
     cached = tmp_path / "podcasts" / "audio" / f"{episode['id']}.mp3"
     cached.parent.mkdir()
     cached.write_bytes(b"previously-downloaded-audio")
-    service.start()
     try:
-        async with asyncio.timeout(10):
-            while (await service.library())["activeCount"]:
-                await asyncio.sleep(0.01)
+        claimed = service._store.claim()
+        assert claimed is not None
+        await service._process(claimed)
         episode = (await service.episodes(identifier))["items"][0]
         assert episode["status"] == "completed"
-        async with asyncio.timeout(2):
-            while cached.exists() or (await service.episodes(identifier))["items"][0]["downloaded_bytes"]:
-                await asyncio.sleep(0.01)
+        assert not cached.exists()
         assert (await service.episodes(identifier))["items"][0]["downloaded_bytes"] == 0
         assert transport.downloads == []
     finally:
