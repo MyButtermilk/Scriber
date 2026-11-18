@@ -731,7 +731,10 @@ async def test_service_end_to_end_queues_downloads_summarizes_and_unsubscribes(t
         assert len(ready) == 1
         assert len(controller.started) == len(controller.summaries) == len(transport.downloads) == 1
         async with asyncio.timeout(2):
-            while await service.audio_path(ready[0]["id"]):
+            while (
+                await service.audio_path(ready[0]["id"])
+                or (await service.episodes(identifier))["items"][0]["downloaded_bytes"]
+            ):
                 await asyncio.sleep(0.01)
         assert (await service.episodes(identifier))["items"][0]["downloaded_bytes"] == 0
         assert await service.unsubscribe(identifier)
@@ -762,7 +765,7 @@ async def test_service_recovers_download_renamed_before_its_metadata_commit(tmp_
         episode = (await service.episodes(identifier))["items"][0]
         assert episode["status"] == "completed"
         async with asyncio.timeout(2):
-            while cached.exists():
+            while cached.exists() or (await service.episodes(identifier))["items"][0]["downloaded_bytes"]:
                 await asyncio.sleep(0.01)
         assert (await service.episodes(identifier))["items"][0]["downloaded_bytes"] == 0
         assert transport.downloads == []

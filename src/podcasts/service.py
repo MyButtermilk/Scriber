@@ -484,15 +484,16 @@ class PodcastService:
 
         # Completion precedes cleanup and sits outside the retry handler:
         # cancellation or a locked file must never requeue successful work.
+        # Keep removal behind the same lock until media cleanup has settled.
         async with self._subscription_lock:
             await to_thread_cancellation_barrier(self._store.update, identifier, status="completed")
-        try:
-            async with self._download_lock:
-                await to_thread_cancellation_barrier(self._discard_completed_audio, episode)
-        except Exception as exc:
-            self._event(
-                "audio_cleanup", outcome="failed", episode_id=identifier, transcript_id=transcript_id, error=exc
-            )
+            try:
+                async with self._download_lock:
+                    await to_thread_cancellation_barrier(self._discard_completed_audio, episode)
+            except Exception as exc:
+                self._event(
+                    "audio_cleanup", outcome="failed", episode_id=identifier, transcript_id=transcript_id, error=exc
+                )
         self._event(
             "episode_completed",
             outcome="success",
