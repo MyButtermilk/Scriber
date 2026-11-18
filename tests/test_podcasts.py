@@ -839,7 +839,10 @@ async def test_completed_episode_streams_without_download_or_new_provider_work(t
 
 
 @pytest.mark.asyncio
-async def test_startup_reclaims_only_audio_with_completed_transcript_and_summary(tmp_path: Path) -> None:
+@pytest.mark.parametrize("downloaded_bytes", [0, 5])
+async def test_startup_reclaims_only_audio_with_completed_transcript_and_summary(
+    tmp_path: Path, downloaded_bytes: int
+) -> None:
     root = tmp_path / "podcasts"
     store = PodcastStore(root / "subscriptions.db")
     store.initialize()
@@ -854,13 +857,14 @@ async def test_startup_reclaims_only_audio_with_completed_transcript_and_summary
             episode["id"],
             status="failed" if index == 4 else "completed",
             transcript_id=transcript_id,
-            downloaded_bytes=5,
+            downloaded_bytes=downloaded_bytes,
         )
         if index != 3:
             controller.views[transcript_id] = _view(
                 transcript_id, status="failed" if index == 2 else "completed", summary="" if index == 1 else "Summary"
             )
-    # An old explicitly requested playback download is now retired, not rerun.
+    # An old explicitly requested playback download is now retired, not rerun,
+    # even if it crashed after the audio rename but before the byte-count commit.
     with store._connect() as con:
         con.execute("UPDATE episodes SET download_only=1,status='queued' WHERE id=?", (episodes[0]["id"],))
     snapshots = dict(controller.views)

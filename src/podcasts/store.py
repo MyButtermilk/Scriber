@@ -267,12 +267,9 @@ class PodcastStore:
                 for row in con.execute("SELECT id,extension FROM episodes WHERE subscription_id=?", (identifier,))
             ]
 
-    def completed_downloads(self) -> list[dict[str, Any]]:
+    def completed_episodes(self) -> list[dict[str, Any]]:
         with self._connect() as con:
-            return [
-                dict(row)
-                for row in con.execute("SELECT * FROM episodes WHERE status='completed' AND downloaded_bytes>0")
-            ]
+            return [dict(row) for row in con.execute("SELECT * FROM episodes WHERE status='completed'")]
 
     def episodes(
         self, subscription_id: str, *, offset: int = 0, limit: int = 50, unread_only: bool = False

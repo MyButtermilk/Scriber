@@ -259,7 +259,8 @@ Backend and runtime:
   persistent podcast worker.
   Commit completion before deleting audio after successful transcription and
   summary. Startup and pre-download cleanup verify both saved results before
-  reclaiming legacy completed audio; failed work remains retryable. Listening
+  reclaiming legacy completed audio, including files whose byte-count commit was
+  interrupted; failed work remains retryable. Listening
   streams from the publisher through the public-only transport with bounded
   chunks and byte-range support, never a download/provider job. Forward no
   browser credentials and close upstream responses on every exit. Keep refreshed

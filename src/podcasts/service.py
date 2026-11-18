@@ -239,9 +239,14 @@ class PodcastService:
         # Also releases downloads retained by older versions or an interrupted
         # cleanup. Verify both durable results before removing any legacy audio.
         async with self._subscription_lock:
-            for episode in await asyncio.to_thread(self._store.completed_downloads):
+            for episode in await asyncio.to_thread(self._store.completed_episodes):
                 try:
                     if episode["id"] in self._active_episodes:
+                        continue
+                    # A legacy audio-only download may have been renamed before
+                    # its byte count committed. Disk presence remains authoritative.
+                    target = self._audio / f"{episode['id']}{episode['extension']}"
+                    if not episode["downloaded_bytes"] and not await asyncio.to_thread(target.is_file):
                         continue
                     view = await self._processor.view(episode["transcript_id"])
                     if view is not None and view.status == "completed" and view.summary.strip():
