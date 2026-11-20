@@ -268,8 +268,8 @@ def _parse_canonical_lines(lines: list[str], timed: list[_TimedLine | None]) -> 
     # continue the current block on a new line; timed segments of one speaker
     # join into readable paragraphs that keep the turn's start time.
     mergeable = False
-    for line, entry in zip(lines, timed, strict=True):
-        if entry is None:
+    for line, timed_entry in zip(lines, timed, strict=True):
+        if timed_entry is None:
             if not line.strip():
                 mergeable = False
                 continue
@@ -281,9 +281,11 @@ def _parse_canonical_lines(lines: list[str], timed: list[_TimedLine | None]) -> 
             mergeable = True
             continue
         speaker = (
-            entry.candidate_speaker if entry.candidate_speaker and accepts_label(entry.candidate_speaker) else None
+            timed_entry.candidate_speaker
+            if timed_entry.candidate_speaker and accepts_label(timed_entry.candidate_speaker)
+            else None
         )
-        text = entry.candidate_text if speaker else entry.rest
+        text = timed_entry.candidate_text if speaker else timed_entry.rest
         same_turn = current is not None and mergeable and current.start_label is not None and current.speaker == speaker
         if (
             current is not None
@@ -295,8 +297,8 @@ def _parse_canonical_lines(lines: list[str], timed: list[_TimedLine | None]) -> 
         else:
             current = TranscriptBlock(
                 text=text,
-                start_label=entry.start_label,
-                start_seconds=entry.start_seconds,
+                start_label=timed_entry.start_label,
+                start_seconds=timed_entry.start_seconds,
                 speaker=speaker,
                 continued=same_turn,
             )

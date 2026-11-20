@@ -83,7 +83,8 @@ function Restore-Asset {
         Remove-Item -LiteralPath $DestinationPath -Recurse -Force
     }
     New-Item -ItemType Directory -Force -Path $DestinationPath | Out-Null
-    Expand-Archive -LiteralPath $assetPath -DestinationPath $DestinationPath -Force
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($assetPath, $DestinationPath)
 
     Write-Host "Restored release cache artifact '$Name' into $DestinationPath."
     Write-GitHubOutput -Name "restored" -Value "true"
