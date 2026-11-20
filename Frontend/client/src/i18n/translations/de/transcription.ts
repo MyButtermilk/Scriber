@@ -288,6 +288,11 @@ export const transcriptionTranslations = {
   "Scriber could not save the transcript export. Please try again.":
     "Scriber konnte den Transkript-Export nicht speichern. Versuche es erneut.",
   "Speaker {{number}}": "Sprecher {{number}}",
+  "Find in transcript": "Im Transkript suchen",
+  "Find in transcript ({{shortcut}})": "Im Transkript suchen ({{shortcut}})",
+  "Ctrl+F": "Strg+F",
+  "Search transcript": "Transkript durchsuchen",
+  "Close search": "Suche schließen",
   Stop: "Beenden",
   "Stopping…": "Wird beendet …",
   "Summarization failed": "Zusammenfassung fehlgeschlagen",

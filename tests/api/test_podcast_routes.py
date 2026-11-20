@@ -283,3 +283,19 @@ async def test_audio_stream_delivers_first_chunk_before_upstream_finishes_and_cl
         finally:
             release.set()
             response.close()
+
+
+@pytest.mark.asyncio
+async def test_transcript_episode_route_projects_camel_case_subscription_identity() -> None:
+    raw = {"id": "e" * 32, "status": "completed", "subscription_id": "s" * 32, "media_url": "https://private"}
+    service = SimpleNamespace(
+        start=Mock(), close=AsyncMock(), episode_for_transcript=AsyncMock(side_effect=[raw, None])
+    )
+    app = web.Application()
+    register_podcast_routes(app, factory=lambda: service)
+    async with TestClient(TestServer(app)) as client:
+        found = await (await client.get(f"/api/podcasts/transcripts/{'c' * 32}")).json()
+        assert found == {"episode": {"id": "e" * 32, "status": "completed", "subscriptionId": "s" * 32}}
+        assert await (await client.get(f"/api/podcasts/transcripts/{'d' * 32}")).json() == {"episode": None}
+        assert (await client.get("/api/podcasts/transcripts/invalid")).status == 404
+    assert [call.args for call in service.episode_for_transcript.await_args_list] == [("c" * 32,), ("d" * 32,)]

@@ -7,6 +7,7 @@ export const componentTranslations = {
   "File upload": "Datei-Upload",
   Navigation: "Navigation",
   "No results found.": "Keine Ergebnisse gefunden.",
+  "Searching transcripts…": "Transkripte werden durchsucht …",
   "Start recording": "Aufnahme starten",
   "Stop recording": "Aufnahme stoppen",
   "Transcript #{{id}}": "Transkript #{{id}}",

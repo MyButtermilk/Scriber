@@ -261,4 +261,109 @@ describe("ThemeProvider circular reveal", () => {
     expect(desktopThemeBoundary.setAppTheme).not.toHaveBeenCalled();
     expect(desktopThemeBoundary.invoke).not.toHaveBeenCalled();
   });
+
+  it("resolves the stored theme on the first render without a dark flash", () => {
+    const renders: ResolvedTheme[] = [];
+    function RenderProbe() {
+      renders.push(useTheme().resolvedTheme);
+      return null;
+    }
+    window.localStorage.setItem("theme-first-paint", "light");
+    render(
+      <ThemeProvider defaultTheme="system" storageKey="theme-first-paint">
+        <RenderProbe />
+      </ThemeProvider>,
+    );
+    expect(renders[0]).toBe("light");
+    expect(renders).not.toContain("dark");
+  });
+
+  it("does not initialize the main window frame when a secondary WebView opts out", async () => {
+    desktopThemeBoundary.runtime.enabled = true;
+    render(
+      <ThemeProvider defaultTheme="system" storageKey="theme-tray" initializeWindowFrame={false}>
+        <ThemeControl target="dark" />
+      </ThemeProvider>,
+    );
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(desktopThemeBoundary.invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe("ThemeProvider cross-window synchronization", () => {
+  const storageKey = "scriber-theme";
+
+  function dispatchStorage(key: string | null, newValue: string | null) {
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", { key, newValue }));
+    });
+  }
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    document.documentElement.classList.remove("dark", "light");
+    document.documentElement.style.colorScheme = "";
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(() => true),
+      })),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.documentElement.classList.remove("dark", "light");
+    document.documentElement.style.colorScheme = "";
+  });
+
+  it("applies a theme changed by another window and falls back for cleared or invalid values", () => {
+    window.localStorage.setItem(storageKey, "light");
+    const view = render(
+      <ThemeProvider defaultTheme="system" storageKey={storageKey} initializeWindowFrame={false}>
+        <ThemeControl target="dark" />
+      </ThemeProvider>,
+    );
+    expect(screen.getByTestId("resolved-theme")).toHaveTextContent("light");
+    expect(document.documentElement).toHaveClass("light");
+
+    dispatchStorage(storageKey, "dark");
+    expect(screen.getByTestId("resolved-theme")).toHaveTextContent("dark");
+    expect(document.documentElement).toHaveClass("dark");
+    expect(document.documentElement).not.toHaveClass("light");
+    expect(document.documentElement.style.colorScheme).toBe("dark");
+
+    // Unrelated keys never change the theme.
+    dispatchStorage("scriber-ui-locale", "de");
+    expect(document.documentElement).toHaveClass("dark");
+
+    // Removing or corrupting the preference falls back to the system default.
+    dispatchStorage(storageKey, null);
+    expect(screen.getByTestId("resolved-theme")).toHaveTextContent("light");
+    expect(document.documentElement).toHaveClass("light");
+
+    dispatchStorage(storageKey, "dark");
+    dispatchStorage(storageKey, "sepia");
+    expect(screen.getByTestId("resolved-theme")).toHaveTextContent("light");
+
+    dispatchStorage(storageKey, "dark");
+    dispatchStorage(null, null);
+    expect(screen.getByTestId("resolved-theme")).toHaveTextContent("light");
+    expect(document.documentElement).toHaveClass("light");
+
+    view.unmount();
+    dispatchStorage(storageKey, "dark");
+    expect(document.documentElement).toHaveClass("light");
+  });
 });

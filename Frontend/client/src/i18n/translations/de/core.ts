@@ -7,6 +7,8 @@ export const coreTranslations = {
   "Back to Live Mic": "Zurück zum Live-Mikrofon",
   Cancel: "Abbrechen",
   Close: "Schließen",
+  "Confirm?": "Sicher?",
+  "Confirm deletion": "Löschen bestätigen",
   Console: "Konsole",
   Current: "Aktuell",
   "Debug Console": "Debug-Konsole",

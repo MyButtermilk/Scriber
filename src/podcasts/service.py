@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import time
 from collections.abc import Awaitable, Callable
@@ -229,31 +230,60 @@ class PodcastService:
         return await self._http.stream(episode["media_url"], range_header=range_header)
 
     def _discard_completed_audio(self, episode: dict[str, Any]) -> None:
+        # Runs without the subscription lock. Recheck the durable status so a
+        # stale snapshot can never remove a re-subscribed episode's new source.
+        current = self._store.episode(episode["id"])
+        if current is None or current["status"] != "completed":
+            return
         target = self._audio / f"{episode['id']}{episode['extension']}"
         if target.resolve().parent != self._audio.resolve() or target.is_symlink():
             raise PodcastError("The podcast download could not be removed safely.")
         target.unlink(missing_ok=True)
-        self._store.update(episode["id"], status="completed", downloaded_bytes=0)
+        self._store.clear_completed_download(episode["id"])
+
+    def _audio_names(self) -> set[str]:
+        """One directory scan; entries deleted concurrently are simply absent."""
+        names: set[str] = set()
+        try:
+            with os.scandir(self._audio) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_file(follow_symlinks=False):
+                            names.add(entry.name)
+                    except FileNotFoundError:
+                        continue
+        except FileNotFoundError:
+            pass
+        return names
+
+    def _completed_audio_snapshot(self) -> tuple[list[dict[str, Any]], set[str]]:
+        return self._store.completed_episodes(), self._audio_names()
 
     async def _prune_completed_audio(self) -> None:
         # Also releases downloads retained by older versions or an interrupted
         # cleanup. Verify both durable results before removing any legacy audio.
+        # The lock covers only one bounded snapshot; verification and deletion
+        # run outside it so a held download can never stall subscription edits.
+        # Deletion only frees space, so capacity checks stay conservative.
         async with self._subscription_lock:
-            for episode in await asyncio.to_thread(self._store.completed_episodes):
-                try:
-                    if episode["id"] in self._active_episodes:
-                        continue
-                    # A legacy audio-only download may have been renamed before
-                    # its byte count committed. Disk presence remains authoritative.
-                    target = self._audio / f"{episode['id']}{episode['extension']}"
-                    if not episode["downloaded_bytes"] and not await asyncio.to_thread(target.is_file):
-                        continue
-                    view = await self._processor.view(episode["transcript_id"])
-                    if view is not None and view.status == "completed" and view.summary.strip():
-                        async with self._download_lock:
-                            await to_thread_cancellation_barrier(self._discard_completed_audio, episode)
-                except Exception as exc:
-                    self._event("audio_cleanup", outcome="failed", meta={"errorType": type(exc).__name__})
+            episodes, present = await asyncio.to_thread(self._completed_audio_snapshot)
+            # A legacy audio-only download may have been renamed before its
+            # byte count committed. Disk presence remains authoritative.
+            candidates = [
+                episode
+                for episode in episodes
+                if episode["id"] not in self._active_episodes
+                and (episode["downloaded_bytes"] or f"{episode['id']}{episode['extension']}" in present)
+            ]
+        for episode in candidates:
+            try:
+                if episode["id"] in self._active_episodes:
+                    continue
+                view = await self._processor.view(episode["transcript_id"])
+                if view is not None and view.status == "completed" and view.summary.strip():
+                    await to_thread_cancellation_barrier(self._discard_completed_audio, episode)
+            except Exception as exc:
+                self._event("audio_cleanup", outcome="failed", meta={"errorType": type(exc).__name__})
 
     async def remove_download(self, identifier: str) -> bool:
         await self._ensure_ready()
@@ -362,9 +392,20 @@ class PodcastService:
             await self._publish(podcast_episodes_discovered_event(uuid4().hex, discovered, queued_count=queued_total))
 
     def _cache_size(self) -> int:
-        if not self._audio.exists():
+        # Completed-audio cleanup no longer waits for the download lock, so an
+        # entry may disappear mid-scan. A vanished file uses no space.
+        total = 0
+        try:
+            with os.scandir(self._audio) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except FileNotFoundError:
+                        continue
+        except FileNotFoundError:
             return 0
-        return sum(path.stat().st_size for path in self._audio.iterdir() if path.is_file() and not path.is_symlink())
+        return total
 
     async def _process(self, episode: dict[str, Any]) -> None:
         try:
@@ -489,16 +530,17 @@ class PodcastService:
 
         # Completion precedes cleanup and sits outside the retry handler:
         # cancellation or a locked file must never requeue successful work.
-        # Keep removal behind the same lock until media cleanup has settled.
+        # Media deletion runs after the lock is released: `_active_episodes`
+        # keeps removal/unsubscribe out until `_process` settles ownership, and
+        # neither lock may wait behind another worker's in-flight download.
         async with self._subscription_lock:
             await to_thread_cancellation_barrier(self._store.update, identifier, status="completed")
-            try:
-                async with self._download_lock:
-                    await to_thread_cancellation_barrier(self._discard_completed_audio, episode)
-            except Exception as exc:
-                self._event(
-                    "audio_cleanup", outcome="failed", episode_id=identifier, transcript_id=transcript_id, error=exc
-                )
+        try:
+            await to_thread_cancellation_barrier(self._discard_completed_audio, episode)
+        except Exception as exc:
+            self._event(
+                "audio_cleanup", outcome="failed", episode_id=identifier, transcript_id=transcript_id, error=exc
+            )
         self._event(
             "episode_completed",
             outcome="success",

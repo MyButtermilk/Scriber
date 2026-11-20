@@ -304,8 +304,11 @@ async def test_stream_ranges_survive_public_redirects_and_reject_private_redirec
     redirect = SimpleNamespace(status=302, headers={"Location": "https://cdn.example.com/audio"}, release=Mock())
     partial = SimpleNamespace(status=206, headers={"Content-Type": "audio/mpeg"})
     session = SimpleNamespace(get=AsyncMock(side_effect=[redirect, partial]))
-    transport._session = session
+    shared = SimpleNamespace(get=AsyncMock(side_effect=AssertionError("playback used the shared pool")))
+    transport._stream_session = session
+    transport._session = shared
     assert await transport.stream("https://example.com/audio", range_header="bytes=100-") is partial
+    shared.get.assert_not_awaited()
     redirect.release.assert_called_once()
     for call in session.get.await_args_list:
         assert call.kwargs["headers"] == {"Range": "bytes=100-"}
@@ -316,6 +319,28 @@ async def test_stream_ranges_survive_public_redirects_and_reject_private_redirec
     with pytest.raises(PodcastError):
         await transport.stream("https://example.com/audio")
     assert session.get.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_playback_uses_a_separate_bounded_pool_and_close_releases_both() -> None:
+    from src.podcasts import feeds
+
+    transport = PodcastHttp()
+    shared = transport._client()
+    playback = transport._stream_client()
+    try:
+        assert shared is not playback
+        assert transport._client() is shared and transport._stream_client() is playback
+        assert shared.connector.limit == feeds.SHARED_CONNECTIONS == 3
+        assert playback.connector.limit == feeds.PLAYBACK_CONNECTIONS
+        assert playback.auto_decompress is False
+    finally:
+        await transport.close()
+    assert shared.closed and playback.closed
+    assert transport._session is None and transport._stream_session is None
+    # Closing an unused transport, or closing twice, is harmless.
+    await transport.close()
+    await PodcastHttp().close()
 
 
 @pytest.mark.asyncio
@@ -714,6 +739,227 @@ async def test_parallel_downloads_recheck_remaining_cache_before_writing(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_completion_cleanup_never_waits_behind_another_workers_download(tmp_path: Path) -> None:
+    controller = FakeController(tmp_path)
+    transport = FakeTransport(_feed(3, 2, 1))
+    held_download = asyncio.Event()
+    release_download = asyncio.Event()
+    targets: list[Path] = []
+    original_download = transport.download
+
+    async def download(url, target, *, max_bytes):
+        targets.append(target)
+        if len(targets) == 2:
+            # Worker B holds the download lock for as long as its host stalls.
+            held_download.set()
+            await release_download.wait()
+        return await original_download(url, target, max_bytes=max_bytes)
+
+    transport.download = download
+    summarized: list[str] = []
+    original_summary = controller.summarize_transcript
+
+    async def summarize(identifier):
+        if not summarized:
+            # Worker A finishes only once Worker B is stuck inside its download.
+            summarized.append(identifier)
+            await held_download.wait()
+        return await original_summary(identifier)
+
+    controller.summarize_transcript = summarize
+    service = PodcastService(
+        tmp_path / "podcasts",
+        PodcastProcessor(controller, poll_seconds=0.001),
+        transport=transport,
+        startup_delay=0,
+    )
+    subscription = await service.subscribe("https://example.com/feed", auto_process=False)
+    first, second, third = (await service.episodes(subscription))["items"]
+    assert await service.queue(first["id"])
+    assert await service.queue(second["id"])
+    service.start()
+    try:
+        await asyncio.wait_for(held_download.wait(), 10)
+        completed_target, blocked_target = targets
+        completed_id, blocked_id = completed_target.stem, blocked_target.stem
+        async with asyncio.timeout(5):
+            while completed_target.exists() or service._store.episode(completed_id)["status"] != "completed":
+                await asyncio.sleep(0.01)
+        # Worker A's audio was reclaimed while Worker B still downloads.
+        assert not release_download.is_set()
+        assert service._store.episode(completed_id)["downloaded_bytes"] == 0
+        assert service._store.episode(blocked_id)["status"] == "downloading"
+        # Subscription edits and explicit queueing never wait behind that download.
+        assert await asyncio.wait_for(service.set_subscription(subscription, auto_process=False), 1.0)
+        assert await asyncio.wait_for(service.queue(third["id"]), 1.0)
+        assert (await asyncio.wait_for(service.library(), 1.0))["activeCount"] == 2
+        release_download.set()
+        async with asyncio.timeout(10):
+            # Completion commits before media cleanup; ownership ends after it.
+            while (await service.library())["activeCount"] or service._active_episodes:
+                await asyncio.sleep(0.01)
+        rows = (await service.episodes(subscription))["items"]
+        assert {row["status"] for row in rows} == {"completed"}
+        assert {row["downloaded_bytes"] for row in rows} == {0}
+        assert not list(service._audio.iterdir())
+        assert len(controller.started) == len(controller.summaries) == len(targets) == 3
+    finally:
+        release_download.set()
+        held_download.set()
+        await service.close()
+
+
+class _FakeScan:
+    def __init__(self, entries: list) -> None:
+        self._entries = entries
+
+    def __enter__(self):
+        return iter(self._entries)
+
+    def __exit__(self, *_exc) -> bool:
+        return False
+
+
+class _VanishingEntry:
+    """A directory entry deleted by concurrent cleanup after it was listed."""
+
+    def __init__(self, name: str, *, fail_on: str) -> None:
+        self.name = name
+        self._fail_on = fail_on
+
+    def is_file(self, *, follow_symlinks: bool = True) -> bool:
+        if self._fail_on == "is_file":
+            raise FileNotFoundError(self.name)
+        return True
+
+    def stat(self, *, follow_symlinks: bool = True):
+        raise FileNotFoundError(self.name)
+
+
+def test_cache_size_tolerates_files_removed_during_the_scan(tmp_path: Path, monkeypatch) -> None:
+    service = PodcastService(
+        tmp_path / "podcasts", PodcastProcessor(FakeController(tmp_path)), transport=FakeTransport()
+    )
+    assert service._cache_size() == 0
+    assert service._audio_names() == set()
+    service._audio.mkdir(parents=True)
+    (service._audio / "kept.mp3").write_bytes(b"12345")
+    (service._audio / "partial.mp3.part").write_bytes(b"123")
+    (service._audio / "nested").mkdir()
+    assert service._cache_size() == 8
+    assert service._audio_names() == {"kept.mp3", "partial.mp3.part"}
+
+    real_scandir = podcast_service.os.scandir
+
+    def scandir(path):
+        entries = list(real_scandir(path))
+        entries.insert(1, _VanishingEntry("gone-stat.mp3", fail_on="stat"))
+        entries.insert(0, _VanishingEntry("gone-listing.mp3", fail_on="is_file"))
+        return _FakeScan(entries)
+
+    monkeypatch.setattr(podcast_service.os, "scandir", scandir)
+    assert service._cache_size() == 8
+    assert service._audio_names() == {"kept.mp3", "partial.mp3.part", "gone-stat.mp3"}
+
+    def missing_directory(path):
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(podcast_service.os, "scandir", missing_directory)
+    assert service._cache_size() == 0
+    assert service._audio_names() == set()
+
+
+@pytest.mark.asyncio
+async def test_prune_scans_audio_once_and_skips_rows_without_retained_audio(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "podcasts"
+    store = PodcastStore(root / "subscriptions.db")
+    store.initialize()
+    count = 150
+    feed = replace(
+        _feed(1), episodes=tuple(_episode(index, published=f"2026-08-01T00:00:{index:06d}") for index in range(count))
+    )
+    subscription = store.add("https://example.com/feed", feed, auto_process=False)
+    episodes = store.episodes(subscription, limit=count)["items"]
+    assert len(episodes) == count
+    controller = FakeController(tmp_path)
+    (root / "audio").mkdir()
+    retained = {row["id"] for row in episodes[:3]}
+    with store._connect() as con:
+        for index, episode in enumerate(episodes):
+            transcript_id = f"{index:032x}"
+            con.execute(
+                "UPDATE episodes SET status='completed',transcript_id=?,downloaded_bytes=0 WHERE id=?",
+                (transcript_id, episode["id"]),
+            )
+            controller.views[transcript_id] = _view(transcript_id, summary="Summary")
+    for identifier in retained:
+        (root / "audio" / f"{identifier}.mp3").write_bytes(b"audio")
+    service = PodcastService(root, PodcastProcessor(controller), transport=FakeTransport())
+
+    views: list[str] = []
+    original_view = controller.transcript_view
+
+    async def counted_view(identifier):
+        views.append(identifier)
+        return await original_view(identifier)
+
+    controller.transcript_view = counted_view
+    scans: list[str] = []
+    real_scandir = podcast_service.os.scandir
+
+    def counted_scandir(path):
+        scans.append(str(path))
+        return real_scandir(path)
+
+    threads: list[str] = []
+    real_to_thread = asyncio.to_thread
+
+    async def counted_to_thread(function, /, *args, **kwargs):
+        threads.append(getattr(function, "__name__", repr(function)))
+        return await real_to_thread(function, *args, **kwargs)
+
+    monkeypatch.setattr(podcast_service.os, "scandir", counted_scandir)
+    monkeypatch.setattr(asyncio, "to_thread", counted_to_thread)
+    try:
+        await service._prune_completed_audio()
+    finally:
+        monkeypatch.undo()
+        await service.close()
+    assert scans == [str(service._audio)]
+    # One snapshot plus one discard per retained file, never one per row.
+    assert threads.count("_completed_audio_snapshot") == 1
+    assert threads.count("_discard_completed_audio") == len(retained)
+    assert len(threads) == 1 + len(retained)
+    assert len(views) == len(retained)
+    assert not any((root / "audio").iterdir())
+    assert all(store.episode(identifier)["downloaded_bytes"] == 0 for identifier in retained)
+
+
+@pytest.mark.asyncio
+async def test_completed_audio_cleanup_skips_rows_that_left_the_completed_state(tmp_path: Path) -> None:
+    controller = FakeController(tmp_path)
+    service = PodcastService(tmp_path / "podcasts", PodcastProcessor(controller), transport=FakeTransport(_feed(1)))
+    subscription = await service.subscribe("https://example.com/feed", auto_process=False)
+    episode = (await service.episodes(subscription))["items"][0]
+    stale = dict(episode, status="completed")
+    service._audio.mkdir(parents=True, exist_ok=True)
+    target = service._audio / f"{episode['id']}.mp3"
+    target.write_bytes(b"new-source")
+    service._store.update(episode["id"], status="downloading", downloaded_bytes=10)
+    try:
+        # A stale snapshot must not remove a source that is being processed again.
+        service._discard_completed_audio(stale)
+        assert target.exists()
+        assert service._store.episode(episode["id"])["downloaded_bytes"] == 10
+        service._store.update(episode["id"], status="completed")
+        service._discard_completed_audio(stale)
+        assert not target.exists()
+        assert service._store.episode(episode["id"])["downloaded_bytes"] == 0
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
 async def test_service_end_to_end_queues_downloads_summarizes_and_unsubscribes(tmp_path: Path) -> None:
     controller = FakeController(tmp_path)
     transport = FakeTransport()
@@ -1018,7 +1264,11 @@ async def test_failed_transcript_retry_uses_new_identity_and_retained_download(t
     service._audio.mkdir(parents=True, exist_ok=True)
     (service._audio / f"{episode['id']}.mp3").write_bytes(b"audio-fixture")
     service._store.update(episode["id"], status="failed", transcript_id=old_id, downloaded_bytes=13)
-    assert await service.episode_for_transcript(old_id) == {"id": episode["id"], "status": "failed"}
+    assert await service.episode_for_transcript(old_id) == {
+        "id": episode["id"],
+        "status": "failed",
+        "subscription_id": subscription,
+    }
     assert sorted(await asyncio.gather(service.queue(episode["id"]), service.queue(episode["id"]))) == [False, True]
     assert await service.episode_for_transcript(old_id) is None
     service.start()
@@ -1310,7 +1560,7 @@ async def test_podcast_http_contract_strict_inputs_and_redacted_projection(tmp_p
         episode_id = page["items"][0]["id"]
         service._store.update(episode_id, status="failed", transcript_id=transcript_id)
         assert await (await client.get(f"/api/podcasts/transcripts/{transcript_id}")).json() == {
-            "episode": {"id": episode_id, "status": "failed"}
+            "episode": {"id": episode_id, "status": "failed", "subscriptionId": identifier}
         }
 
         async def oversized_chunked_json():

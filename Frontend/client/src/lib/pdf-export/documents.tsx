@@ -20,7 +20,7 @@ import type { MeetingExportDocument, TranscriptExportDocument } from "@/lib/api-
 import { Fixed, Text as PdfText, View } from "@/lib/pdf-primitives";
 import type { Style } from "@/lib/pdf-primitives";
 
-import { inlinesToText, parseSummaryForPdf, transcriptParagraphs } from "./summary-blocks";
+import { inlinesToText, parseSummaryForPdf, transcriptParagraphHeading, transcriptParagraphs } from "./summary-blocks";
 import type { PdfBlock, PdfInline, PdfListBlock, PdfSummary } from "./summary-blocks";
 import { normalizePdfText, singleLinePdfText, supportsItalic } from "./text";
 import { scriberPdfTheme } from "./theme";
@@ -448,19 +448,15 @@ const DocumentFrame = ({ title, kind, language, pageOf, footerNote, fonts, child
 function transcriptNodes(content: string, labels: TranscriptPdfLabels): ReactNode[] {
   const nodes: ReactNode[] = [];
   transcriptParagraphs(content).forEach((paragraph, index) => {
+    const heading = singleLinePdfText(transcriptParagraphHeading(paragraph, labels.speaker), 96);
     const pieces = readableParagraphs(normalizePdfText(paragraph.text));
     pieces.forEach((piece, pieceIndex) => {
       const text = (
-        <PdfText
-          style={[
-            bodyTextStyle,
-            pieceIndex === pieces.length - 1 && paragraph.speakerNumber !== null ? { marginBottom: 12 } : null,
-          ]}
-        >
+        <PdfText style={[bodyTextStyle, pieceIndex === pieces.length - 1 && heading ? { marginBottom: 12 } : null]}>
           {piece}
         </PdfText>
       );
-      if (pieceIndex > 0 || paragraph.speakerNumber === null) {
+      if (pieceIndex > 0 || !heading) {
         nodes.push(<View key={`${index}-${pieceIndex}`}>{text}</View>);
         return;
       }
@@ -476,7 +472,7 @@ function transcriptNodes(content: string, labels: TranscriptPdfLabels): ReactNod
               noMargin
               style={{ fontSize: 8.5, letterSpacing: 0.3, marginBottom: 2 }}
             >
-              {labels.speaker(paragraph.speakerNumber)}
+              {heading}
             </Text>
           }
         >

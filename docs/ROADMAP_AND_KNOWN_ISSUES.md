@@ -14,12 +14,17 @@ checks and renderer lifecycle revisions now protect that path; bounded native
 transition/dispatch diagnostics support investigation of remaining occurrences.
 Source regressions do not establish an installed Windows end-to-end fix.
 
-Push-to-talk still dispatches press and release through independent HTTP
-workers. A release may reach the backend before the matching start is admitted.
-Serializing entire HTTP requests would delay cancellation during startup;
-resolving this requires generation-bound start admission and stop intent.
-The observed local user configuration uses toggle mode, so this is a separate
-open ordering risk, not evidence for the reported popup symptom.
+Push-to-talk press and release still travel through independent HTTP workers,
+but their ordering is now generation-bound (commit `32581bd3`). The Rust shell
+assigns each gesture an opaque UUID and a strictly increasing, QPC-backed
+revision at the shortcut callback. Python admits a start atomically against
+that revision and records stop intent: superseded edges are rejected before and
+after the audio-admission wait, a newer release cancels a delayed or queued
+start, and an old release cannot stop a successor or UI-owned recording. Rust
+and Python unit/regression tests cover these orderings. Installed Windows
+end-to-end verification of real press/release races remains outstanding. The
+observed local user configuration uses toggle mode, so this was never evidence
+for the reported popup symptom.
 
 ## Azure MAI-2 native diarization availability
 

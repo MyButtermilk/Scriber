@@ -39,6 +39,10 @@ AUDIO_ASSET_TRACK_SOURCES = frozenset({"microphone", "mic_clean", "system", "mix
 TRANSCRIPT_CHECKPOINT_SCHEMA_VERSION = 3
 MEETING_SEGMENTS_FTS_SCHEMA_VERSION = 2
 MEETING_SEGMENTS_FTS_SCHEMA_KEY = "meeting_segments_fts_schema_version"
+# Version 1 keys output FTS rows on the base-table rowid. Version 0 (legacy)
+# matched the UNINDEXED output_id column, which made each repair quadratic.
+MEETING_OUTPUTS_FTS_SCHEMA_VERSION = 1
+MEETING_OUTPUTS_FTS_SCHEMA_KEY = "meeting_outputs_fts_schema_version"
 VOICE_PROFILE_MATCH_THRESHOLD = 0.82
 VOICE_PROFILE_MATCH_MARGIN = 0.08
 VOICE_PROFILE_PREVIEW_MAX_BYTES = 384 * 1024
@@ -292,6 +296,99 @@ class MeetingStore:
                    SELECT rowid,meeting_id,id,revision,text,speaker_label
                    FROM meeting_segments"""
             )
+
+    @staticmethod
+    def _ensure_meeting_outputs_fts(conn: sqlite3.Connection) -> None:
+        """Migrate and repair the output FTS index with rowid joins only."""
+        version_row = conn.execute(
+            "SELECT value FROM meeting_store_metadata WHERE key=?",
+            (MEETING_OUTPUTS_FTS_SCHEMA_KEY,),
+        ).fetchone()
+        version = int(version_row[0]) if version_row and str(version_row[0]).isdigit() else 0
+        schema_objects = {
+            str(row[0])
+            for row in conn.execute(
+                """SELECT name FROM sqlite_master
+                   WHERE name IN ('meeting_outputs_fts','meeting_outputs_fts_insert',
+                                  'meeting_outputs_fts_update','meeting_outputs_fts_delete')"""
+            ).fetchall()
+        }
+        if version != MEETING_OUTPUTS_FTS_SCHEMA_VERSION or len(schema_objects) != 4:
+            for trigger in (
+                "meeting_outputs_fts_insert",
+                "meeting_outputs_fts_update",
+                "meeting_outputs_fts_delete",
+            ):
+                conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            conn.execute("DROP TABLE IF EXISTS meeting_outputs_fts")
+            conn.execute(
+                """CREATE VIRTUAL TABLE meeting_outputs_fts USING fts5(
+                       meeting_id UNINDEXED, output_id UNINDEXED, kind UNINDEXED,
+                       payload, tokenize='unicode61'
+                   )"""
+            )
+            conn.execute(
+                """INSERT INTO meeting_outputs_fts(rowid,meeting_id,output_id,kind,payload)
+                   SELECT rowid,meeting_id,id,kind,payload_json FROM meeting_outputs"""
+            )
+            conn.execute(
+                """CREATE TRIGGER meeting_outputs_fts_insert
+                   AFTER INSERT ON meeting_outputs BEGIN
+                     INSERT INTO meeting_outputs_fts(rowid,meeting_id,output_id,kind,payload)
+                     VALUES (new.rowid,new.meeting_id,new.id,new.kind,new.payload_json);
+                   END"""
+            )
+            conn.execute(
+                """CREATE TRIGGER meeting_outputs_fts_update
+                   AFTER UPDATE OF payload_json,kind,meeting_id ON meeting_outputs BEGIN
+                     DELETE FROM meeting_outputs_fts WHERE rowid=old.rowid;
+                     INSERT INTO meeting_outputs_fts(rowid,meeting_id,output_id,kind,payload)
+                     VALUES (new.rowid,new.meeting_id,new.id,new.kind,new.payload_json);
+                   END"""
+            )
+            conn.execute(
+                """CREATE TRIGGER meeting_outputs_fts_delete
+                   AFTER DELETE ON meeting_outputs BEGIN
+                     DELETE FROM meeting_outputs_fts WHERE rowid=old.rowid;
+                   END"""
+            )
+            conn.execute(
+                """INSERT INTO meeting_store_metadata(key,value) VALUES (?,?)
+                   ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+                (MEETING_OUTPUTS_FTS_SCHEMA_KEY, str(MEETING_OUTPUTS_FTS_SCHEMA_VERSION)),
+            )
+            return
+
+        output_count = int(conn.execute("SELECT COUNT(*) FROM meeting_outputs").fetchone()[0])
+        fts_count = int(conn.execute("SELECT COUNT(*) FROM meeting_outputs_fts").fetchone()[0])
+        missing = conn.execute(
+            """SELECT 1 FROM meeting_outputs o
+               LEFT JOIN meeting_outputs_fts f ON f.rowid=o.rowid
+               WHERE f.rowid IS NULL LIMIT 1"""
+        ).fetchone()
+        stale = conn.execute(
+            """SELECT 1 FROM meeting_outputs_fts f
+               LEFT JOIN meeting_outputs o ON o.rowid=f.rowid
+               WHERE o.rowid IS NULL OR f.output_id IS NOT o.id LIMIT 1"""
+        ).fetchone()
+        if output_count == fts_count and missing is None and stale is None:
+            return
+        # Incremental, linear repair: drop orphaned or misattributed rows, then
+        # add exactly the base rows that have no index row.
+        if stale is not None:
+            conn.execute(
+                """DELETE FROM meeting_outputs_fts WHERE rowid IN (
+                     SELECT f.rowid FROM meeting_outputs_fts f
+                     LEFT JOIN meeting_outputs o ON o.rowid=f.rowid
+                     WHERE o.rowid IS NULL OR f.output_id IS NOT o.id
+                   )"""
+            )
+        conn.execute(
+            """INSERT INTO meeting_outputs_fts(rowid,meeting_id,output_id,kind,payload)
+               SELECT o.rowid,o.meeting_id,o.id,o.kind,o.payload_json FROM meeting_outputs o
+               LEFT JOIN meeting_outputs_fts f ON f.rowid=o.rowid
+               WHERE f.rowid IS NULL"""
+        )
 
     @staticmethod
     def _backfill_canonical_system_speaker(conn: sqlite3.Connection) -> None:
@@ -742,10 +839,6 @@ class MeetingStore:
                     meeting_id, segment_id UNINDEXED, revision,
                     text, speaker_label, tokenize='unicode61'
                 );
-                CREATE VIRTUAL TABLE IF NOT EXISTS meeting_outputs_fts USING fts5(
-                    meeting_id UNINDEXED, output_id UNINDEXED, kind UNINDEXED,
-                    payload, tokenize='unicode61'
-                );
                 CREATE TRIGGER IF NOT EXISTS meeting_segments_fts_insert AFTER INSERT ON meeting_segments BEGIN
                     INSERT INTO meeting_segments_fts(rowid,meeting_id,segment_id,revision,text,speaker_label)
                     VALUES (new.rowid,new.meeting_id,new.id,new.revision,new.text,new.speaker_label);
@@ -758,18 +851,6 @@ class MeetingStore:
                 END;
                 CREATE TRIGGER IF NOT EXISTS meeting_segments_fts_delete AFTER DELETE ON meeting_segments BEGIN
                     DELETE FROM meeting_segments_fts WHERE rowid=old.rowid;
-                END;
-                CREATE TRIGGER IF NOT EXISTS meeting_outputs_fts_insert AFTER INSERT ON meeting_outputs BEGIN
-                    INSERT INTO meeting_outputs_fts(meeting_id,output_id,kind,payload)
-                    VALUES (new.meeting_id,new.id,new.kind,new.payload_json);
-                END;
-                CREATE TRIGGER IF NOT EXISTS meeting_outputs_fts_update AFTER UPDATE ON meeting_outputs BEGIN
-                    DELETE FROM meeting_outputs_fts WHERE output_id=old.id;
-                    INSERT INTO meeting_outputs_fts(meeting_id,output_id,kind,payload)
-                    VALUES (new.meeting_id,new.id,new.kind,new.payload_json);
-                END;
-                CREATE TRIGGER IF NOT EXISTS meeting_outputs_fts_delete AFTER DELETE ON meeting_outputs BEGIN
-                    DELETE FROM meeting_outputs_fts WHERE output_id=old.id;
                 END;
                 """
             )
@@ -1007,13 +1088,15 @@ class MeetingStore:
                 raise
             else:
                 conn.execute("RELEASE migrate_meeting_segments_fts")
-            conn.execute(
-                """INSERT INTO meeting_outputs_fts(meeting_id,output_id,kind,payload)
-                   SELECT o.meeting_id,o.id,o.kind,o.payload_json FROM meeting_outputs o
-                   WHERE NOT EXISTS (
-                     SELECT 1 FROM meeting_outputs_fts f WHERE f.output_id=o.id
-                   )"""
-            )
+            conn.execute("SAVEPOINT migrate_meeting_outputs_fts")
+            try:
+                self._ensure_meeting_outputs_fts(conn)
+            except Exception:
+                conn.execute("ROLLBACK TO migrate_meeting_outputs_fts")
+                conn.execute("RELEASE migrate_meeting_outputs_fts")
+                raise
+            else:
+                conn.execute("RELEASE migrate_meeting_outputs_fts")
             conn.execute(
                 """INSERT OR IGNORE INTO speaker_library_state(id,enabled,updated_at)
                    VALUES (1,?,?)""",

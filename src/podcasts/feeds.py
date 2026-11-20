@@ -30,6 +30,10 @@ from src.runtime.cancellation import to_thread_cancellation_barrier
 MAX_FEED_BYTES = 5 * 1024 * 1024
 MAX_AUDIO_BYTES = 256 * 1024 * 1024
 MAX_FEED_EPISODES = 200
+# Feed refresh, search and processing downloads share this pool.
+SHARED_CONNECTIONS = 3
+# Long-lived listening streams use their own pool so they cannot starve it.
+PLAYBACK_CONNECTIONS = 4
 _ITUNES = "{http://www.itunes.com/dtds/podcast-1.0.dtd}"
 _AUDIO_TYPES = {
     "audio/mpeg": ".mp3",
@@ -196,34 +200,50 @@ def parse_feed(payload: bytes) -> PodcastFeed:
 
 
 class PodcastHttp:
-    """One bounded public-only pool with directory caching and rate limiting."""
+    """Bounded public-only pools with directory caching and rate limiting.
+
+    Feed refreshes, search and processing downloads share one small pool.
+    Listening uses a separate small pool: a playback stream can stay open for
+    the whole episode and must never starve refreshes or downloads.
+    """
 
     def __init__(self) -> None:
         self._session: aiohttp.ClientSession | None = None
+        self._stream_session: aiohttp.ClientSession | None = None
         self._search_lock = asyncio.Lock()
         self._last_search = 0.0
         self._cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
 
+    @staticmethod
+    def _new_session(*, limit: int) -> aiohttp.ClientSession:
+        # Use the OS certificate policy, including managed Windows trust,
+        # without changing TLS settings for unrelated provider clients.
+        tls = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        return aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(resolver=PublicResolver(), limit=limit, ttl_dns_cache=60, ssl=tls),
+            timeout=aiohttp.ClientTimeout(total=45, connect=15, sock_read=20),
+            headers={"User-Agent": "Scriber-Podcasts/1.0", "Accept-Encoding": "identity"},
+            trust_env=False,
+            auto_decompress=False,
+        )
+
     def _client(self) -> aiohttp.ClientSession:
         if self._session is None:
-            # Use the OS certificate policy, including managed Windows trust,
-            # without changing TLS settings for unrelated provider clients.
-            tls = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            self._session = aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(resolver=PublicResolver(), limit=3, ttl_dns_cache=60, ssl=tls),
-                timeout=aiohttp.ClientTimeout(total=45, connect=15, sock_read=20),
-                headers={"User-Agent": "Scriber-Podcasts/1.0", "Accept-Encoding": "identity"},
-                trust_env=False,
-                auto_decompress=False,
-            )
+            self._session = self._new_session(limit=SHARED_CONNECTIONS)
         return self._session
+
+    def _stream_client(self) -> aiohttp.ClientSession:
+        if self._stream_session is None:
+            self._stream_session = self._new_session(limit=PLAYBACK_CONNECTIONS)
+        return self._stream_session
 
     async def _response(
         self, url: str, *, media: bool = False, streaming: bool = False, range_header: str | None = None
     ) -> aiohttp.ClientResponse:
         current = public_url(url)
+        client = self._stream_client() if streaming else self._client()
         for _ in range(6):
-            response = await self._client().get(
+            response = await client.get(
                 current,
                 allow_redirects=False,
                 headers={"Range": range_header} if range_header else {},
@@ -338,5 +358,11 @@ class PodcastHttp:
             partial.unlink(missing_ok=True)
 
     async def close(self) -> None:
-        if self._session is not None:
-            await self._session.close()
+        session, stream_session = self._session, self._stream_session
+        self._session = self._stream_session = None
+        try:
+            if stream_session is not None:
+                await stream_session.close()
+        finally:
+            if session is not None:
+                await session.close()

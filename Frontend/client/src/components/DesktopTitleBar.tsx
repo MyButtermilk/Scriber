@@ -57,7 +57,9 @@ export function DesktopTitleBar() {
   if (!isTauriRuntime()) return null;
 
   return (
-    <div className="desktop-titlebar hidden md:flex">
+    // Always render in Tauri: this is the frameless window's only drag region
+    // and window controls, so it must survive WebView zoom below `md` widths.
+    <div className="desktop-titlebar flex">
       <div
         className="desktop-titlebar__drag-region"
         data-tauri-drag-region=""

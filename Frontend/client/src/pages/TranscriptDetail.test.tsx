@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Route, Router } from "wouter";
@@ -9,6 +9,7 @@ import type { TranscriptDetailResponse } from "@/lib/api-types";
 import TranscriptDetail from "./TranscriptDetail";
 import { AppScrollContainerContext } from "@/contexts/AppScrollContainerContext";
 import ReactMarkdown from "react-markdown";
+import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 
 vi.mock("react-markdown", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-markdown")>();
@@ -24,9 +25,15 @@ const { saveTranscriptExport, saveTranscriptPdfExport } = vi.hoisted(() => ({
   saveTranscriptPdfExport: vi.fn(async (_request: unknown) => ({ status: "cancelled" as const })),
 }));
 vi.mock("@/lib/transcript-export", () => ({ saveTranscriptExport, saveTranscriptPdfExport }));
-vi.mock("@/lib/fetch-with-timeout", () => ({
-  fetchWithTimeout: vi.fn(async () => new Response(JSON.stringify({ episode: null }))),
+const { defaultFetch } = vi.hoisted(() => ({
+  defaultFetch: async (_input: RequestInfo | URL, _init?: RequestInit, _timeoutMs?: number) =>
+    new Response(JSON.stringify({ episode: null })),
 }));
+vi.mock("@/lib/fetch-with-timeout", () => ({ fetchWithTimeout: vi.fn(defaultFetch) }));
+// restoreMocks does not reset vi.fn implementations; a test override must not leak.
+beforeEach(() => {
+  vi.mocked(fetchWithTimeout).mockImplementation(defaultFetch);
+});
 
 const rateLimitMessage =
   "Microsoft MAI Transcribe via OpenRouter is temporarily rate limited (HTTP 429). Wait briefly or switch transcription provider.";
@@ -67,6 +74,208 @@ function mount(
   );
   return { ...view, client };
 }
+
+function completed(id: string, content: string, overrides: Partial<TranscriptDetailResponse> = {}) {
+  return {
+    id,
+    title: `Transcript ${id}`,
+    date: "Today",
+    duration: "01:00",
+    type: "file",
+    status: "completed",
+    content,
+    summary: "",
+    summaryStatus: "completed",
+    ...overrides,
+  } satisfies TranscriptDetailResponse;
+}
+
+/** Mount the keyed transcript route exactly as App.tsx declares it. */
+function mountRoute(records: Record<string, TranscriptDetailResponse>, path: string) {
+  const client = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+        queryFn: async ({ queryKey }) => records[String(queryKey[1])] ?? null,
+      },
+    },
+  });
+  const location = memoryLocation({ path, record: true });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <LocaleProvider>
+        <Router hook={location.hook}>
+          <AppScrollContainerContext.Provider value={{ current: null }}>
+            <Route path="/transcript/:id">{(params) => <TranscriptDetail key={params.id} />}</Route>
+          </AppScrollContainerContext.Provider>
+        </Router>
+      </LocaleProvider>
+    </QueryClientProvider>,
+  );
+  return { ...view, client, location };
+}
+
+const canonicalContent = [
+  "[0:00] Speaker 0: Über die Brücke gehen wir.",
+  "[0:05] Speaker 1: Danach geht es über den Fluss.",
+  "[125:04] Speaker 0: Und am Ende uber alles.",
+].join("\n");
+
+function sectionTrigger(name: RegExp) {
+  return screen.getAllByRole("button", { name }).find((button) => button.hasAttribute("aria-expanded"))!;
+}
+
+function pressFind() {
+  return fireEvent.keyDown(window, { key: "f", code: "KeyF", ctrlKey: true });
+}
+
+describe("completed transcript", () => {
+  beforeEach(() => {
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, "en");
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+  });
+
+  it("renders canonical segments as timestamp and speaker rows, including Speaker 0", async () => {
+    const { container } = mountRoute({ a: completed("a", canonicalContent) }, "/transcript/a");
+    expect(await screen.findByText("Über die Brücke gehen wir.")).toBeInTheDocument();
+    const headers = Array.from(container.querySelectorAll("[data-transcript-block-header]"));
+    expect(headers.map((header) => header.textContent)).toEqual(["0:00Speaker 0", "0:05Speaker 1", "2:05:04Speaker 0"]);
+    expect(screen.queryByText(/\[0:00\]/)).toBeNull();
+    expect(container.querySelectorAll("[data-transcript-speaker]")[0].className).toContain("bg-blue-100");
+  });
+
+  it("keeps plain transcript line breaks", async () => {
+    const { container } = mountRoute({ a: completed("a", "Line one\nLine two\n\nNext paragraph") }, "/transcript/a");
+    await screen.findByText("Next paragraph");
+    const paragraphs = Array.from(container.querySelectorAll(".transcript-content p"));
+    expect(paragraphs.map((paragraph) => paragraph.textContent)).toEqual(["Line one\nLine two", "Next paragraph"]);
+    expect(paragraphs[0].className).toContain("whitespace-pre-wrap");
+  });
+
+  it("opens an existing summary first and adds a summary that arrives without collapsing the transcript", async () => {
+    const records = {
+      a: completed("a", "Reading this transcript.", { summaryStatus: "pending" }),
+      b: completed("b", "Other transcript.", { summary: "## Saved summary" }),
+    };
+    const first = mountRoute(records, "/transcript/a");
+    await screen.findByText("Reading this transcript.");
+    expect(sectionTrigger(/^Transcript/)).toHaveAttribute("aria-expanded", "true");
+    expect(sectionTrigger(/^Summary/)).toHaveAttribute("aria-expanded", "false");
+
+    records.a = { ...records.a, summary: "## Arrived summary", summaryStatus: "completed" };
+    first.client.setQueryData(["/api/transcripts", "a"], records.a);
+    expect(await screen.findByRole("heading", { name: "Arrived summary" })).toBeInTheDocument();
+    await waitFor(() => expect(sectionTrigger(/^Summary/)).toHaveAttribute("aria-expanded", "true"));
+    expect(sectionTrigger(/^Transcript/)).toHaveAttribute("aria-expanded", "true");
+    first.unmount();
+
+    mountRoute(records, "/transcript/b");
+    expect(await screen.findByRole("heading", { name: "Saved summary" })).toBeInTheDocument();
+    await waitFor(() => expect(sectionTrigger(/^Summary/)).toHaveAttribute("aria-expanded", "true"));
+    expect(sectionTrigger(/^Transcript/)).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("resets page state when navigating to another transcript", async () => {
+    const user = userEvent.setup();
+    const { location } = mountRoute(
+      { a: completed("a", "Alpha words here."), b: completed("b", "Beta words here.") },
+      "/transcript/a",
+    );
+    await screen.findByText("Alpha words here.");
+    await user.click(sectionTrigger(/^Transcript/));
+    expect(sectionTrigger(/^Transcript/)).toHaveAttribute("aria-expanded", "false");
+    await user.click(screen.getByRole("button", { name: "Find in transcript" }));
+    expect(screen.getByRole("searchbox", { name: "Search transcript" })).toBeInTheDocument();
+
+    act(() => location.navigate("/transcript/b"));
+    expect(await screen.findByText("Beta words here.")).toBeInTheDocument();
+    expect(screen.queryByRole("searchbox", { name: "Search transcript" })).toBeNull();
+    expect(sectionTrigger(/^Transcript/)).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("returns from a podcast transcript to its podcast", async () => {
+    vi.mocked(fetchWithTimeout).mockImplementation(async (input) =>
+      String(input).includes("/api/podcasts/transcripts/")
+        ? Response.json({ episode: { id: "episode-1", status: "completed", subscriptionId: "sub 1/2" } })
+        : Response.json({}),
+    );
+    mountRoute({ p: completed("p", "Podcast words.") }, "/transcript/p");
+    await screen.findByText("Podcast words.");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Go back" }).closest("a")).toHaveAttribute(
+        "href",
+        `/podcasts?subscription=${encodeURIComponent("sub 1/2")}`,
+      ),
+    );
+    expect(
+      vi.mocked(fetchWithTimeout).mock.calls.some(([url]) => String(url).includes("/api/podcasts/transcripts/p")),
+    ).toBe(true);
+  });
+
+  it("returns from an ordinary uploaded file to File history", async () => {
+    mountRoute({ f: completed("f", "Uploaded words.") }, "/transcript/f");
+    await screen.findByText("Uploaded words.");
+    await waitFor(() =>
+      expect(vi.mocked(fetchWithTimeout).mock.calls.some(([url]) => String(url).includes("/api/podcasts/"))).toBe(true),
+    );
+    expect(screen.getByRole("button", { name: "Go back" }).closest("a")).toHaveAttribute("href", "/file");
+  });
+
+  it("Ctrl+F expands the transcript, focuses search, cycles matches, and Escape clears them", async () => {
+    const user = userEvent.setup();
+    const { container } = mountRoute(
+      { a: completed("a", canonicalContent, { summary: "## Summary first" }) },
+      "/transcript/a",
+    );
+    await screen.findByRole("heading", { name: "Summary first" });
+    await waitFor(() => expect(sectionTrigger(/^Transcript/)).toHaveAttribute("aria-expanded", "false"));
+
+    expect(pressFind()).toBe(false);
+    const input = await screen.findByRole("searchbox", { name: "Search transcript" });
+    await waitFor(() => expect(input).toHaveFocus());
+    expect(sectionTrigger(/^Transcript/)).toHaveAttribute("aria-expanded", "true");
+    expect(sectionTrigger(/^Summary/)).toHaveAttribute("aria-expanded", "true");
+
+    await user.type(input, "UBER");
+    const counter = container.querySelector("[data-transcript-find-counter]")!;
+    expect(counter).toHaveAttribute("aria-live", "polite");
+    await waitFor(() => expect(counter).toHaveTextContent("1 / 3"));
+    const marks = () => Array.from(container.querySelectorAll("mark"));
+    expect(marks().map((mark) => mark.textContent)).toEqual(["Über", "über", "uber"]);
+    expect(marks()[0]).toHaveAttribute("data-active", "true");
+    expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
+
+    await user.keyboard("{Enter}");
+    expect(counter).toHaveTextContent("2 / 3");
+    expect(marks()[1]).toHaveAttribute("data-active", "true");
+    await user.keyboard("{Enter}{Enter}");
+    expect(counter).toHaveTextContent("1 / 3");
+    await user.keyboard("{Shift>}{Enter}{/Shift}");
+    expect(counter).toHaveTextContent("3 / 3");
+    expect(marks()[2]).toHaveAttribute("data-active", "true");
+
+    await user.clear(input);
+    await user.type(input, "zzz");
+    await waitFor(() => expect(counter).toHaveTextContent("0 / 0"));
+    expect(marks()).toHaveLength(0);
+
+    await user.type(input, "{Escape}");
+    expect(screen.queryByRole("searchbox", { name: "Search transcript" })).toBeNull();
+    expect(container.querySelectorAll("mark")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Find in transcript" })).toHaveFocus();
+
+    // Reopening starts with an empty query.
+    pressFind();
+    expect(await screen.findByRole("searchbox", { name: "Search transcript" })).toHaveValue("");
+  });
+
+  it("leaves Ctrl+F to the browser when there is no transcript text", async () => {
+    mountRoute({ e: completed("e", "") }, "/transcript/e");
+    await screen.findByText("No transcript text captured.");
+    expect(pressFind()).toBe(true);
+    expect(screen.queryByRole("searchbox")).toBeNull();
+  });
+});
 
 describe("failed transcript", () => {
   beforeEach(() => {

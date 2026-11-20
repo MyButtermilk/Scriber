@@ -343,7 +343,7 @@ class PodcastStore:
     def episode_for_transcript(self, transcript_id: str) -> dict[str, Any] | None:
         with self._connect() as con:
             row = con.execute(
-                "SELECT id,status FROM episodes WHERE transcript_id=? AND transcript_id<>'' LIMIT 1",
+                "SELECT id,status,subscription_id FROM episodes WHERE transcript_id=? AND transcript_id<>'' LIMIT 1",
                 (transcript_id,),
             ).fetchone()
             return dict(row) if row else None
@@ -406,6 +406,15 @@ class PodcastStore:
                 """UPDATE episodes SET status=?,transcript_id=COALESCE(?,transcript_id),
                 downloaded_bytes=COALESCE(?,downloaded_bytes),error=?,updated_at=? WHERE id=?""",
                 (status, transcript_id, downloaded_bytes, error[:300], now_iso(), identifier),
+            )
+
+    def clear_completed_download(self, identifier: str) -> bool:
+        with self._connect() as con:
+            return bool(
+                con.execute(
+                    "UPDATE episodes SET downloaded_bytes=0,updated_at=? WHERE id=? AND status='completed'",
+                    (now_iso(), identifier),
+                ).rowcount
             )
 
     def active_count(self) -> int:

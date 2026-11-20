@@ -40,6 +40,7 @@ import { cn } from "@/lib/utils";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useI18n, type TranslationValues } from "@/i18n";
 import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
+import { useTheme } from "@/components/theme-provider";
 
 const DEFAULT_TRAY_STATUS: TrayStatus = {
   recordingActive: false,
@@ -157,6 +158,7 @@ function TrayRow({
   disabled?: boolean;
   loading?: boolean;
 }) {
+  const { resolvedTheme } = useTheme();
   return (
     <motion.button
       type="button"
@@ -166,9 +168,13 @@ function TrayRow({
       className={cn(
         "tray-action-row group flex h-[42px] w-full items-center gap-3 rounded-[12px] px-3 text-left outline-none transition-colors duration-150",
         "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white/80",
-        variant === "default" && "text-slate-950 hover:bg-slate-950/[0.055]",
-        variant === "primary" && "bg-blue-50 text-blue-700 hover:bg-blue-100",
-        variant === "danger" && "bg-red-50 text-red-700 hover:bg-red-100",
+        "dark:focus-visible:ring-blue-400/70 dark:focus-visible:ring-offset-[#1a1d23]",
+        variant === "default" &&
+          "text-slate-950 hover:bg-slate-950/[0.055] dark:text-slate-100 dark:hover:bg-white/[0.07]",
+        variant === "primary" &&
+          "bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-500/[0.16] dark:text-blue-200 dark:hover:bg-blue-500/[0.24]",
+        variant === "danger" &&
+          "bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-500/[0.16] dark:text-red-200 dark:hover:bg-red-500/[0.24]",
         variant === "update" &&
           "bg-blue-600 text-white shadow-[0_10px_26px_-18px_rgba(37,99,235,0.85)] hover:bg-blue-500",
         disabled && variant !== "update" && "cursor-default opacity-55",
@@ -178,14 +184,17 @@ function TrayRow({
       <span
         className={cn(
           "flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px]",
-          variant === "default" && "text-slate-900",
-          variant === "primary" && "bg-white/70 text-blue-700",
-          variant === "danger" && "bg-white/80 text-red-700",
+          variant === "default" && "text-slate-900 dark:text-slate-200",
+          variant === "primary" && "bg-white/70 text-blue-700 dark:bg-white/[0.08] dark:text-blue-300",
+          variant === "danger" && "bg-white/80 text-red-700 dark:bg-white/[0.08] dark:text-red-300",
           variant === "update" && "bg-white/16 text-white",
         )}
       >
         {loading ? (
-          <WavePhysicsLoader size="inline" theme={variant === "update" ? "dark" : "light"} />
+          <WavePhysicsLoader
+            size="inline"
+            theme={variant === "update" || resolvedTheme === "dark" ? "dark" : "light"}
+          />
         ) : (
           <Icon className={cn("h-[18px] w-[18px]", variant === "danger" && Icon === Square && "fill-current")} />
         )}
@@ -196,7 +205,7 @@ function TrayRow({
           <span
             className={cn(
               "tray-action-detail mt-px block truncate text-[11px] leading-[13px]",
-              variant === "update" ? "text-white/78" : "text-slate-500",
+              variant === "update" ? "text-white/78" : "text-slate-500 dark:text-slate-400",
             )}
           >
             {detail}
@@ -207,13 +216,13 @@ function TrayRow({
         <span
           className={cn(
             "ml-2 shrink-0 text-[12px] font-semibold leading-none",
-            variant === "primary" ? "text-blue-700/78" : "text-slate-400",
+            variant === "primary" ? "text-blue-700/78 dark:text-blue-200/75" : "text-slate-400 dark:text-slate-500",
           )}
         >
           {shortcut}
         </span>
       ) : null}
-      {trailing ? <span className="ml-2 shrink-0 text-slate-400">{trailing}</span> : null}
+      {trailing ? <span className="ml-2 shrink-0 text-slate-400 dark:text-slate-500">{trailing}</span> : null}
     </motion.button>
   );
 }
@@ -238,16 +247,19 @@ function RecentTranscriptRow({
       disabled={disabled}
       className={cn(
         "tray-recent-row group flex h-[46px] w-full items-center gap-3 rounded-[12px] px-3 text-left outline-none transition-colors duration-150",
-        "text-slate-950 hover:bg-slate-950/[0.055]",
+        "text-slate-950 hover:bg-slate-950/[0.055] dark:text-slate-100 dark:hover:bg-white/[0.07]",
         "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white/80",
-        copied && "bg-emerald-50 text-emerald-700",
+        "dark:focus-visible:ring-blue-400/70 dark:focus-visible:ring-offset-[#1a1d23]",
+        copied && "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/[0.16] dark:text-emerald-200",
         disabled && "cursor-default opacity-55",
       )}
     >
       <span
         className={cn(
           "flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px]",
-          copied ? "bg-white/80 text-emerald-700" : "text-slate-900",
+          copied
+            ? "bg-white/80 text-emerald-700 dark:bg-white/[0.08] dark:text-emerald-300"
+            : "text-slate-900 dark:text-slate-200",
         )}
       >
         {copied ? <Check className="h-[18px] w-[18px]" /> : <Copy className="h-[18px] w-[18px]" />}
@@ -259,7 +271,7 @@ function RecentTranscriptRow({
         <span
           className={cn(
             "mt-px block truncate text-[11px] leading-[13px]",
-            copied ? "text-emerald-600" : "text-slate-500",
+            copied ? "text-emerald-600 dark:text-emerald-300/85" : "text-slate-500 dark:text-slate-400",
           )}
         >
           {copied ? t("Copied to clipboard") : compactTranscriptDetail(item, t, formatDate, formatLegacyDate)}
@@ -290,6 +302,8 @@ function formatShortcut(raw: string | undefined, t: Translate): string {
 
 export default function TrayPanel() {
   const { formatNumber, t } = useI18n();
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === "dark";
   const [backendReady, setBackendReady] = useState(isInitialBackendAccessReady);
   const [view, setView] = useState<TrayView>("main");
   const [status, setStatus] = useState<TrayStatus>(DEFAULT_TRAY_STATUS);
@@ -683,28 +697,38 @@ export default function TrayPanel() {
   })();
 
   return (
-    <main className="tray-panel flex h-screen w-screen items-center justify-center bg-transparent p-2 text-slate-950 antialiased">
+    <main className="tray-panel flex h-screen w-screen items-center justify-center bg-transparent p-2 text-slate-950 antialiased dark:text-slate-100">
       <motion.section
         initial={{ opacity: 0, y: 10, scale: 0.985 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-        className="tray-panel-surface flex h-full w-full flex-col overflow-hidden rounded-[24px] border border-white/70 bg-[rgba(248,250,252,0.96)] p-4 shadow-[0_26px_70px_-34px_rgba(15,23,42,0.78),0_8px_24px_-20px_rgba(15,23,42,0.45)] backdrop-blur-2xl"
+        className={cn(
+          "tray-panel-surface flex h-full w-full flex-col overflow-hidden rounded-[24px] border border-white/70 bg-[rgba(248,250,252,0.96)] p-4 shadow-[0_26px_70px_-34px_rgba(15,23,42,0.78),0_8px_24px_-20px_rgba(15,23,42,0.45)] backdrop-blur-2xl",
+          "dark:border-white/[0.09] dark:bg-[rgba(26,29,35,0.97)] dark:shadow-[0_26px_70px_-34px_rgba(0,0,0,0.92),0_8px_24px_-20px_rgba(0,0,0,0.7),inset_0_1px_0_rgba(255,255,255,0.04)]",
+        )}
       >
         <header className="tray-panel-header flex shrink-0 items-center gap-3 pb-3">
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-slate-200/80 bg-white shadow-[0_12px_28px_-22px_rgba(15,23,42,0.75)]">
-            <img src="/favicon.svg" alt="" className="h-8 w-8 object-contain" draggable={false} />
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-slate-200/80 bg-white shadow-[0_12px_28px_-22px_rgba(15,23,42,0.75)] dark:border-white/10 dark:bg-white/[0.05] dark:shadow-[0_12px_28px_-22px_rgba(0,0,0,0.9)]">
+            <img
+              src={isDark ? "/favicon-dark.svg" : "/favicon.svg"}
+              alt=""
+              className="h-8 w-8 object-contain"
+              draggable={false}
+            />
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-baseline gap-2">
-              <h1 className="truncate text-[21px] font-semibold leading-6 tracking-normal text-slate-950">Scriber</h1>
+              <h1 className="truncate text-[21px] font-semibold leading-6 tracking-normal text-slate-950 dark:text-slate-50">
+                Scriber
+              </h1>
               {appVersion ? (
-                <span className="shrink-0 text-[10px] font-semibold tracking-[0.04em] text-slate-400">
+                <span className="shrink-0 text-[10px] font-semibold tracking-[0.04em] text-slate-400 dark:text-slate-500">
                   v{appVersion.replace(/^v/i, "")}
                 </span>
               ) : null}
             </div>
             {status.recordingActive || !showUpdateInstallBanner ? (
-              <div className="mt-0.5 flex items-center gap-2 text-[11px] font-medium text-slate-500">
+              <div className="mt-0.5 flex items-center gap-2 text-[11px] font-medium text-slate-500 dark:text-slate-400">
                 <StatusIndicator status={status} />
                 <span className="truncate">{statusLabel(status, t)}</span>
               </div>
@@ -712,7 +736,7 @@ export default function TrayPanel() {
           </div>
         </header>
 
-        <div className="h-px bg-slate-200/80" />
+        <div className="h-px bg-slate-200/80 dark:bg-white/[0.08]" />
 
         {view === "main" && showUpdateInstallBanner ? (
           <div className="tray-panel-update shrink-0 pt-2.5">
@@ -725,6 +749,7 @@ export default function TrayPanel() {
                 "flex h-[50px] w-full items-center gap-3 rounded-[14px] bg-blue-600 px-3 text-left text-white outline-none transition-colors",
                 "shadow-[0_16px_30px_-20px_rgba(37,99,235,0.95)] hover:bg-blue-500",
                 "focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white/80",
+                "dark:focus-visible:ring-blue-400/70 dark:focus-visible:ring-offset-[#1a1d23]",
                 (installing || status.updateInstalling) && "cursor-default hover:bg-blue-600",
               )}
             >
@@ -767,7 +792,7 @@ export default function TrayPanel() {
               <TrayRow icon={Video} label={t("YouTube Transcription")} onClick={() => void runAction("open_youtube")} />
               <TrayRow icon={FileAudio} label={t("Transcribe File")} onClick={() => void runAction("open_file")} />
 
-              <div className="my-0.5 h-px bg-slate-200/80" />
+              <div className="my-0.5 h-px bg-slate-200/80 dark:bg-white/[0.08]" />
 
               <TrayRow
                 icon={Clock3}
@@ -779,7 +804,7 @@ export default function TrayPanel() {
               />
               <TrayRow icon={MonitorUp} label={t("Open Main Window")} onClick={() => void runAction("show_window")} />
 
-              <div className="my-0.5 h-px bg-slate-200/80" />
+              <div className="my-0.5 h-px bg-slate-200/80 dark:bg-white/[0.08]" />
 
               <TrayRow icon={Settings} label={t("Settings")} onClick={() => void runAction("open_settings")} />
               <TrayRow
@@ -802,7 +827,7 @@ export default function TrayPanel() {
               <div className="flex items-center gap-2 px-1 pb-1">
                 <button
                   type="button"
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] text-slate-700 outline-none transition-colors hover:bg-slate-950/[0.055] focus-visible:ring-2 focus-visible:ring-blue-500/60"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] text-slate-700 outline-none transition-colors hover:bg-slate-950/[0.055] focus-visible:ring-2 focus-visible:ring-blue-500/60 dark:text-slate-300 dark:hover:bg-white/[0.07] dark:focus-visible:ring-blue-400/70"
                   onClick={() => {
                     setView("main");
                     setRecentError("");
@@ -812,29 +837,29 @@ export default function TrayPanel() {
                   <ChevronLeft className="h-5 w-5" />
                 </button>
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-[14px] font-semibold leading-[18px] text-slate-950">
+                  <div className="truncate text-[14px] font-semibold leading-[18px] text-slate-950 dark:text-slate-50">
                     {t("Recent Transcripts")}
                   </div>
-                  <div className="truncate text-[11px] font-medium leading-[13px] text-slate-500">
+                  <div className="truncate text-[11px] font-medium leading-[13px] text-slate-500 dark:text-slate-400">
                     {t("Select one to copy")}
                   </div>
                 </div>
                 <button
                   type="button"
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] text-slate-700 outline-none transition-colors hover:bg-slate-950/[0.055] focus-visible:ring-2 focus-visible:ring-blue-500/60 disabled:opacity-50"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] text-slate-700 outline-none transition-colors hover:bg-slate-950/[0.055] focus-visible:ring-2 focus-visible:ring-blue-500/60 dark:text-slate-300 dark:hover:bg-white/[0.07] dark:focus-visible:ring-blue-400/70 disabled:opacity-50"
                   onClick={() => void loadRecentTranscripts()}
                   disabled={recentLoading || !backendReady}
                   aria-label={t("Refresh recent transcripts")}
                 >
                   {recentLoading ? (
-                    <WavePhysicsLoader size="inline" theme="light" />
+                    <WavePhysicsLoader size="inline" theme={isDark ? "dark" : "light"} />
                   ) : (
                     <RefreshCw className="h-4 w-4" />
                   )}
                 </button>
               </div>
 
-              <div className="h-px bg-slate-200/80" />
+              <div className="h-px bg-slate-200/80 dark:bg-white/[0.08]" />
 
               {recentLoading ? (
                 <TrayRow
@@ -869,7 +894,7 @@ export default function TrayPanel() {
         </div>
 
         {view === "main" ? (
-          <div className="tray-panel-footer shrink-0 border-t border-slate-200/80 pt-2.5">
+          <div className="tray-panel-footer shrink-0 border-t border-slate-200/80 pt-2.5 dark:border-white/[0.08]">
             <div className="flex flex-col gap-1.5">
               <TrayRow icon={RotateCw} label={t("Restart Application")} onClick={() => void runAction("restart_app")} />
               <TrayRow icon={LogOut} label={t("Quit Application")} onClick={() => void runAction("quit")} />
@@ -878,7 +903,7 @@ export default function TrayPanel() {
         ) : null}
 
         {error || recentError ? (
-          <div className="tray-panel-error shrink-0 rounded-[14px] border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-medium leading-4 text-red-700">
+          <div className="tray-panel-error shrink-0 rounded-[14px] border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-medium leading-4 text-red-700 dark:border-red-400/25 dark:bg-red-500/[0.12] dark:text-red-200">
             {t(error || recentError)}
           </div>
         ) : null}

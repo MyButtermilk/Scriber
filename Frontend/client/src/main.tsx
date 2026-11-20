@@ -8,6 +8,7 @@ import { loadInitialBackendAccess } from "./lib/initial-backend-access";
 import { startFrontendLongTaskObserver } from "./lib/frontend-performance";
 import { initializeLocaleCatalog, LocaleProvider } from "./i18n";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
+import { ThemeProvider } from "./components/theme-provider";
 
 // Ignore ResizeObserver loop error - this is a known harmless error that occurs
 // with Radix UI components when elements resize during animations
@@ -58,7 +59,10 @@ async function renderApplication(): Promise<void> {
     const { default: TrayPanel } = await windowModule;
     root.render(
       <LocaleProvider>
-        <TrayPanel />
+        {/* The tray shares the persisted theme but never owns the main window frame. */}
+        <ThemeProvider defaultTheme="system" storageKey="scriber-theme" initializeWindowFrame={false}>
+          <TrayPanel />
+        </ThemeProvider>
       </LocaleProvider>,
     );
     return;

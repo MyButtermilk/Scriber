@@ -25,7 +25,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex, MutexGuard,
+        Arc, Mutex, MutexGuard,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -725,7 +725,22 @@ struct BackendState {
     launch_config: Option<BackendLaunchConfig>,
     session_token: String,
     shell_ipc_config: Option<shell_ipc::ShellIpcConfig>,
+    /// Generation of the termination currently running outside the state lock.
+    /// While set, the managed child has been detached for a blocking stop and no
+    /// caller may probe, attach to, or spawn a backend on this shell's port.
+    terminating: Option<u64>,
+    termination_generation: u64,
 }
+
+/// Ownership detached from `BackendState` so the blocking stop/wait/audio-drain
+/// work can run without holding `BackendManager.state`.
+struct ManagedBackendTermination {
+    child: Option<Child>,
+    job: Option<BackendJob>,
+    access: BackendAccess,
+}
+
+type BackendTerminator = Arc<dyn Fn(ManagedBackendTermination) + Send + Sync>;
 
 #[cfg(windows)]
 struct BackendJob {
@@ -1228,11 +1243,52 @@ impl Drop for RegistryKey {
 
 pub struct BackendManager {
     state: Mutex<BackendState>,
+    /// Blocking stop/wait/audio-drain phase. Production uses
+    /// `terminate_managed_child`; tests inject a gated seam.
+    terminator: BackendTerminator,
+}
+
+/// Clears `BackendState.terminating` exactly once. `finish` does it while
+/// keeping the lock for the caller's follow-up decision (for example the
+/// replacement spawn), so no other caller can observe an idle, childless state
+/// and spawn a duplicate backend in between. If the blocking phase panics or
+/// returns early, `Drop` performs the same cleanup so `terminating` can never
+/// remain stuck.
+struct BackendTerminationGuard<'a> {
+    manager: &'a BackendManager,
+    generation: u64,
+    armed: bool,
+}
+
+impl<'a> BackendTerminationGuard<'a> {
+    fn finish(mut self) -> MutexGuard<'a, BackendState> {
+        self.armed = false;
+        let mut state = lock_unpoisoned(&self.manager.state);
+        finish_managed_termination(&mut state, self.generation);
+        state
+    }
+}
+
+impl Drop for BackendTerminationGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let mut state = lock_unpoisoned(&self.manager.state);
+            finish_managed_termination(&mut state, self.generation);
+        }
+    }
 }
 
 impl BackendManager {
     fn new(shell_ipc_config: Option<shell_ipc::ShellIpcConfig>) -> Self {
+        Self::with_terminator(shell_ipc_config, Arc::new(terminate_managed_child))
+    }
+
+    fn with_terminator(
+        shell_ipc_config: Option<shell_ipc::ShellIpcConfig>,
+        terminator: BackendTerminator,
+    ) -> Self {
         Self {
+            terminator,
             state: Mutex::new(BackendState {
                 base_url: base_url(DEFAULT_PORT),
                 port: DEFAULT_PORT,
@@ -1245,8 +1301,34 @@ impl BackendManager {
                 launch_config: None,
                 session_token: resolve_session_token(),
                 shell_ipc_config,
+                terminating: None,
+                termination_generation: 0,
             }),
         }
+    }
+
+    /// Detaches the managed child under the caller's lock, releases the lock
+    /// for the blocking stop (graceful HTTP shutdown, child wait, kill path,
+    /// and both audio-sidecar drains), then re-acquires it to finalize. The
+    /// returned guard is held across finalization, so the caller decides the
+    /// next step (normally the replacement spawn) atomically.
+    ///
+    /// Callers must have checked `state.terminating.is_none()` under the same
+    /// lock; at most one termination runs at a time.
+    fn stop_managed_child_outside_lock<'a>(
+        &'a self,
+        mut state: MutexGuard<'a, BackendState>,
+        message: &str,
+    ) -> MutexGuard<'a, BackendState> {
+        let (termination, generation) = begin_managed_termination(&mut state, message);
+        let guard = BackendTerminationGuard {
+            manager: self,
+            generation,
+            armed: true,
+        };
+        drop(state);
+        (self.terminator)(termination);
+        guard.finish()
     }
 
     fn configure_launch(
@@ -1290,6 +1372,11 @@ impl BackendManager {
             if state.launch_config.is_none() {
                 return status_from_state(&state, false);
             }
+            if state.terminating.is_some() {
+                // A replacement is already in flight; never probe the dying
+                // process or spawn a second backend on the same port.
+                return status_from_state(&state, false);
+            }
             refresh_child_state(&mut state);
             (
                 state.port,
@@ -1318,6 +1405,9 @@ impl BackendManager {
         // Phase 3: relock and decide, guarding against port changes while unlocked.
         {
             let mut state = lock_unpoisoned(&self.state);
+            if state.terminating.is_some() {
+                return status_from_state(&state, false);
+            }
             refresh_child_state(&mut state);
             let current_child_pid = state.child.as_ref().map(Child::id);
             if ready
@@ -1336,8 +1426,10 @@ impl BackendManager {
                 let now = Instant::now();
                 if state.started_at.is_some() {
                     if managed_backend_start_timed_out(state.started_at, now) {
-                        terminate_managed_child(&mut state);
-                        state.message = "Managed backend startup timed out; restarting".to_string();
+                        state = self.stop_managed_child_outside_lock(
+                            state,
+                            "Managed backend startup timed out; restarting",
+                        );
                     } else {
                         state.message = "Managed backend is starting".to_string();
                         return status_from_state(&state, false);
@@ -1346,9 +1438,10 @@ impl BackendManager {
                     let unhealthy_since = *state.unhealthy_since.get_or_insert(now);
                     if managed_backend_unhealthy_timed_out(Some(unhealthy_since), now) {
                         write_shell_log("managed backend remained unhealthy; restarting");
-                        terminate_managed_child(&mut state);
-                        state.message =
-                            "Managed backend remained unresponsive; restarting".to_string();
+                        state = self.stop_managed_child_outside_lock(
+                            state,
+                            "Managed backend remained unresponsive; restarting",
+                        );
                     } else {
                         state.message =
                             "Managed backend is not responding; recovery pending".to_string();
@@ -1367,6 +1460,12 @@ impl BackendManager {
         let (port, force_managed, child_pid, access) = {
             let mut state = lock_unpoisoned(&self.state);
             if state.launch_config.is_none() {
+                return status_from_state(&state, false);
+            }
+            if state.terminating.is_some() {
+                // The detached, still-exiting process may answer health with
+                // this shell's token; it must not be mistaken for an external
+                // backend.
                 return status_from_state(&state, false);
             }
             refresh_child_state(&mut state);
@@ -1395,6 +1494,9 @@ impl BackendManager {
         // Phase 3: relock and compute status.
         {
             let mut state = lock_unpoisoned(&self.state);
+            if state.terminating.is_some() {
+                return status_from_state(&state, false);
+            }
             refresh_child_state(&mut state);
             let ready = snapshot_ready
                 && backend_snapshot_identity_matches(
@@ -1430,6 +1532,10 @@ impl BackendManager {
             if state.launch_config.is_none() {
                 return Err(state.message.clone());
             }
+            if state.terminating.is_some() {
+                // Coalesce with the replacement already in flight.
+                return Ok(status_from_state(&state, false));
+            }
             refresh_child_state(&mut state);
             (
                 state.port,
@@ -1448,6 +1554,9 @@ impl BackendManager {
 
         // Phase 3: relock and act.
         let mut state = lock_unpoisoned(&self.state);
+        if state.terminating.is_some() {
+            return Ok(status_from_state(&state, false));
+        }
         refresh_child_state(&mut state);
         // Guard: only reject if the port hasn't changed and we still have no managed child.
         if state.child.is_none() && appears_external && state.port == port {
@@ -1457,7 +1566,8 @@ impl BackendManager {
             return Err(message);
         }
 
-        terminate_managed_child(&mut state);
+        let mut state =
+            self.stop_managed_child_outside_lock(state, "Managed backend is restarting");
         let new_port = select_backend_port(state.port);
         let status = start_managed_backend(&mut state, new_port, "Managed backend restarted");
         if status.managed {
@@ -1470,8 +1580,13 @@ impl BackendManager {
 
 impl Drop for BackendManager {
     fn drop(&mut self) {
-        let mut state = lock_unpoisoned(&self.state);
-        terminate_managed_child(&mut state);
+        let state = lock_unpoisoned(&self.state);
+        if state.terminating.is_some() {
+            // Unreachable while `&mut self` is held, but never start a second
+            // termination of an already detached child.
+            return;
+        }
+        drop(self.stop_managed_child_outside_lock(state, "Managed backend is stopping"));
     }
 }
 
@@ -1480,9 +1595,33 @@ fn get_backend_base_url(manager: tauri::State<'_, BackendManager>) -> String {
     manager.base_url()
 }
 
+/// Runs supervisor work that can block (health probes, process stop/wait,
+/// audio-sidecar drains, backend HTTP, shortcut re-registration) on Tauri's
+/// blocking pool. Synchronous `#[tauri::command]` handlers execute on the main
+/// UI thread; blocking there froze the window/tray and starved overlay
+/// `run_on_main_thread` dispatches during backend recovery.
+async fn run_blocking_desktop_command<T, F>(label: &'static str, work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|err| {
+            write_shell_log(&format!("desktop command {label} worker failed: {err}"));
+            format!("{label} failed")
+        })
+}
+
+// The `Ok` payload of each async command below serializes exactly like the
+// former synchronous return value, so the frontend `invoke<T>` contract is
+// unchanged. `Err` is reachable only if the blocking worker itself panics.
 #[tauri::command]
-fn get_backend_access(manager: tauri::State<'_, BackendManager>) -> BackendAccess {
-    manager.access()
+async fn get_backend_access(app: AppHandle) -> Result<BackendAccess, String> {
+    run_blocking_desktop_command("get_backend_access", move || {
+        app.state::<BackendManager>().access()
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1498,27 +1637,37 @@ fn native_overlay_renderer_ready() -> serde_json::Value {
 }
 
 #[tauri::command]
-fn backend_status(manager: tauri::State<'_, BackendManager>) -> BackendStatus {
-    manager.status()
+async fn backend_status(app: AppHandle) -> Result<BackendStatus, String> {
+    run_blocking_desktop_command("backend_status", move || {
+        app.state::<BackendManager>().status()
+    })
+    .await
 }
 
 #[tauri::command]
-fn ensure_backend_running(manager: tauri::State<'_, BackendManager>) -> BackendStatus {
-    manager.ensure_started()
+async fn ensure_backend_running(app: AppHandle) -> Result<BackendStatus, String> {
+    run_blocking_desktop_command("ensure_backend_running", move || {
+        app.state::<BackendManager>().ensure_started()
+    })
+    .await
 }
 
 #[tauri::command]
-fn restart_backend(manager: tauri::State<'_, BackendManager>) -> Result<BackendStatus, String> {
-    if !manager.is_configured() {
-        return Err("Backend is waiting for desktop setup".to_string());
-    }
-    let stopped = audio_sidecar_client::shutdown_all_audio_sidecars("backendRestartCommand");
-    if stopped > 0 {
-        write_shell_log(&format!(
-            "stopped {stopped} audio sidecar(s) before backend restart command"
-        ));
-    }
-    manager.restart()
+async fn restart_backend(app: AppHandle) -> Result<BackendStatus, String> {
+    run_blocking_desktop_command("restart_backend", move || {
+        let manager = app.state::<BackendManager>();
+        if !manager.is_configured() {
+            return Err("Backend is waiting for desktop setup".to_string());
+        }
+        let stopped = audio_sidecar_client::shutdown_all_audio_sidecars("backendRestartCommand");
+        if stopped > 0 {
+            write_shell_log(&format!(
+                "stopped {stopped} audio sidecar(s) before backend restart command"
+            ));
+        }
+        manager.restart()
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -1554,13 +1703,26 @@ fn acknowledge_navigation(
 }
 
 #[tauri::command]
-fn refresh_global_hotkey(app: AppHandle) -> Result<DesktopHotkeyStatus, String> {
-    refresh_global_hotkey_for_app(&app)
+async fn refresh_global_hotkey(app: AppHandle) -> Result<DesktopHotkeyStatus, String> {
+    run_blocking_desktop_command("refresh_global_hotkey", move || {
+        refresh_global_hotkey_for_app(&app)
+    })
+    .await?
 }
 
 #[tauri::command]
-fn set_global_hotkey_capture_active(
+async fn set_global_hotkey_capture_active(
     app: AppHandle,
+    active: bool,
+) -> Result<DesktopHotkeyStatus, String> {
+    run_blocking_desktop_command("set_global_hotkey_capture_active", move || {
+        set_global_hotkey_capture_active_blocking(&app, active)
+    })
+    .await?
+}
+
+fn set_global_hotkey_capture_active_blocking<R: Runtime>(
+    app: &AppHandle<R>,
     active: bool,
 ) -> Result<DesktopHotkeyStatus, String> {
     let hotkey_state = app.state::<DesktopHotkeyState>();
@@ -1579,7 +1741,7 @@ fn set_global_hotkey_capture_active(
         false,
         "Global hotkey capture finished; refreshing registration".to_string(),
     );
-    refresh_global_hotkey_for_app_locked(&app, &hotkey_state)
+    refresh_global_hotkey_for_app_locked(app, &hotkey_state)
 }
 
 #[tauri::command]
@@ -1697,7 +1859,21 @@ async fn tray_action(app: AppHandle, action: String) -> Result<(), String> {
             .await
             .map_err(|_| "transcript_copy_failed".to_string())?;
     }
+    if tray_action_blocks_on_backend(&action) {
+        // Supervisor probes, backend restarts, and backend HTTP can block for
+        // seconds; keep them off the async runtime's worker threads.
+        return tauri::async_runtime::spawn_blocking(move || handle_tray_action(&app, &action))
+            .await
+            .map_err(|_| "tray_action_failed".to_string())?;
+    }
     handle_tray_action(&app, &action)
+}
+
+fn tray_action_blocks_on_backend(action: &str) -> bool {
+    matches!(
+        action.trim(),
+        "toggle_live" | "start_live" | "restart_backend"
+    )
 }
 
 fn apply_desktop_window_frame<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
@@ -2339,9 +2515,14 @@ fn handle_shell_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
             let _ = hide_tray_panel_for_app(app);
         }
         MENU_ITEM_START_LIVE => {
-            if let Err(err) = toggle_live_recording_from_shell(app) {
-                write_shell_log(&format!("live recording tray action failed: {err}"));
-            }
+            // Menu events run on the main UI thread; the supervisor check and
+            // backend HTTP must not block it.
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(err) = toggle_live_recording_from_shell(&app) {
+                    write_shell_log(&format!("live recording tray action failed: {err}"));
+                }
+            });
         }
         MENU_ITEM_YOUTUBE => {
             let _ = show_main_window_path(app, "/youtube");
@@ -2361,7 +2542,11 @@ fn handle_shell_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
                 write_shell_log(&format!("tray update status emit failed: {err}"));
             }
         }
-        MENU_ITEM_RESTART_BACKEND => restart_backend_from_shell(app),
+        MENU_ITEM_RESTART_BACKEND => {
+            // Backend termination can take up to the graceful+kill deadlines.
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || restart_backend_from_shell(&app));
+        }
         MENU_ITEM_REFRESH_RECENT => refresh_tray_menu_for_app(app, "manual refresh"),
         MENU_ITEM_QUIT => {
             let stopped = audio_sidecar_client::shutdown_all_audio_sidecars("shellQuit");
@@ -3731,12 +3916,17 @@ fn should_show_window_for_tray_click(
 }
 
 fn status_from_state(state: &BackendState, ready: bool) -> BackendStatus {
+    // While a managed child is detached for termination the shell still owns
+    // that lifecycle: report it as a managed backend that is (re)starting, so
+    // callers wait instead of treating the port as free or external.
+    let terminating = state.terminating.is_some();
+    let ready = ready && !terminating;
     BackendStatus {
         base_url: state.base_url.clone(),
-        running: ready || state.child.is_some(),
+        running: ready || state.child.is_some() || terminating,
         ready,
-        starting: !ready && state.child.is_some() && state.started_at.is_some(),
-        managed: state.child.is_some(),
+        starting: !ready && (terminating || (state.child.is_some() && state.started_at.is_some())),
+        managed: state.child.is_some() || terminating,
         pid: state.child.as_ref().map(Child::id),
         message: state.message.clone(),
         runtime_mode: "tauri-supervised".to_string(),
@@ -3792,21 +3982,60 @@ fn refresh_child_state(state: &mut BackendState) {
     }
 }
 
-fn terminate_managed_child(state: &mut BackendState) {
+/// Lock-held phase 1: detach the child, its kill job, and the access needed
+/// for graceful shutdown, and publish the `terminating` generation. Must be
+/// short; no I/O happens here.
+fn begin_managed_termination(
+    state: &mut BackendState,
+    message: &str,
+) -> (ManagedBackendTermination, u64) {
+    debug_assert!(state.terminating.is_none(), "one termination at a time");
+    state.termination_generation = state.termination_generation.wrapping_add(1);
+    let generation = state.termination_generation;
+    state.terminating = Some(generation);
+    state.message = message.to_string();
+    let termination = ManagedBackendTermination {
+        child: state.child.take(),
+        job: state.job.take(),
+        access: BackendAccess {
+            base_url: state.base_url.clone(),
+            session_token: state.session_token.clone(),
+            benchmark_activation_enabled: benchmark_activation_enabled(),
+        },
+    };
+    (termination, generation)
+}
+
+/// Lock-held phase 3: clear lifecycle bookkeeping for the detached child and
+/// release the `terminating` marker owned by `generation`.
+fn finish_managed_termination(state: &mut BackendState, generation: u64) {
+    if state.terminating != Some(generation) {
+        return;
+    }
+    state.terminating = None;
+    state.job = None;
+    state.started_at = None;
+    state.unhealthy_since = None;
+    state.launch_kind = "none".to_string();
+}
+
+/// Lock-free phase 2: the blocking stop. Audio drains before the backend is
+/// asked to stop and again after it exited (or exhausted the kill path).
+fn terminate_managed_child(termination: ManagedBackendTermination) {
     let stopped = audio_sidecar_client::shutdown_all_audio_sidecars("managedBackendReplacement");
     if stopped > 0 {
         write_shell_log(&format!(
             "stopped {stopped} audio sidecar(s) before managed backend replacement"
         ));
     }
-    if let Some(mut child) = state.child.take() {
+    let ManagedBackendTermination {
+        child,
+        mut job,
+        access,
+    } = termination;
+    if let Some(mut child) = child {
         let pid = child.id();
         let pid_hash = diagnostic_process_id_hash(pid);
-        let access = BackendAccess {
-            base_url: state.base_url.clone(),
-            session_token: state.session_token.clone(),
-            benchmark_activation_enabled: benchmark_activation_enabled(),
-        };
         let graceful_requested = match request_backend_shutdown(&access) {
             Ok(()) => {
                 write_shell_log(&format!(
@@ -3834,10 +4063,10 @@ fn terminate_managed_child(state: &mut BackendState) {
                     "managed backend primary kill failed pid_hash={pid_hash} error={err}"
                 ));
                 // Closing the Windows job handle is a second kill mechanism.
-                state.job = None;
+                job = None;
             }
             if !wait_for_child_exit(&mut child, BACKEND_TERMINATE_TIMEOUT) {
-                state.job = None;
+                job = None;
                 let _ = child.kill();
                 if !wait_for_child_exit(&mut child, Duration::from_millis(500)) {
                     write_shell_log(&format!(
@@ -3859,10 +4088,7 @@ fn terminate_managed_child(state: &mut BackendState) {
             "stopped {stopped} audio sidecar(s) after managed backend replacement"
         ));
     }
-    state.job = None;
-    state.started_at = None;
-    state.unhealthy_since = None;
-    state.launch_kind = "none".to_string();
+    drop(job);
 }
 
 fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> bool {
@@ -5959,6 +6185,264 @@ mod tests {
         assert_eq!(config.app_version, "9.8.7");
         assert_eq!(config.resource_dir.as_ref(), Some(&resource_dir));
         assert!(state.child.is_none());
+    }
+
+    #[test]
+    fn blocking_backend_and_hotkey_commands_never_run_on_the_main_ui_thread() {
+        // Synchronous `#[tauri::command]` handlers execute on the main UI
+        // thread. These commands probe health, stop/wait for processes, drain
+        // audio sidecars, call backend HTTP, or re-register shortcuts.
+        // Normalize a CRLF Windows checkout before matching declarations.
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
+        for name in [
+            "ensure_backend_running",
+            "backend_status",
+            "restart_backend",
+            "refresh_global_hotkey",
+            "set_global_hotkey_capture_active",
+            "get_backend_access",
+        ] {
+            let async_declaration = format!("#[tauri::command]\nasync fn {name}(");
+            let sync_declaration = format!("#[tauri::command]\nfn {name}(");
+            assert!(
+                source.contains(&async_declaration),
+                "{name} must be an async Tauri command"
+            );
+            assert!(
+                !source.contains(&sync_declaration),
+                "{name} must not be a synchronous main-thread Tauri command"
+            );
+            let body = source
+                .split(&async_declaration)
+                .nth(1)
+                .and_then(|rest| rest.split("\n}\n").next())
+                .expect("command body");
+            assert!(
+                body.contains("run_blocking_desktop_command("),
+                "{name} must delegate its blocking work to the blocking pool"
+            );
+        }
+        let tray_action = source
+            .split("#[tauri::command]\nasync fn tray_action(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("tray action body");
+        assert!(tray_action.contains("tray_action_blocks_on_backend(&action)"));
+        assert!(super::tray_action_blocks_on_backend("restart_backend"));
+        assert!(super::tray_action_blocks_on_backend(" toggle_live "));
+        assert!(super::tray_action_blocks_on_backend("start_live"));
+        assert!(!super::tray_action_blocks_on_backend("hide"));
+    }
+
+    fn spawn_idle_test_child() -> std::process::Child {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = std::process::Command::new("ping");
+            command.args(["-n", "30", "127.0.0.1"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = std::process::Command::new("sleep");
+            command.arg("30");
+            command
+        };
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn idle stand-in for a managed backend")
+    }
+
+    struct GatedTerminator {
+        terminator: super::BackendTerminator,
+        entered: std::sync::mpsc::Receiver<()>,
+        release: std::sync::mpsc::Sender<()>,
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    fn gated_terminator() -> GatedTerminator {
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let entered_tx = std::sync::Mutex::new(entered_tx);
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_calls = calls.clone();
+        let terminator: super::BackendTerminator =
+            std::sync::Arc::new(move |termination: super::ManagedBackendTermination| {
+                observed_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = super::lock_unpoisoned(&entered_tx).send(());
+                // Disconnection (gate dropped) releases immediately, e.g. for
+                // the manager's own Drop at test teardown.
+                let _ = super::lock_unpoisoned(&release_rx).recv_timeout(Duration::from_secs(20));
+                if let Some(mut child) = termination.child {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            });
+        GatedTerminator {
+            terminator,
+            entered: entered_rx,
+            release: release_tx,
+            calls,
+        }
+    }
+
+    fn assert_prompt<T>(label: &str, work: impl FnOnce() -> T) -> T {
+        let started = Instant::now();
+        let value = work();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "{label} blocked for {elapsed:?} during backend termination"
+        );
+        value
+    }
+
+    #[test]
+    fn backend_termination_runs_outside_the_state_lock_without_duplicate_spawn() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind isolated probe port");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
+        let port = listener.local_addr().expect("listener address").port();
+        let gate = gated_terminator();
+        let manager = std::sync::Arc::new(BackendManager::with_terminator(
+            None,
+            gate.terminator.clone(),
+        ));
+        manager
+            .configure_launch("0.0.0-test".to_string(), None)
+            .expect("configure launch");
+        let child = spawn_idle_test_child();
+        {
+            let mut state = super::lock_unpoisoned(&manager.state);
+            state.port = port;
+            state.base_url = super::base_url(port);
+            state.child = Some(child);
+            state.started_at = None;
+            state.launch_kind = "test".to_string();
+        }
+
+        let terminating_manager = manager.clone();
+        let termination = thread::spawn(move || {
+            let state = super::lock_unpoisoned(&terminating_manager.state);
+            let state = terminating_manager
+                .stop_managed_child_outside_lock(state, "Managed backend is restarting");
+            (
+                state.terminating,
+                state.child.is_none(),
+                state.started_at.is_none(),
+                state.launch_kind.clone(),
+            )
+        });
+        gate.entered
+            .recv_timeout(Duration::from_secs(10))
+            .expect("termination entered its blocking phase");
+
+        let access = assert_prompt("access()", || manager.access());
+        assert_eq!(access.base_url, super::base_url(port));
+        let snapshot = assert_prompt("status_from_state", || {
+            let state = super::lock_unpoisoned(&manager.state);
+            assert!(state.terminating.is_some());
+            assert!(state.child.is_none(), "child is detached for termination");
+            super::status_from_state(&state, true)
+        });
+        let concurrent = [
+            assert_prompt("status()", || manager.status()),
+            assert_prompt("ensure_started()", || manager.ensure_started()),
+            assert_prompt("restart()", || {
+                manager.restart().expect("coalesced restart")
+            }),
+            snapshot,
+        ];
+        for status in concurrent {
+            assert!(!status.ready, "a terminating backend is never ready");
+            assert!(status.running);
+            assert!(status.starting, "callers must wait for the replacement");
+            assert!(status.managed);
+            assert_eq!(status.pid, None);
+            assert!(status.message.contains("restarting"));
+            assert_eq!(status.launch_kind, "test");
+        }
+        {
+            let state = super::lock_unpoisoned(&manager.state);
+            assert!(state.child.is_none(), "no duplicate backend was spawned");
+            assert_eq!(state.port, port);
+        }
+        assert!(
+            matches!(
+                listener.accept(),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+            ),
+            "the detached process must not be probed or attached as external"
+        );
+        assert_eq!(gate.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        gate.release.send(()).expect("release termination");
+        let (terminating, child_cleared, started_cleared, launch_kind) =
+            termination.join().expect("termination thread");
+        assert_eq!(terminating, None);
+        assert!(child_cleared);
+        assert!(started_cleared);
+        assert_eq!(launch_kind, "none");
+        assert_eq!(gate.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let after = {
+            let state = super::lock_unpoisoned(&manager.state);
+            super::status_from_state(&state, false)
+        };
+        assert!(!after.running && !after.starting && !after.managed);
+        drop(gate);
+    }
+
+    #[test]
+    fn backend_termination_marker_is_cleared_when_the_blocking_phase_panics() {
+        let panicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = panicked.clone();
+        let terminator: super::BackendTerminator =
+            std::sync::Arc::new(move |termination: super::ManagedBackendTermination| {
+                drop(termination);
+                if !observed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    panic!("injected backend termination failure");
+                }
+            });
+        let manager = BackendManager::with_terminator(None, terminator);
+        manager
+            .configure_launch("0.0.0-test".to_string(), None)
+            .expect("configure launch");
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let state = super::lock_unpoisoned(&manager.state);
+            drop(manager.stop_managed_child_outside_lock(state, "Managed backend is restarting"));
+        }));
+        assert!(result.is_err(), "the injected failure propagates");
+        assert!(panicked.load(std::sync::atomic::Ordering::SeqCst));
+
+        let state = super::lock_unpoisoned(&manager.state);
+        assert_eq!(state.terminating, None, "termination marker must not stick");
+        assert!(state.started_at.is_none());
+        assert_eq!(state.launch_kind, "none");
+        let status = super::status_from_state(&state, false);
+        assert!(!status.starting && !status.managed && !status.running);
+    }
+
+    #[test]
+    fn stale_termination_generation_cannot_clear_a_newer_termination() {
+        // A no-op terminator keeps this test's teardown from running the real
+        // global audio drain, which would invalidate parallel audio-start tests.
+        let manager = BackendManager::with_terminator(None, std::sync::Arc::new(|_| {}));
+        let mut state = super::lock_unpoisoned(&manager.state);
+        let (_first, first_generation) =
+            super::begin_managed_termination(&mut state, "Managed backend is restarting");
+        super::finish_managed_termination(&mut state, first_generation);
+        let (_second, second_generation) =
+            super::begin_managed_termination(&mut state, "Managed backend is restarting");
+        assert_ne!(first_generation, second_generation);
+        super::finish_managed_termination(&mut state, first_generation);
+        assert_eq!(state.terminating, Some(second_generation));
+        super::finish_managed_termination(&mut state, second_generation);
+        assert_eq!(state.terminating, None);
     }
 
     #[test]

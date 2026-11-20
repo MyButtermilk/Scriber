@@ -2,7 +2,21 @@ import { useParams, Link, useLocation } from "wouter";
 import { TranscriptionDiarizationNotice } from "@/components/transcription-diarization-notice";
 import { TranscriptionBoundaryNotice } from "@/components/transcription-boundary-notice";
 import { FileTranscriptResumeButton } from "@/components/file-transcript-resume-button";
-import { ArrowLeft, Download, Copy, Check, Sparkles, FileText, ScrollText, Youtube, ExternalLink } from "lucide-react";
+import {
+  ArrowLeft,
+  Download,
+  Copy,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Sparkles,
+  FileText,
+  ScrollText,
+  Search,
+  X,
+  Youtube,
+  ExternalLink,
+} from "lucide-react";
 import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { Button } from "@/components/ui/button";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -14,7 +28,17 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import { memo, useState, useEffect, useRef, useCallback, useMemo } from "react";
+import {
+  memo,
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useDeferredValue,
+  useMemo,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { apiUrl, isTauriRuntime } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import ReactMarkdown from "react-markdown";
@@ -38,6 +62,16 @@ import { prepareSummaryHtml } from "@/lib/summary-html";
 import { summaryTableOfContentsTitle } from "@/lib/summary-document-language";
 import { saveTranscriptExport, saveTranscriptPdfExport } from "@/lib/transcript-export";
 import { markPodcastTranscriptRead } from "@/lib/podcast-progress";
+import {
+  cycleMatchIndex,
+  findPreparedTranscriptMatches,
+  genericSpeakerNumber,
+  parseTranscriptContent,
+  prepareTranscriptSearchIndex,
+  speakerColorIndex,
+  type TranscriptBlock,
+  type TranscriptMatch,
+} from "@/lib/transcript-content";
 import type { SettingsResponse, TranscriptDetailResponse, TranscriptHistoryItem } from "@/lib/api-types";
 import { useI18n } from "@/i18n";
 
@@ -154,58 +188,224 @@ const SPEAKER_COLORS = [
   },
 ];
 
-// Component to render transcript with speaker diarization labels
-const SpeakerFormattedText = memo(function SpeakerFormattedText({ content }: { content: string }) {
+const EMPTY_MATCHES: readonly TranscriptMatch[] = [];
+
+interface BlockMatches {
+  /** Global index of this block's first match. */
+  offset: number;
+  matches: TranscriptMatch[];
+}
+
+function highlightedText(text: string, matches: readonly TranscriptMatch[], activeMatch: number): ReactNode {
+  if (!matches.length) return text;
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  matches.forEach((match, index) => {
+    if (match.start > cursor) parts.push(text.slice(cursor, match.start));
+    const active = index === activeMatch;
+    parts.push(
+      <mark
+        key={`${match.start}-${match.end}`}
+        className="transcript-find-match"
+        data-active={active ? "true" : undefined}
+        aria-current={active ? "true" : undefined}
+      >
+        {text.slice(match.start, match.end)}
+      </mark>,
+    );
+    cursor = match.end;
+  });
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return parts;
+}
+
+// One parsed transcript block: an optional quiet timestamp/speaker row above
+// text whose explicit line breaks are preserved.
+const TranscriptBlockView = memo(function TranscriptBlockView({
+  block,
+  matches,
+  activeMatch,
+}: {
+  block: TranscriptBlock;
+  matches: readonly TranscriptMatch[];
+  activeMatch: number;
+}) {
   const { formatNumber, t } = useI18n();
-  const hasSpeakerLabels = useMemo(() => /\[Speaker (\d+)\]:/.test(content), [content]);
-  const paragraphs = useMemo(() => (content || "").split(/\n\n+/), [content]);
-  const parsed = useMemo(() => {
-    if (!hasSpeakerLabels) return [];
-    const labelPattern = /^\[Speaker (\d+)\]:\s*([\s\S]*)$/;
-    return paragraphs.map((para) => {
-      const labelMatch = labelPattern.exec(para);
-      if (!labelMatch) {
-        return { type: "text" as const, text: para };
-      }
-      return {
-        type: "speaker" as const,
-        speakerNum: parseInt(labelMatch[1], 10),
-        text: labelMatch[2],
-      };
-    });
-  }, [hasSpeakerLabels, paragraphs]);
+  const speakerNumber = genericSpeakerNumber(block.speaker);
+  const speakerLabel =
+    block.speaker === undefined || block.continued
+      ? ""
+      : speakerNumber !== null
+        ? t("Speaker {{number}}", { number: formatNumber(speakerNumber) })
+        : block.speaker;
+  const colors = SPEAKER_COLORS[speakerColorIndex(block.speaker, SPEAKER_COLORS.length)];
+  const hasHeader = Boolean(block.startLabel || speakerLabel);
+  return (
+    <div className="flex flex-col gap-1" data-transcript-block="">
+      {hasHeader && (
+        <div className="flex flex-wrap items-center gap-2 text-xs" data-transcript-block-header="">
+          {block.startLabel && (
+            <span className="font-mono tabular-nums text-muted-foreground" data-transcript-timestamp="">
+              {block.startLabel}
+            </span>
+          )}
+          {speakerLabel && (
+            <span
+              className={`inline-flex items-center rounded-full border px-2.5 py-0.5 font-medium ${colors.bg} ${colors.text} ${colors.border}`}
+              data-transcript-speaker=""
+            >
+              {speakerLabel}
+            </span>
+          )}
+        </div>
+      )}
+      {block.text && (
+        <p className="whitespace-pre-wrap break-words leading-relaxed">
+          {highlightedText(block.text, matches, activeMatch)}
+        </p>
+      )}
+    </div>
+  );
+});
 
-  if (!hasSpeakerLabels) {
-    return <span>{content}</span>;
-  }
-
+const TranscriptBlocksView = memo(function TranscriptBlocksView({
+  blocks,
+  matchesByBlock,
+  activeMatch,
+}: {
+  blocks: readonly TranscriptBlock[];
+  matchesByBlock: ReadonlyMap<number, BlockMatches>;
+  activeMatch: number;
+}) {
   return (
     <div className="space-y-4">
-      {parsed.map((segment, idx) => {
-        if (segment.type === "speaker") {
-          const colorIdx = (segment.speakerNum - 1) % SPEAKER_COLORS.length;
-          const colors = SPEAKER_COLORS[colorIdx];
-
-          return (
-            <div key={idx} className="flex flex-col gap-1">
-              <span
-                className={`inline-flex items-center self-start px-2.5 py-0.5 rounded-full text-xs font-medium border ${colors.bg} ${colors.text} ${colors.border}`}
-              >
-                {t("Speaker {{number}}", { number: formatNumber(segment.speakerNum) })}
-              </span>
-              <p className="leading-relaxed">{segment.text}</p>
-            </div>
-          );
-        }
+      {blocks.map((block, index) => {
+        const entry = matchesByBlock.get(index);
+        const localActive =
+          entry && activeMatch >= entry.offset && activeMatch < entry.offset + entry.matches.length
+            ? activeMatch - entry.offset
+            : -1;
         return (
-          <p key={idx} className="leading-relaxed">
-            {segment.text}
-          </p>
+          <TranscriptBlockView
+            key={index}
+            block={block}
+            matches={entry?.matches ?? EMPTY_MATCHES}
+            activeMatch={localActive}
+          />
         );
       })}
     </div>
   );
 });
+
+function prefersReducedMotion(): boolean {
+  try {
+    return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  } catch {
+    return false;
+  }
+}
+
+function findShortcutLabel(t: ReturnType<typeof useI18n>["t"]): string {
+  const platform = typeof navigator === "undefined" ? "" : String(navigator.platform || navigator.userAgent || "");
+  return /Mac|iPhone|iPad/i.test(platform) ? "⌘F" : t("Ctrl+F");
+}
+
+function TranscriptFindBar({
+  inputRef,
+  query,
+  total,
+  activeMatch,
+  onQueryChange,
+  onStep,
+  onClose,
+}: {
+  inputRef: RefObject<HTMLInputElement | null>;
+  query: string;
+  total: number;
+  activeMatch: number;
+  onQueryChange: (value: string) => void;
+  onStep: (direction: 1 | -1) => void;
+  onClose: () => void;
+}) {
+  const { formatNumber, t } = useI18n();
+  const hasQuery = query.trim().length > 0;
+  const counter = hasQuery ? `${formatNumber(total > 0 ? activeMatch + 1 : 0)} / ${formatNumber(total)}` : "";
+  return (
+    <div
+      role="search"
+      aria-label={t("Find in transcript")}
+      className="ml-auto flex h-9 items-center gap-0.5 rounded-full border border-border/70 bg-background/80 pl-3 pr-1 shadow-sm"
+      data-transcript-find-bar=""
+    >
+      <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <input
+        ref={inputRef}
+        type="search"
+        value={query}
+        onChange={(event) => onQueryChange(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            onStep(event.shiftKey ? -1 : 1);
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            onClose();
+          }
+        }}
+        placeholder={t("Search transcript")}
+        aria-label={t("Search transcript")}
+        autoComplete="off"
+        spellCheck={false}
+        className="h-8 w-28 min-w-0 bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground sm:w-44 [&::-webkit-search-cancel-button]:hidden"
+      />
+      <span
+        aria-live="polite"
+        aria-atomic="true"
+        className={`min-w-[3.25rem] shrink-0 text-right text-xs tabular-nums ${hasQuery && total === 0 ? "text-destructive" : "text-muted-foreground"}`}
+        data-transcript-find-counter=""
+      >
+        {counter}
+      </span>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="h-7 w-7 rounded-full"
+        onClick={() => onStep(-1)}
+        disabled={total === 0}
+        aria-label={t("Previous match")}
+        title={t("Previous match")}
+      >
+        <ChevronUp className="h-4 w-4" aria-hidden="true" />
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="h-7 w-7 rounded-full"
+        onClick={() => onStep(1)}
+        disabled={total === 0}
+        aria-label={t("Next match")}
+        title={t("Next match")}
+      >
+        <ChevronDown className="h-4 w-4" aria-hidden="true" />
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="h-7 w-7 rounded-full"
+        onClick={onClose}
+        aria-label={t("Close search")}
+        title={t("Close search")}
+      >
+        <X className="h-4 w-4" aria-hidden="true" />
+      </Button>
+    </div>
+  );
+}
 
 function formatElapsedDuration(seconds: number): string {
   const hours = Math.floor(seconds / 3600);
@@ -396,6 +596,24 @@ export default function TranscriptDetail() {
     // Podcast episodes are transcribed as file jobs; opening one marks it read.
     if (readableFileTranscriptId) void markPodcastTranscriptRead(queryClient, readableFileTranscriptId);
   }, [queryClient, readableFileTranscriptId]);
+  // Podcast episodes are file transcripts; Back returns to their podcast.
+  const podcastEpisodeQuery = useQuery<{
+    episode: { id: string; status: string; subscriptionId?: string | null } | null;
+  }>({
+    queryKey: ["/api/podcasts/transcripts", id],
+    enabled: Boolean(id) && transcriptData?.type === "file",
+    staleTime: 60_000,
+    queryFn: async ({ signal }) => {
+      const res = await fetchWithTimeout(
+        apiUrl(`/api/podcasts/transcripts/${encodeURIComponent(id || "")}`),
+        { credentials: "include", signal },
+        10_000,
+      );
+      if (!res.ok) throw new Error(await responseErrorMessage(res));
+      return res.json();
+    },
+  });
+  const podcastEpisode = transcriptData?.type === "file" ? podcastEpisodeQuery.data?.episode : null;
   const needsAutoSummarySetting = Boolean(
     transcriptData &&
     transcriptData.type !== "mic" &&
@@ -681,21 +899,124 @@ export default function TranscriptDetail() {
       case "youtube":
         return "/youtube";
       case "file":
+        if (podcastEpisode) {
+          return podcastEpisode.subscriptionId
+            ? `/podcasts?subscription=${encodeURIComponent(podcastEpisode.subscriptionId)}`
+            : "/podcasts";
+        }
         return "/file";
       default:
         return "/";
     }
   };
 
-  // Controlled accordion state - reacts when summary becomes available
-  const [accordionValue, setAccordionValue] = useState<string[]>(transcript.summary ? ["summary"] : ["transcript"]);
-
-  // Update accordion when summary becomes available
+  // Controlled accordion state. A transcript that already has a summary opens
+  // on it; a summary arriving later is added without collapsing what the user
+  // is reading.
+  const [accordionValue, setAccordionValue] = useState<string[]>(
+    String(transcriptQuery.data?.summary || "").trim() ? ["summary"] : ["transcript"],
+  );
+  const hasLoadedTranscript = transcriptQuery.data !== undefined;
+  const seenSummaryRef = useRef<boolean | null>(null);
   useEffect(() => {
-    if (transcript.summary) {
-      setAccordionValue(["summary"]);
+    if (!hasLoadedTranscript) return;
+    const previous = seenSummaryRef.current;
+    seenSummaryRef.current = hasSummary;
+    if (previous === null) {
+      if (hasSummary)
+        setAccordionValue((current) => (current.length === 1 && current[0] === "summary" ? current : ["summary"]));
+      return;
     }
-  }, [transcript.summary]);
+    if (hasSummary && !previous) {
+      setAccordionValue((current) => (current.includes("summary") ? current : ["summary", ...current]));
+    }
+  }, [hasLoadedTranscript, hasSummary]);
+
+  // Find in transcript.
+  const transcriptBlocks = useMemo(() => parseTranscriptContent(transcriptContent), [transcriptContent]);
+  const transcriptSearchIndex = useMemo(() => prepareTranscriptSearchIndex(transcriptBlocks), [transcriptBlocks]);
+  const canFindInTranscript =
+    transcriptBlocks.length > 0 && !transcriptQuery.isLoading && transcript.status !== "processing";
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [activeMatch, setActiveMatch] = useState(0);
+  const [findFocusRequest, setFindFocusRequest] = useState(0);
+  const findInputRef = useRef<HTMLInputElement | null>(null);
+  const findToggleRef = useRef<HTMLButtonElement | null>(null);
+  const restoreFindToggleFocusRef = useRef(false);
+  const transcriptContentRef = useRef<HTMLDivElement | null>(null);
+  const deferredFindQuery = useDeferredValue(findOpen ? findQuery : "");
+  const findMatches = useMemo(
+    () => findPreparedTranscriptMatches(transcriptSearchIndex, deferredFindQuery),
+    [deferredFindQuery, transcriptSearchIndex],
+  );
+  const matchesByBlock = useMemo(() => {
+    const grouped = new Map<number, BlockMatches>();
+    findMatches.forEach((match, index) => {
+      const entry = grouped.get(match.blockIndex);
+      if (entry) entry.matches.push(match);
+      else grouped.set(match.blockIndex, { offset: index, matches: [match] });
+    });
+    return grouped;
+  }, [findMatches]);
+  const activeMatchIndex = findMatches.length ? Math.min(activeMatch, findMatches.length - 1) : -1;
+
+  useEffect(() => {
+    setActiveMatch(0);
+  }, [deferredFindQuery]);
+
+  const openFind = useCallback(() => {
+    setAccordionValue((current) => (current.includes("transcript") ? current : [...current, "transcript"]));
+    setFindOpen(true);
+    setFindFocusRequest((request) => request + 1);
+  }, []);
+  const closeFind = useCallback(() => {
+    restoreFindToggleFocusRef.current = true;
+    setFindOpen(false);
+    setFindQuery("");
+    setActiveMatch(0);
+  }, []);
+  const stepFind = useCallback(
+    (direction: 1 | -1) => {
+      const total = findMatches.length;
+      setActiveMatch((current) => Math.max(0, cycleMatchIndex(Math.min(current, total - 1), total, direction)));
+    },
+    [findMatches.length],
+  );
+
+  useEffect(() => {
+    if (!findFocusRequest) return;
+    const input = findInputRef.current;
+    if (!input) return;
+    input.focus();
+    input.select();
+  }, [findFocusRequest, findOpen]);
+
+  useEffect(() => {
+    if (findOpen || !restoreFindToggleFocusRef.current) return;
+    restoreFindToggleFocusRef.current = false;
+    findToggleRef.current?.focus();
+  }, [findOpen]);
+
+  useEffect(() => {
+    if (!canFindInTranscript) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || event.shiftKey || !(event.ctrlKey || event.metaKey)) return;
+      if (event.key.toLowerCase() !== "f" && event.code !== "KeyF") return;
+      if (document.querySelector('[role="dialog"][data-state="open"]')) return;
+      event.preventDefault();
+      openFind();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [canFindInTranscript, openFind]);
+
+  useEffect(() => {
+    if (activeMatchIndex < 0) return;
+    const mark = transcriptContentRef.current?.querySelector<HTMLElement>('mark[data-active="true"]');
+    if (!mark || typeof mark.scrollIntoView !== "function") return;
+    mark.scrollIntoView({ block: "center", inline: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+  }, [activeMatchIndex, findMatches]);
   const showSummaryToc =
     summaryFormat === "html" && preparedSummaryHtml.outline.length >= 2 && accordionValue.includes("summary");
   const summaryTocTitle = useMemo(
@@ -1070,27 +1391,63 @@ export default function TranscriptDetail() {
 
               {/* Transcript Section */}
               <AccordionItem value="transcript" className="neu-recording-row overflow-hidden">
-                <AccordionTrigger className="px-4 py-3 hover:no-underline">
-                  <div className="flex min-w-0 items-center gap-2 pr-3">
-                    <FileText className="h-4 w-4 shrink-0 text-blue-600" />
-                    <span className="text-base font-semibold tracking-tight">{t("Transcript")}</span>
-                    {transcriptWordCount > 0 && (
-                      <span className="truncate text-xs font-normal text-muted-foreground">
-                        {t(transcriptWordCount === 1 ? "{{count}} word" : "{{count}} words", {
-                          count: formatNumber(transcriptWordCount),
-                        })}
-                      </span>
-                    )}
+                <div className="flex flex-wrap items-center gap-x-1 gap-y-2" data-transcript-section-header="">
+                  <div className="min-w-[10rem] flex-1">
+                    <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                      <div className="flex min-w-0 items-center gap-2 pr-3">
+                        <FileText className="h-4 w-4 shrink-0 text-blue-600" />
+                        <span className="text-base font-semibold tracking-tight">{t("Transcript")}</span>
+                        {transcriptWordCount > 0 && (
+                          <span className="truncate text-xs font-normal text-muted-foreground">
+                            {t(transcriptWordCount === 1 ? "{{count}} word" : "{{count}} words", {
+                              count: formatNumber(transcriptWordCount),
+                            })}
+                          </span>
+                        )}
+                      </div>
+                    </AccordionTrigger>
                   </div>
-                </AccordionTrigger>
+                  {canFindInTranscript &&
+                    (findOpen ? (
+                      <div className="ml-auto px-3 pb-2 sm:pb-0">
+                        <TranscriptFindBar
+                          inputRef={findInputRef}
+                          query={findQuery}
+                          total={findMatches.length}
+                          activeMatch={activeMatchIndex}
+                          onQueryChange={setFindQuery}
+                          onStep={stepFind}
+                          onClose={closeFind}
+                        />
+                      </div>
+                    ) : (
+                      <Button
+                        ref={findToggleRef}
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="mr-2 h-8 w-8 shrink-0 rounded-full text-muted-foreground"
+                        onClick={openFind}
+                        aria-label={t("Find in transcript")}
+                        title={t("Find in transcript ({{shortcut}})", { shortcut: findShortcutLabel(t) })}
+                        data-transcript-find-toggle=""
+                      >
+                        <Search className="h-4 w-4" aria-hidden="true" />
+                      </Button>
+                    ))}
+                </div>
                 <AccordionContent tabIndex={0} className="px-4 pb-4">
-                  <div className="transcript-content">
+                  <div ref={transcriptContentRef} className="transcript-content">
                     {transcriptQuery.isLoading ? (
                       t("Loading…")
                     ) : transcript.status === "processing" ? (
                       <span className="text-muted-foreground italic"></span>
-                    ) : transcriptContent ? (
-                      <SpeakerFormattedText content={transcriptContent} />
+                    ) : transcriptBlocks.length > 0 ? (
+                      <TranscriptBlocksView
+                        blocks={transcriptBlocks}
+                        matchesByBlock={matchesByBlock}
+                        activeMatch={activeMatchIndex}
+                      />
                     ) : (
                       t("No transcript text captured.")
                     )}

@@ -12,7 +12,7 @@ import type { MeetingExportDocument, TranscriptExportDocument } from "@/lib/api-
 
 import { meetingPdfElement, readableParagraphs, transcriptPdfElement } from "./documents";
 import type { TranscriptPdfLabels } from "./documents";
-import { markdownBlocks, parseSummaryForPdf, transcriptParagraphs } from "./summary-blocks";
+import { markdownBlocks, parseSummaryForPdf, transcriptParagraphHeading, transcriptParagraphs } from "./summary-blocks";
 import { normalizePdfText, singleLinePdfText, supportsItalic } from "./text";
 import { woffToSfnt } from "./woff";
 
@@ -223,6 +223,32 @@ describe("summary blocks", () => {
       { speakerNumber: null, text: "[Speaker x]: bleibt Text" },
     ]);
   });
+
+  it("keeps canonical [0:12] Speaker 0: turns instead of flattening them", () => {
+    const paragraphs = transcriptParagraphs(
+      [
+        "[0:12] Speaker 0: Willkommen zur Sendung.",
+        "[0:15] Speaker 0: Heute geht es um Gezeiten.",
+        "[0:21] Speaker 1: Danke für die Einladung.",
+        "[125:04] Alice: Eine späte Frage.",
+        "[125:09] Alice: Und noch eine.",
+      ].join("\n"),
+    );
+    expect(paragraphs).toEqual([
+      { speakerNumber: 0, startLabel: "0:12", text: "Willkommen zur Sendung. Heute geht es um Gezeiten." },
+      { speakerNumber: 1, startLabel: "0:21", text: "Danke für die Einladung." },
+      { speakerNumber: null, speakerName: "Alice", startLabel: "2:05:04", text: "Eine späte Frage. Und noch eine." },
+    ]);
+    expect(paragraphs.map((paragraph) => transcriptParagraphHeading(paragraph, labels.speaker))).toEqual([
+      "0:12 · Sprecher 0",
+      "0:21 · Sprecher 1",
+      "2:05:04 · Alice",
+    ]);
+    expect(transcriptParagraphs("[0:03] Nur ein Zeitstempel.")).toEqual([
+      { speakerNumber: null, startLabel: "0:03", text: "Nur ein Zeitstempel." },
+    ]);
+    expect(transcriptParagraphHeading({ speakerNumber: null, text: "x" }, labels.speaker)).toBe("");
+  });
 });
 
 describe("PDF text", () => {
@@ -256,6 +282,20 @@ describe("pdfcn documents", () => {
     expect(pdf).toContain("/Outlines");
     expect(pdf).toMatch(/\/FontFile2/);
     expect(pdf).toContain("/Lang (de)");
+  });
+
+  it("renders a canonical timestamped transcript with Speaker 0 turns", async () => {
+    const content = Array.from(
+      { length: 40 },
+      (_, index) =>
+        `[${index}:0${index % 10}] Speaker ${index % 3}: Abschnitt ${index} erklärt die Lage am Markt ausführlich.`,
+    ).join("\n");
+    const pdf = await renderPdf(
+      "transcript-canonical",
+      transcriptPdfElement({ model: { ...transcript, content, summary: "" }, labels, variant: "full", fonts }),
+    );
+
+    expect(pageCount(pdf)).toBeGreaterThanOrEqual(1);
   });
 
   it("renders the summary on its own", async () => {

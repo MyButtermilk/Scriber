@@ -513,6 +513,38 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
   }
 }
 
+/* Find-in-transcript highlights. Only matching blocks render <mark>. */
+.transcript-find-match {
+  border-radius: 0.2em;
+  padding: 0 0.04em;
+  color: inherit;
+  background-color: rgb(250 204 21 / 0.38);
+  transition:
+    background-color var(--duration-micro) var(--ease-smooth-out),
+    box-shadow var(--duration-micro) var(--ease-smooth-out);
+}
+
+.transcript-find-match[data-active="true"] {
+  color: rgb(28 25 23);
+  background-color: rgb(245 158 11);
+  box-shadow: 0 0 0 2px rgb(245 158 11 / 0.45);
+}
+
+.dark .transcript-find-match {
+  background-color: rgb(250 204 21 / 0.28);
+}
+
+.dark .transcript-find-match[data-active="true"] {
+  color: rgb(28 25 23);
+  background-color: rgb(251 191 36);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .transcript-find-match {
+    transition: none;
+  }
+}
+
 .native-recording-stop {
   opacity: 1;
   transition:
@@ -1906,6 +1938,25 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
     width: var(--action-icon-size);
     height: var(--action-icon-size);
     transform: none;
+  }
+
+  .live-mic-page .delete-pill.is-confirming:not(:disabled),
+  .transcription-page .delete-pill.is-confirming:not(:disabled) {
+    --action-hover-width: 78px;
+  }
+
+  .live-mic-page .delete-pill.is-confirming:not(:disabled)::before,
+  .transcription-page .delete-pill.is-confirming:not(:disabled)::before {
+    display: block;
+    font-size: 11px;
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+
+  .live-mic-page .delete-pill.is-confirming:not(:disabled) .delete-pill__icon,
+  .transcription-page .delete-pill.is-confirming:not(:disabled) .delete-pill__icon {
+    opacity: 0;
+    transform: scale(0.6);
   }
 }
 
@@ -3654,6 +3705,42 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
   border-color: rgba(255, 255, 255, 0.06);
   color: #fff;
   box-shadow: 0 0 14px rgba(0, 0, 0, 0.24);
+}
+
+/* Armed two-step delete: stays expanded and destructive without hover so
+   touch and keyboard users see the pending confirmation. It also overrides
+   hover-revealed row actions (md:opacity-0) while armed. */
+.delete-pill.is-confirming:not(:disabled),
+.dark .delete-pill.is-confirming:not(:disabled) {
+  width: var(--action-hover-width);
+  border-radius: 50px;
+  background-color: rgb(220, 38, 38);
+  border-color: transparent;
+  color: #fff;
+  opacity: 1;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.22);
+}
+
+.delete-pill.is-confirming:not(:disabled) .delete-pill__icon {
+  width: 22px;
+  height: 22px;
+  transform: translateY(95%);
+}
+
+.delete-pill--sm.is-confirming:not(:disabled) .delete-pill__icon {
+  width: 16px;
+  height: 16px;
+}
+
+.delete-pill.is-confirming:not(:disabled)::before {
+  font-size: 11px;
+  opacity: 1;
+  transform: translate(-50%, -58%);
+}
+
+.delete-pill--sm.is-confirming:not(:disabled)::before {
+  font-size: var(--font-size-ui-micro);
+  transform: translate(-50%, -60%);
 }
 
 @media (max-width: 767px) {

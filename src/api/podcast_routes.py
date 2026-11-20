@@ -203,7 +203,17 @@ async def podcast_transcript_read(request: web.Request) -> web.Response:
 
 async def podcast_transcript_episode(request: web.Request) -> web.Response:
     episode = await request.app[APP_PODCASTS].episode_for_transcript(_id(request))
-    return web.json_response({"episode": episode})
+    if episode is None:
+        return web.json_response({"episode": None})
+    return web.json_response(
+        {
+            "episode": {
+                "id": episode["id"],
+                "status": episode["status"],
+                "subscriptionId": episode["subscription_id"],
+            }
+        }
+    )
 
 
 async def podcast_queue(request: web.Request) -> web.Response:

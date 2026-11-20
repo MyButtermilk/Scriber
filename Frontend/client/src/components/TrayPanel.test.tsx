@@ -427,6 +427,112 @@ it("bounds a stalled opened listener and cleans it up without a late refresh", a
   expect(mocks.fetch).toHaveBeenCalledTimes(1);
 });
 
+function stubSystemTheme(prefersDark: boolean) {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((query: string) => ({
+      matches: query.includes("dark") ? prefersDark : false,
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(() => true),
+    })),
+  );
+}
+
+async function renderThemedTray(storedTheme: "dark" | "light" | "system") {
+  window.localStorage.setItem("scriber-theme", storedTheme);
+  const [{ default: TrayPanel }, { ThemeProvider }] = await Promise.all([
+    import("./TrayPanel"),
+    import("./theme-provider"),
+  ]);
+  return render(
+    <ThemeProvider defaultTheme="system" storageKey="scriber-theme" initializeWindowFrame={false}>
+      <TrayPanel />
+    </ThemeProvider>,
+  );
+}
+
+function trayMark(view: ReturnType<typeof render>) {
+  return view.container.querySelector(".tray-panel-header img");
+}
+
+it("renders the dark tray surface and white-disc mark when the shared theme resolves dark", async () => {
+  stubSystemTheme(true);
+  const view = await renderThemedTray("system");
+  try {
+    await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(1));
+    expect(document.documentElement).toHaveClass("dark");
+    expect(trayMark(view)?.getAttribute("src")).toBe("/favicon-dark.svg");
+    const surface = view.container.querySelector(".tray-panel-surface");
+    expect(surface?.className).toContain("dark:bg-[rgba(26,29,35,0.97)]");
+    const primary = view.getByRole("button", { name: /Start Live Transcription/ });
+    expect(primary.className).toContain("dark:bg-blue-500/[0.16]");
+    expect(primary.className).toContain("dark:focus-visible:ring-offset-[#1a1d23]");
+    expect(view.getByRole("button", { name: /Quit Application/ }).className).toContain("dark:text-slate-100");
+  } finally {
+    view.unmount();
+    vi.unstubAllGlobals();
+    window.localStorage.clear();
+    document.documentElement.classList.remove("dark", "light");
+  }
+});
+
+it("follows a theme change made in the main window without reopening the tray", async () => {
+  stubSystemTheme(false);
+  const view = await renderThemedTray("light");
+  try {
+    await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(1));
+    expect(document.documentElement).toHaveClass("light");
+    expect(trayMark(view)?.getAttribute("src")).toBe("/favicon.svg");
+
+    await act(async () => {
+      window.localStorage.setItem("scriber-theme", "dark");
+      window.dispatchEvent(new StorageEvent("storage", { key: "scriber-theme", newValue: "dark" }));
+    });
+    expect(document.documentElement).toHaveClass("dark");
+    expect(trayMark(view)?.getAttribute("src")).toBe("/favicon-dark.svg");
+
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent("storage", { key: "scriber-theme", newValue: "light" }));
+    });
+    expect(document.documentElement).toHaveClass("light");
+    expect(trayMark(view)?.getAttribute("src")).toBe("/favicon.svg");
+  } finally {
+    view.unmount();
+    vi.unstubAllGlobals();
+    window.localStorage.clear();
+    document.documentElement.classList.remove("dark", "light");
+  }
+});
+
+it("keeps every tray action name unchanged", async () => {
+  const { default: TrayPanel } = await import("./TrayPanel");
+  const view = render(<TrayPanel />);
+  try {
+    await waitFor(() => expect(mocks.fetch).toHaveBeenCalledTimes(1));
+    const expected: Array<[RegExp, string]> = [
+      [/Meetings/, "open_meetings"],
+      [/YouTube Transcription/, "open_youtube"],
+      [/Transcribe File/, "open_file"],
+      [/Open Main Window/, "show_window"],
+      [/^Settings$/, "open_settings"],
+      [/Restart Backend/, "restart_backend"],
+      [/Restart Application/, "restart_app"],
+      [/Quit Application/, "quit"],
+    ];
+    for (const [name, action] of expected) {
+      fireEvent.click(view.getByRole("button", { name }));
+      await waitFor(() => expect(mocks.action).toHaveBeenLastCalledWith(action));
+    }
+  } finally {
+    view.unmount();
+  }
+});
+
 it("bounds stalled listener setup and cleans a listener arriving after unmount", async () => {
   let finishListener!: () => void;
   mocks.listenSetup.mockImplementation((event) =>

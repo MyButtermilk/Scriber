@@ -143,26 +143,208 @@ def _build_export_blocks(
         blocks.append(_ExportBlock("spacer"))
 
     blocks.append(_ExportBlock("heading1", (_InlineSpan(labels["transcript"]),)))
-    for raw_paragraph in content.split("\n\n"):
-        paragraph = raw_paragraph.strip()
-        if not paragraph:
-            continue
-        if paragraph.startswith("[Speaker"):
-            parts = paragraph.split(":", 1)
-            if len(parts) == 2:
-                speaker, speaker_text = parts[0].strip(), parts[1].strip()
-                blocks.append(
-                    _ExportBlock(
-                        "speaker",
-                        (
-                            _InlineSpan(f"{speaker}: ", bold=True),
-                            _InlineSpan(speaker_text),
-                        ),
-                    )
-                )
-                continue
-        blocks.append(_ExportBlock("transcript_body", (_InlineSpan(paragraph),)))
+    for transcript_block in parse_transcript_blocks(content):
+        spans: list[_InlineSpan] = []
+        if transcript_block.start_label is not None:
+            spans.append(_InlineSpan(f"[{transcript_block.start_label}] "))
+        if transcript_block.speaker is not None and not transcript_block.continued:
+            label = (
+                f"[{transcript_block.speaker}]: "
+                if transcript_block.legacy_speaker
+                else f"{transcript_block.speaker}: "
+            )
+            spans.append(_InlineSpan(label, bold=True))
+        if transcript_block.text or not spans:
+            spans.append(_InlineSpan(transcript_block.text))
+        kind = (
+            "speaker" if transcript_block.speaker is not None and not transcript_block.continued else "transcript_body"
+        )
+        blocks.append(_ExportBlock(kind, tuple(spans)))
     return blocks
+
+
+# Stored transcript shapes, kept in parity with the WebView parser in
+# Frontend/client/src/lib/transcript-content.ts:
+# - canonical artifacts (`render_legacy_content`): one segment per line,
+#   `[m:ss] Speaker 0: text`, `[m:ss] Alice: text` or `[m:ss] text`; minutes
+#   are not wrapped at 60 and `[h:mm:ss]` is accepted too;
+# - legacy diarized paragraphs, `[Speaker N]: text`, separated by blank lines;
+# - plain text, whose explicit line breaks are meaningful.
+_TIMESTAMP_LINE_RE = re.compile(r"\[([0-9]{1,4}):([0-9]{2})(?::([0-9]{2}))?\]\s?(.*)", re.DOTALL)
+_LEGACY_SPEAKER_LINE_RE = re.compile(r"\[Speaker ([0-9]+)\]:\s*(.*)", re.DOTALL)
+_GENERIC_SPEAKER_RE = re.compile(r"Speaker ([0-9]+)")
+_SPEAKER_PREFIX_RE = re.compile(r"([^:\n]{1,48}?):\s+(\S.*)", re.DOTALL)
+_SPEAKER_LABEL_PUNCTUATION_RE = re.compile(r"[.!?,;\"“”„()\[\]{}]")
+# Consecutive same-speaker segments merge into paragraphs of about this size.
+_TRANSCRIPT_BLOCK_SOFT_CHARACTERS = 700
+
+
+@dataclass
+class TranscriptBlock:
+    text: str
+    start_label: str | None = None
+    start_seconds: int | None = None
+    speaker: str | None = None
+    continued: bool = False
+    legacy_speaker: bool = False
+
+
+@dataclass(frozen=True)
+class _TimedLine:
+    start_seconds: int
+    start_label: str
+    candidate_speaker: str | None
+    candidate_text: str
+    rest: str
+
+
+def _utf16_length(value: str) -> int:
+    # The WebView measures paragraph size in UTF-16 units; match it exactly.
+    return len(value) + sum(1 for character in value if ord(character) > 0xFFFF)
+
+
+def _format_start_label(total_seconds: int) -> str:
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
+def _plausible_speaker_label(label: str) -> bool:
+    value = label.strip()
+    if not value or value != label:
+        return False
+    if _GENERIC_SPEAKER_RE.fullmatch(value):
+        return True
+    if _SPEAKER_LABEL_PUNCTUATION_RE.search(value):
+        return False
+    if value.isascii() and value.isdigit():
+        return False
+    return len(value.split()) <= 4
+
+
+def _parse_timed_line(line: str) -> _TimedLine | None:
+    match = _TIMESTAMP_LINE_RE.fullmatch(line)
+    if match is None:
+        return None
+    first, second, third, rest = match.groups()
+    if third is not None:
+        if int(second) > 59 or int(third) > 59:
+            return None
+        start_seconds = int(first) * 3600 + int(second) * 60 + int(third)
+    else:
+        if int(second) > 59:
+            return None
+        start_seconds = int(first) * 60 + int(second)
+    speaker_match = _SPEAKER_PREFIX_RE.fullmatch(rest)
+    candidate = speaker_match if speaker_match and _plausible_speaker_label(speaker_match.group(1)) else None
+    return _TimedLine(
+        start_seconds=start_seconds,
+        start_label=_format_start_label(start_seconds),
+        candidate_speaker=candidate.group(1) if candidate else None,
+        candidate_text=candidate.group(2).strip() if candidate else "",
+        rest=rest.strip(),
+    )
+
+
+def _parse_canonical_lines(lines: list[str], timed: list[_TimedLine | None]) -> list[TranscriptBlock]:
+    # Named labels count when the whole transcript is diarized or the name
+    # recurs, so a lone "Here is the thing: ..." stays ordinary text. Generic
+    # "Speaker N" labels always count.
+    timed_lines = [entry for entry in timed if entry is not None]
+    every_line_labelled = all(entry.candidate_speaker is not None for entry in timed_lines)
+    label_counts: dict[str, int] = {}
+    for entry in timed_lines:
+        if entry.candidate_speaker:
+            label_counts[entry.candidate_speaker] = label_counts.get(entry.candidate_speaker, 0) + 1
+
+    def accepts_label(label: str) -> bool:
+        return bool(_GENERIC_SPEAKER_RE.fullmatch(label)) or every_line_labelled or label_counts.get(label, 0) >= 2
+
+    blocks: list[TranscriptBlock] = []
+    current: TranscriptBlock | None = None
+    # A blank line ends merging, so explicit paragraphs survive. Untimed lines
+    # continue the current block on a new line; timed segments of one speaker
+    # join into readable paragraphs that keep the turn's start time.
+    mergeable = False
+    for line, entry in zip(lines, timed, strict=True):
+        if entry is None:
+            if not line.strip():
+                mergeable = False
+                continue
+            if current is not None and mergeable:
+                current.text += f"\n{line.rstrip()}"
+            else:
+                current = TranscriptBlock(text=line.rstrip())
+                blocks.append(current)
+            mergeable = True
+            continue
+        speaker = (
+            entry.candidate_speaker if entry.candidate_speaker and accepts_label(entry.candidate_speaker) else None
+        )
+        text = entry.candidate_text if speaker else entry.rest
+        same_turn = current is not None and mergeable and current.start_label is not None and current.speaker == speaker
+        if (
+            current is not None
+            and same_turn
+            and _utf16_length(current.text) + _utf16_length(text) < _TRANSCRIPT_BLOCK_SOFT_CHARACTERS
+        ):
+            if text:
+                current.text = f"{current.text} {text}" if current.text else text
+        else:
+            current = TranscriptBlock(
+                text=text,
+                start_label=entry.start_label,
+                start_seconds=entry.start_seconds,
+                speaker=speaker,
+                continued=same_turn,
+            )
+            blocks.append(current)
+        mergeable = True
+    return [block for block in blocks if block.text or block.speaker or block.start_label]
+
+
+def _parse_paragraphs(lines: list[str]) -> list[TranscriptBlock]:
+    blocks: list[TranscriptBlock] = []
+    current: TranscriptBlock | None = None
+    previous_speaker: str | None = None
+    for line in lines:
+        if not line.strip():
+            current = None
+            continue
+        legacy = _LEGACY_SPEAKER_LINE_RE.fullmatch(line)
+        if legacy is not None:
+            speaker = f"Speaker {int(legacy.group(1))}"
+            current = TranscriptBlock(
+                text=legacy.group(2).strip(),
+                speaker=speaker,
+                continued=previous_speaker == speaker,
+                legacy_speaker=True,
+            )
+            previous_speaker = speaker
+            blocks.append(current)
+            continue
+        if current is not None:
+            current.text = f"{current.text}\n{line.rstrip()}" if current.text else line.rstrip()
+        else:
+            current = TranscriptBlock(text=line.rstrip())
+            previous_speaker = None
+            blocks.append(current)
+    return [block for block in blocks if block.text or block.speaker]
+
+
+def parse_transcript_blocks(content: str) -> list[TranscriptBlock]:
+    """Parse stored transcript text into export blocks without losing words or line breaks."""
+
+    normalized = str(content or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not normalized.strip():
+        return []
+    lines = normalized.split("\n")
+    timed = [_parse_timed_line(line) for line in lines]
+    if any(entry is not None for entry in timed):
+        return _parse_canonical_lines(lines, timed)
+    return _parse_paragraphs(lines)
 
 
 def _clean_xml_text(value: str) -> str:

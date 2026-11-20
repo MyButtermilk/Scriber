@@ -15,6 +15,11 @@ type ThemeProviderProps = {
   children: React.ReactNode;
   defaultTheme?: Theme;
   storageKey?: string;
+  /**
+   * Initialize the main desktop window frame once on startup. Secondary
+   * WebViews such as the frameless tray popup must opt out.
+   */
+  initializeWindowFrame?: boolean;
 };
 
 type ThemeProviderState = {
@@ -202,10 +207,15 @@ export function ThemeProvider({
   children,
   defaultTheme = "system",
   storageKey = "scriber-theme",
+  initializeWindowFrame = true,
   ...props
 }: ThemeProviderProps) {
   const [theme, setTheme] = useState<Theme>(() => readStoredTheme(storageKey, normalizeTheme(defaultTheme)));
-  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>("dark");
+  // Resolve synchronously so the first committed frame already uses the
+  // stored/system theme instead of flashing the context default.
+  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() =>
+    resolveEffectiveTheme(readStoredTheme(storageKey, normalizeTheme(defaultTheme))),
+  );
   const desktopFrameInitializedRef = useRef(false);
   const revealGenerationRef = useRef(0);
 
@@ -213,11 +223,28 @@ export function ThemeProvider({
     const effectiveTheme = resolveEffectiveTheme(theme);
     applyThemeClass(effectiveTheme);
     setResolvedTheme(effectiveTheme);
-    if (!desktopFrameInitializedRef.current) {
+    if (initializeWindowFrame && !desktopFrameInitializedRef.current) {
       desktopFrameInitializedRef.current = true;
       void initializeDesktopWindowFrame();
     }
-  }, [theme]);
+  }, [initializeWindowFrame, theme]);
+
+  // Another WebView of this app (for example the main window while the
+  // pre-created tray popup stays alive) changed the persisted preference.
+  useEffect(() => {
+    const fallbackTheme = normalizeTheme(defaultTheme);
+    const handleStorage = (event: StorageEvent) => {
+      // `key === null` means the whole storage area was cleared.
+      if (event.key !== null && event.key !== storageKey) return;
+      const nextTheme = event.key === null ? fallbackTheme : normalizeTheme(event.newValue, fallbackTheme);
+      revealGenerationRef.current += 1;
+      removeThemeRevealOverlays();
+      setThemeRevealActive(false);
+      setTheme(nextTheme);
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, [defaultTheme, storageKey]);
 
   // Listen for system theme changes
   useEffect(() => {

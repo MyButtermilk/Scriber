@@ -81,7 +81,8 @@ function TabRoutes() {
             <Route path="/podcasts" component={Podcasts} />
             <Route path="/debug" component={DebugConsole} />
             <Route path="/settings" component={Settings} />
-            <Route path="/transcript/:id" component={TranscriptDetail} />
+            {/* Keyed by id: moving between transcripts must not carry page state over. */}
+            <Route path="/transcript/:id">{(params) => <TranscriptDetail key={params.id} />}</Route>
             <Route component={NotFound} />
           </Switch>
         </Suspense>

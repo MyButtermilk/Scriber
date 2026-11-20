@@ -696,6 +696,206 @@ def test_meeting_segment_fts_migration_restores_rowid_parity_and_scoped_search(
     assert conn.execute("SELECT 1 FROM meeting_segments_fts WHERE rowid=?", (base_rowid,)).fetchone() is None
 
 
+def _insert_raw_outputs(conn, meeting_id: str, count: int, *, prefix: str = "raw") -> None:
+    conn.executemany(
+        """INSERT INTO meeting_outputs
+           (id,meeting_id,kind,schema_version,status,payload_json,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        [
+            (
+                f"{prefix}-{index:06d}",
+                meeting_id,
+                "analysis",
+                f"{prefix}-{index}",
+                "completed",
+                json.dumps({"summary": f"output token{index} {prefix}needle"}),
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+            )
+            for index in range(count)
+        ],
+    )
+
+
+def _output_fts_parity(conn) -> tuple[int, int, int]:
+    base = conn.execute("SELECT COUNT(*) FROM meeting_outputs").fetchone()[0]
+    fts = conn.execute("SELECT COUNT(*) FROM meeting_outputs_fts").fetchone()[0]
+    aligned = conn.execute(
+        """SELECT COUNT(*) FROM meeting_outputs o
+           JOIN meeting_outputs_fts f ON f.rowid=o.rowid
+           WHERE f.output_id=o.id AND f.meeting_id=o.meeting_id AND f.kind=o.kind
+             AND f.payload=o.payload_json"""
+    ).fetchone()[0]
+    return base, fts, aligned
+
+
+def _install_legacy_output_fts(conn) -> None:
+    """Recreate the version-0 index keyed by output_id with arbitrary rowids."""
+    conn.executescript(
+        """
+        DROP TRIGGER IF EXISTS meeting_outputs_fts_insert;
+        DROP TRIGGER IF EXISTS meeting_outputs_fts_update;
+        DROP TRIGGER IF EXISTS meeting_outputs_fts_delete;
+        DROP TABLE IF EXISTS meeting_outputs_fts;
+        CREATE VIRTUAL TABLE meeting_outputs_fts USING fts5(
+            meeting_id UNINDEXED, output_id UNINDEXED, kind UNINDEXED,
+            payload, tokenize='unicode61'
+        );
+        CREATE TRIGGER meeting_outputs_fts_insert AFTER INSERT ON meeting_outputs BEGIN
+            INSERT INTO meeting_outputs_fts(meeting_id,output_id,kind,payload)
+            VALUES (new.meeting_id,new.id,new.kind,new.payload_json);
+        END;
+        CREATE TRIGGER meeting_outputs_fts_update AFTER UPDATE ON meeting_outputs BEGIN
+            DELETE FROM meeting_outputs_fts WHERE output_id=old.id;
+            INSERT INTO meeting_outputs_fts(meeting_id,output_id,kind,payload)
+            VALUES (new.meeting_id,new.id,new.kind,new.payload_json);
+        END;
+        CREATE TRIGGER meeting_outputs_fts_delete AFTER DELETE ON meeting_outputs BEGIN
+            DELETE FROM meeting_outputs_fts WHERE output_id=old.id;
+        END;
+        DELETE FROM meeting_store_metadata WHERE key='meeting_outputs_fts_schema_version';
+        """
+    )
+
+
+def test_meeting_output_fts_migrates_legacy_index_to_rowid_parity(store: MeetingStore):
+    meeting_id = store.create(create_request())["id"]
+    saved = store.save_output(meeting_id, kind="analysis", payload={"summary": "legacy needle"})
+    conn = database._get_connection()
+    _install_legacy_output_fts(conn)
+    _insert_raw_outputs(conn, meeting_id, 25)
+    # Legacy rowids do not match base rowids, and one row was never indexed.
+    conn.execute("UPDATE meeting_outputs_fts SET rowid=rowid+1000")
+    conn.execute("DELETE FROM meeting_outputs_fts WHERE output_id='raw-000003'")
+    conn.commit()
+
+    MeetingStore().initialize()
+
+    assert _output_fts_parity(conn) == (26, 26, 26)
+    version = conn.execute(
+        "SELECT value FROM meeting_store_metadata WHERE key='meeting_outputs_fts_schema_version'"
+    ).fetchone()[0]
+    assert version == "1"
+    trigger_sql = {
+        row[0]: row[1].lower().replace(" ", "").replace("\n", "")
+        for row in conn.execute("SELECT name, sql FROM sqlite_master WHERE name LIKE 'meeting_outputs_fts_%'")
+    }
+    assert "rowid=old.rowid" in trigger_sql["meeting_outputs_fts_delete"]
+    assert "afterupdateofpayload_json,kind,meeting_idonmeeting_outputs" in trigger_sql["meeting_outputs_fts_update"]
+    hits = conn.execute("SELECT output_id FROM meeting_outputs_fts WHERE meeting_outputs_fts MATCH 'legacy'").fetchall()
+    assert [row[0] for row in hits] == [saved["id"]]
+
+    # A second initialization is a no-op that keeps the same parity and rowids.
+    before = conn.execute("SELECT rowid, output_id FROM meeting_outputs_fts ORDER BY rowid").fetchall()
+    MeetingStore().initialize()
+    assert _output_fts_parity(conn) == (26, 26, 26)
+    assert conn.execute("SELECT rowid, output_id FROM meeting_outputs_fts ORDER BY rowid").fetchall() == before
+
+
+def test_meeting_output_fts_triggers_track_insert_update_delete_and_cascade(store: MeetingStore):
+    meeting_id = store.create(create_request())["id"]
+    first = store.save_output(meeting_id, kind="analysis", payload={"summary": "alpha"})
+    conn = database._get_connection()
+    assert _output_fts_parity(conn) == (1, 1, 1)
+
+    def matches(term: str) -> list[str]:
+        return [
+            row[0]
+            for row in conn.execute(
+                "SELECT output_id FROM meeting_outputs_fts WHERE meeting_outputs_fts MATCH ?", (term,)
+            ).fetchall()
+        ]
+
+    assert matches("alpha") == [first["id"]]
+    # Regenerating the same kind updates the row in place through the trigger.
+    second = store.save_output(meeting_id, kind="analysis", payload={"summary": "bravo"})
+    assert second["id"] == first["id"]
+    assert matches("alpha") == [] and matches("bravo") == [first["id"]]
+    assert _output_fts_parity(conn) == (1, 1, 1)
+
+    # Status-only updates do not touch the index; payload updates do.
+    fts_rowid = conn.execute("SELECT rowid FROM meeting_outputs_fts").fetchone()[0]
+    conn.execute("UPDATE meeting_outputs SET status='failed' WHERE id=?", (first["id"],))
+    conn.execute(
+        "UPDATE meeting_outputs SET payload_json=? WHERE id=?", (json.dumps({"summary": "charlie"}), first["id"])
+    )
+    conn.commit()
+    assert matches("charlie") == [first["id"]]
+    assert conn.execute("SELECT rowid FROM meeting_outputs_fts").fetchone()[0] == fts_rowid
+
+    _insert_raw_outputs(conn, meeting_id, 3)
+    conn.commit()
+    assert _output_fts_parity(conn) == (4, 4, 4)
+    conn.execute("DELETE FROM meeting_outputs WHERE id='raw-000001'")
+    conn.commit()
+    assert _output_fts_parity(conn) == (3, 3, 3)
+    assert "raw-000001" not in matches("rawneedle")
+
+    store.transition(meeting_id, "recording")
+    store.transition(meeting_id, "stopping")
+    store.transition(meeting_id, "finalizing")
+    store.transition(meeting_id, "ready")
+    assert store.delete(meeting_id)
+    assert _output_fts_parity(conn) == (0, 0, 0)
+
+
+def test_meeting_output_fts_repairs_drift_incrementally(store: MeetingStore):
+    meeting_id = store.create(create_request())["id"]
+    conn = database._get_connection()
+    _insert_raw_outputs(conn, meeting_id, 10)
+    conn.commit()
+    keep = conn.execute("SELECT rowid FROM meeting_outputs_fts WHERE output_id='raw-000005'").fetchone()[0]
+    # Simulate drift: a missing index row, an orphan and a misattributed row.
+    conn.execute("DROP TRIGGER meeting_outputs_fts_delete")
+    conn.execute("DELETE FROM meeting_outputs WHERE id='raw-000002'")
+    conn.execute("DELETE FROM meeting_outputs_fts WHERE output_id='raw-000007'")
+    conn.execute("UPDATE meeting_outputs_fts SET output_id='wrong' WHERE output_id='raw-000008'")
+    conn.commit()
+
+    MeetingStore().initialize()
+
+    assert _output_fts_parity(conn) == (9, 9, 9)
+    assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='meeting_outputs_fts_delete'").fetchone()
+    # Healthy rows keep their index row; repair is not a full rebuild.
+    assert conn.execute("SELECT output_id FROM meeting_outputs_fts WHERE rowid=?", (keep,)).fetchone()[0] == (
+        "raw-000005"
+    )
+
+
+def test_meeting_output_fts_initialization_scales_linearly(store: MeetingStore):
+    import time
+
+    meeting_id = store.create(create_request())["id"]
+    conn = database._get_connection()
+    _install_legacy_output_fts(conn)
+    _insert_raw_outputs(conn, meeting_id, 4000)
+    conn.commit()
+
+    started = time.perf_counter()
+    MeetingStore().initialize()
+    migrated = time.perf_counter() - started
+    assert _output_fts_parity(conn) == (4000, 4000, 4000)
+
+    # Simulate one missing row: repair must not scan the index once per output.
+    conn.execute("DELETE FROM meeting_outputs_fts WHERE output_id='raw-002000'")
+    conn.commit()
+    started = time.perf_counter()
+    MeetingStore().initialize()
+    repaired = time.perf_counter() - started
+    started = time.perf_counter()
+    MeetingStore().initialize()
+    steady = time.perf_counter() - started
+    assert _output_fts_parity(conn) == (4000, 4000, 4000)
+    plan = conn.execute(
+        """EXPLAIN QUERY PLAN SELECT 1 FROM meeting_outputs o
+           LEFT JOIN meeting_outputs_fts f ON f.rowid=o.rowid
+           WHERE f.rowid IS NULL LIMIT 1"""
+    ).fetchall()
+    assert any("VIRTUAL TABLE INDEX 0:=" in row[3] for row in plan)
+    # Generous wall-clock bound; the legacy NOT EXISTS scan grew quadratically.
+    assert max(migrated, repaired, steady) < 5.0
+
+
 def test_enforces_one_open_meeting_and_state_transitions(store: MeetingStore):
     meeting = store.create(create_request())
     assert meeting["state"] == "starting"

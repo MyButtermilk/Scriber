@@ -1,4 +1,5 @@
 import { prepareSummaryHtml } from "@/lib/summary-html";
+import { genericSpeakerNumber, parseTranscriptContent } from "@/lib/transcript-content";
 
 export interface PdfInline {
   text: string;
@@ -315,23 +316,41 @@ export function parseSummaryForPdf(summary: string, summaryFormat: string): PdfS
 }
 
 export interface PdfTranscriptParagraph {
+  /** Generic `Speaker N` number, localized by the document labels. */
   speakerNumber: number | null;
+  /** A named speaker such as `Alice`, printed as stored. */
+  speakerName?: string;
+  /** Start time of the paragraph's first segment, such as `1:02:03`. */
+  startLabel?: string;
   text: string;
 }
 
-const SPEAKER_PREFIX = /^\[Speaker (\d+)\]:\s*/;
-
-/** Split stored transcript text into paragraphs with optional speaker numbers. */
+/**
+ * Split stored transcript text into paragraphs with optional speaker and
+ * start time. This is the same parser the transcript view uses, so canonical
+ * `[0:12] Speaker 0: …` artifacts keep their turns instead of collapsing into
+ * one paragraph. A continued turn repeats only its start time.
+ */
 export function transcriptParagraphs(content: string): PdfTranscriptParagraph[] {
-  return String(content || "")
-    .replace(/\r\n?/g, "\n")
-    .split(/\n{2,}/)
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean)
-    .map((paragraph) => {
-      const speaker = SPEAKER_PREFIX.exec(paragraph);
-      return speaker
-        ? { speakerNumber: Number(speaker[1]), text: paragraph.slice(speaker[0].length).trim() }
-        : { speakerNumber: null, text: paragraph };
-    });
+  return parseTranscriptContent(content)
+    .map((block): PdfTranscriptParagraph => {
+      const paragraph: PdfTranscriptParagraph = { speakerNumber: null, text: block.text.trim() };
+      if (block.startLabel) paragraph.startLabel = block.startLabel;
+      if (block.speaker && !block.continued) {
+        const generic = genericSpeakerNumber(block.speaker);
+        if (generic !== null) paragraph.speakerNumber = generic;
+        else paragraph.speakerName = block.speaker;
+      }
+      return paragraph;
+    })
+    .filter((paragraph) => paragraph.text);
+}
+
+/** Heading printed above a transcript paragraph, or "" when it has none. */
+export function transcriptParagraphHeading(
+  paragraph: PdfTranscriptParagraph,
+  speakerLabel: (speakerNumber: number) => string,
+): string {
+  const speaker = paragraph.speakerNumber !== null ? speakerLabel(paragraph.speakerNumber) : paragraph.speakerName;
+  return [paragraph.startLabel, speaker].filter(Boolean).join(" · ");
 }
