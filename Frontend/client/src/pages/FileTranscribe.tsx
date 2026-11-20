@@ -226,9 +226,9 @@ const FileCard = memo(function FileCard({
   );
 
   return (
-    <div className="w-full">
+    <div className="h-full w-full">
       <Card
-        className={`file-history-card perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid min-h-[176px]" : ""} cursor-pointer rounded-[20px] p-4 group transform-gpu ${deletingClasses}`}
+        className={`file-history-card perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid h-full min-h-[192px]" : ""} cursor-pointer rounded-[20px] p-4 group transform-gpu ${deletingClasses}`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
       >
@@ -363,35 +363,40 @@ const FileCard = memo(function FileCard({
               </button>
             </h3>
             {(historyStatus === "failed" || historyStatus === "summary_failed") && (
-              <p className="mb-2 select-text break-all font-mono text-xs text-muted-foreground">
+              <p
+                className="mb-2 select-text truncate font-mono text-[11px] text-muted-foreground"
+                title={t("Reference: {{id}}", { id: item.id })}
+              >
                 {t("Reference: {{id}}", { id: item.id })}
               </p>
             )}
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-auto">
-              <span>{item.duration}</span>
-              <span>•</span>
-              {dateElement}
-            </div>
-            <div className="flex flex-wrap items-center justify-end mt-2 gap-1">
-              {historyStatus === "failed" && <FileTranscriptRetryButton transcriptId={item.id} compact />}
-              <CopyActionButton
-                onClick={(e) => onCopy(e, item.id)}
-                disabled={isCopying}
-                copied={isCopying}
-                title={t("Copy transcript")}
-                ariaLabel={t("Copy transcript {{title}}", { title: item.title })}
-                size="sm"
-                className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
-              />
-              <DeleteActionButton
-                onClick={(e) => onDelete(e, item.id)}
-                disabled={isDeleting}
-                loading={isDeleting}
-                title={t("Delete transcript")}
-                ariaLabel={t("Delete transcript {{title}}", { title: item.title })}
-                size="sm"
-                className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
-              />
+            <div className="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-foreground/[0.06] pt-3">
+              <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                <span className="shrink-0 tabular-nums">{item.duration}</span>
+                <span aria-hidden="true">•</span>
+                <span className="truncate">{dateElement}</span>
+              </div>
+              <div className="flex shrink-0 items-center justify-end gap-1">
+                {historyStatus === "failed" && <FileTranscriptRetryButton transcriptId={item.id} compact />}
+                <CopyActionButton
+                  onClick={(e) => onCopy(e, item.id)}
+                  disabled={isCopying}
+                  copied={isCopying}
+                  title={t("Copy transcript")}
+                  ariaLabel={t("Copy transcript {{title}}", { title: item.title })}
+                  size="sm"
+                  className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
+                />
+                <DeleteActionButton
+                  onClick={(e) => onDelete(e, item.id)}
+                  disabled={isDeleting}
+                  loading={isDeleting}
+                  title={t("Delete transcript")}
+                  ariaLabel={t("Delete transcript {{title}}", { title: item.title })}
+                  size="sm"
+                  className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
+                />
+              </div>
             </div>
           </div>
         )}

@@ -163,9 +163,9 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
   );
 
   return (
-    <div className="w-full">
+    <div className="h-full w-full">
       <Card
-        className={`youtube-history-card perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid" : ""} group cursor-pointer overflow-hidden rounded-[20px] transform-gpu ${deletingClasses}`}
+        className={`youtube-history-card perf-scroll-item ${viewMode === "grid" ? "perf-scroll-grid h-full" : ""} group cursor-pointer overflow-hidden rounded-[20px] transform-gpu ${deletingClasses}`}
         onClick={() => onNavigate(item.id)}
         onMouseEnter={() => onHover?.(item.id)}
       >
@@ -277,7 +277,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
           </div>
         ) : (
           // Grid view
-          <div className="flex flex-col">
+          <div className="flex h-full flex-col">
             <div className="relative aspect-video w-full overflow-hidden bg-muted">
               <YoutubeThumbnail
                 thumbnailUrl={item.thumbnailUrl}
@@ -338,7 +338,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                 ) : null}
               </div>
             </div>
-            <div className="p-4">
+            <div className="flex flex-1 flex-col p-4">
               <h3>
                 <button
                   type="button"
@@ -352,7 +352,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                 </button>
               </h3>
               {channelLabel ? <p className="text-xs text-muted-foreground mt-1 truncate">{channelLabel}</p> : null}
-              <div className="flex items-center justify-between mt-2">
+              <div className="mt-auto flex items-center justify-between pt-3">
                 <span className="text-xs text-muted-foreground">{dateElement}</span>
                 <div className="flex items-center gap-1">
                   <CopyActionButton

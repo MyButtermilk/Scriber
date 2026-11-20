@@ -50,10 +50,37 @@
 }
 
 /*
+ * Section-nav and selection pills inside Settings use a tight, shape-hugging
+ * elevation shadow instead of the wide-offset neumorphic double shadow, and
+ * give the horizontal scroller generous padding so shadows are never clipped
+ * into a sharp rectangle.
+ */
+.settings-page .settings-section-nav {
+  padding: 0.5rem 0.75rem;
+  margin: -0.5rem -0.75rem;
+}
+.settings-page .settings-section-nav .neu-nav-item,
+.settings-page .settings-section-nav .neu-nav-active {
+  border-radius: 9999px;
+}
+.settings-page .neu-nav-active {
+  box-shadow:
+    0 2px 8px -2px hsl(var(--foreground) / 0.14),
+    0 1px 2px hsl(var(--foreground) / 0.08);
+}
+.dark .settings-page .neu-nav-active {
+  box-shadow:
+    0 4px 12px -4px rgba(0, 0, 0, 0.52),
+    0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+/*
  * Saved confirmation on credential dialogs: the CTA keeps its shape and
  * charges with a success tint. The .ui-cta gradient ignores Tailwind bg-*
  * utilities, so the tint goes through the accent token instead.
  */
 .ui-cta.settings-cta-saved {
   --page-accent: 161 94% 30%;
+  --page-accent-cta: 161 94% 30%;
+  --page-accent-ink: #ffffff;
 }

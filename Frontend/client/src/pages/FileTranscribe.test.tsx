@@ -217,6 +217,28 @@ describe("File transcription recovery", () => {
     expect(tooltip).toHaveTextContent("Files over 50 MB are optimized automatically before transcription.");
   });
 
+  it("stretches failed and completed grid cards evenly and keeps failure references single-line", () => {
+    view.mode = "grid";
+    history.push({
+      id: "ready-file",
+      title: "Completed file",
+      type: "file",
+      status: "completed",
+      date: "2026-10-02",
+      duration: "50:16",
+    });
+    const { container } = mount({ status: "failed", title: "Failed file" });
+    const cards = Array.from(container.querySelectorAll(".file-history-card"));
+    expect(cards).toHaveLength(2);
+    for (const card of cards) {
+      expect(card).toHaveClass("h-full");
+      expect(card.parentElement).toHaveClass("h-full");
+    }
+    const reference = screen.getByText("Reference: failed-file");
+    expect(reference).toHaveClass("truncate");
+    expect(reference).toHaveAttribute("title", "Reference: failed-file");
+  });
+
   it("retries only the summary when transcription succeeded", async () => {
     mount({ status: "completed", summaryStatus: "failed" });
     fireEvent.click(screen.getByRole("button", { name: "Retry summary for A failed uploaded recording.mp4" }));

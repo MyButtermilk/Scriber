@@ -5483,10 +5483,7 @@ export default function Settings() {
         )}
         accent="settings"
         bottomContent={
-          <nav
-            aria-label={t("Settings sections")}
-            className="settings-sticky-nav settings-section-nav -mx-1 overflow-x-auto px-1"
-          >
+          <nav aria-label={t("Settings sections")} className="settings-sticky-nav settings-section-nav overflow-x-auto">
             <div className="flex w-max items-center gap-1">
               {settingsNavItems.map((item) => {
                 const active = activeSettingsSection === item.section;
@@ -5502,7 +5499,7 @@ export default function Settings() {
                       requestSettingsSection(item.section);
                     }}
                     className={cn(
-                      "neu-nav-item inline-flex h-9 items-center gap-1.5 rounded-[12px] border border-transparent px-2.5 text-[11.5px] font-semibold no-underline outline-none transition-[background-color,color,box-shadow,transform] duration-200 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-ring",
+                      "neu-nav-item inline-flex h-9 items-center gap-1.5 rounded-full border border-transparent px-3 text-[11.5px] font-semibold no-underline outline-none transition-[background-color,color,box-shadow,transform] duration-200 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-ring",
                       active ? "neu-nav-active text-foreground" : "text-muted-foreground hover:text-foreground",
                     )}
                   >

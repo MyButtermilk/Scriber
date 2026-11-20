@@ -1,9 +1,23 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Radio } from "lucide-react";
 import { apiUrl } from "@/lib/backend";
 import { cn } from "@/lib/utils";
 
 export type PodcastCoverSize = "rail" | "result" | "header" | "hero";
+
+// Remember covers that already decoded in this session so switching back to
+// Podcasts renders cached artwork immediately without a fallback-icon flash.
+const MAX_CACHED_COVER_URLS = 256;
+const loadedCoverUrls = new Set<string>();
+
+function rememberLoadedCover(url: string) {
+  if (!url) return;
+  if (loadedCoverUrls.size >= MAX_CACHED_COVER_URLS && !loadedCoverUrls.has(url)) {
+    const oldest = loadedCoverUrls.values().next().value;
+    if (oldest) loadedCoverUrls.delete(oldest);
+  }
+  loadedCoverUrls.add(url);
+}
 
 interface PodcastCoverProps {
   /** Subscription or search-result ID; both resolve through the same artwork route. */
@@ -24,25 +38,51 @@ interface PodcastCoverProps {
 export function PodcastCover({ id, hasArtwork = true, version, size = "rail", className }: PodcastCoverProps) {
   const query = version ? `?v=${encodeURIComponent(version)}` : "";
   const src = id && hasArtwork ? apiUrl(`/api/podcasts/artwork/${id}${query}`) : "";
+  const imgRef = useRef<HTMLImageElement | null>(null);
   const [failedSrc, setFailedSrc] = useState("");
-  const [loadedSrc, setLoadedSrc] = useState("");
+  const [loadedSrc, setLoadedSrc] = useState(() => (src && loadedCoverUrls.has(src) ? src : ""));
+  const [instantSrc, setInstantSrc] = useState(() => (src && loadedCoverUrls.has(src) ? src : ""));
+
+  useLayoutEffect(() => {
+    if (!src) return;
+    if (loadedCoverUrls.has(src)) {
+      setLoadedSrc(src);
+      setInstantSrc(src);
+      return;
+    }
+    const img = imgRef.current;
+    if (img && img.complete && img.naturalWidth > 0) {
+      rememberLoadedCover(src);
+      setLoadedSrc(src);
+      setInstantSrc(src);
+    }
+  }, [src]);
+
   const showImage = Boolean(src) && failedSrc !== src;
+  const isLoaded = showImage && (loadedSrc === src || loadedCoverUrls.has(src));
+  const isInstant = isLoaded && (instantSrc === src || loadedCoverUrls.has(src));
+
   return (
     <span
       className={cn("podcast-cover", `podcast-cover--${size}`, className)}
-      data-cover-state={showImage ? (loadedSrc === src ? "image" : "loading") : "fallback"}
+      data-cover-state={showImage ? (isLoaded ? "image" : "loading") : "fallback"}
+      data-cover-instant={isInstant ? "true" : "false"}
       aria-hidden="true"
     >
       <Radio className="podcast-cover__mark" aria-hidden="true" />
       {showImage ? (
         <img
+          ref={imgRef}
           src={src}
           alt=""
-          loading="lazy"
+          loading={size === "result" ? "lazy" : "eager"}
           decoding="async"
           draggable={false}
           className="podcast-cover__image"
-          onLoad={() => setLoadedSrc(src)}
+          onLoad={() => {
+            rememberLoadedCover(src);
+            setLoadedSrc(src);
+          }}
           onError={() => setFailedSrc(src)}
         />
       ) : null}

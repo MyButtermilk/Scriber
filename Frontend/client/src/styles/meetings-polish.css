@@ -1,7 +1,7 @@
 /* Page polish: meetings. Loaded after index.css (unlayered, so it wins over Tailwind utilities). */
 
 /* --- Identity accent ------------------------------------------------------
-   The Meetings shell sets --page-accent (violet). It marks identity only:
+   The Meetings shell sets --page-accent (Powder Blue). It marks identity only:
    the selected history row, the new-meeting eyebrow and the source icons.
    Error, warning and success colours stay semantic and never use it. */
 .meetings-page .meetings-accent-text {

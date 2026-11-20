@@ -43,12 +43,12 @@
 
 .podcasts-page .compact-impact-switch {
   --impact-switch-track-on: hsl(var(--page-accent));
-  --impact-switch-check: hsl(var(--page-accent));
+  --impact-switch-check: var(--page-accent-ink, #1b263b);
 }
 
 /* ── Cover artwork ─────────────────────────────────────────────────────
-   The radio mark sits underneath and shows while loading, when no cover is
-   known, or when the image fails. */
+   The radio mark sits underneath and softly fades out once the artwork loads;
+   cached covers render immediately without flashing or jumping. */
 
 .podcast-cover {
   position: relative;
@@ -62,7 +62,11 @@
   border-radius: 12px;
   color: hsl(var(--page-accent, var(--primary)));
   background: hsl(var(--page-accent, var(--primary)) / 0.09);
-  box-shadow: inset 0 0 0 1px hsl(var(--page-accent, var(--primary)) / 0.12);
+  box-shadow: inset 0 0 0 1px hsl(var(--page-accent, var(--primary)) / 0.14);
+  transition:
+    background-color 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .podcast-cover--rail {
@@ -86,6 +90,11 @@
   width: 20px;
   height: 20px;
   stroke-width: 1.5;
+  opacity: 1;
+  transform: scale(1);
+  transition:
+    opacity 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .podcast-cover--header .podcast-cover__mark,
@@ -102,7 +111,10 @@
   height: 100%;
   object-fit: cover;
   opacity: 0;
-  transition: opacity 220ms ease;
+  transform: scale(1.035);
+  transition:
+    opacity 280ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .podcast-cover[data-cover-state="image"] {
@@ -112,10 +124,20 @@
 
 .podcast-cover[data-cover-state="image"] .podcast-cover__image {
   opacity: 1;
+  transform: scale(1);
 }
 
 .podcast-cover[data-cover-state="image"] .podcast-cover__mark {
-  visibility: hidden;
+  opacity: 0;
+  transform: scale(0.92);
+  pointer-events: none;
+}
+
+/* Cached covers appear on frame 1 with zero flash or pop-in transition. */
+.podcast-cover[data-cover-instant="true"],
+.podcast-cover[data-cover-instant="true"] .podcast-cover__image,
+.podcast-cover[data-cover-instant="true"] .podcast-cover__mark {
+  transition-duration: 0ms;
 }
 
 /* A hairline keeps light and dark covers from bleeding into the surface. */
@@ -133,8 +155,21 @@
 .podcasts-page .podcast-subscription {
   position: relative;
   transition:
-    background-color 160ms ease,
-    border-color 160ms ease;
+    background-color 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.podcasts-page .podcast-subscription:active {
+  transform: scale(0.99);
+}
+
+@media (hover: hover) {
+  .podcasts-page .podcast-subscription:hover .podcast-cover[data-cover-state="image"] .podcast-cover__image {
+    transform: scale(1.045);
+    transition-duration: 240ms;
+  }
 }
 
 .podcasts-page .podcast-subscription[aria-current="true"]::before {
@@ -146,6 +181,18 @@
   width: 3px;
   border-radius: 0 3px 3px 0;
   background: hsl(var(--page-accent));
+  animation: podcast-rail-indicator-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes podcast-rail-indicator-in {
+  from {
+    transform: scaleY(0.35);
+    opacity: 0;
+  }
+  to {
+    transform: scaleY(1);
+    opacity: 1;
+  }
 }
 
 /* ── Episode failures: concrete, calm and never in the section accent ── */
@@ -196,9 +243,15 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .podcast-cover,
+  .podcast-cover__mark,
   .podcast-cover__image,
   .podcasts-page .podcast-subscription,
   .podcasts-page .podcast-search-result {
     transition: none;
+  }
+
+  .podcasts-page .podcast-subscription[aria-current="true"]::before {
+    animation: none;
   }
 }

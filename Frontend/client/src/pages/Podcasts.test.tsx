@@ -465,7 +465,7 @@ describe("Podcasts", () => {
     // Versioned so a refreshed cover gets a new URL instead of a stale browser cache hit.
     expect(image).toHaveAttribute("src", `/api/podcasts/artwork/${withCover.id}?v=0123456789ab`);
     expect(image).toHaveAttribute("alt", "");
-    expect(image).toHaveAttribute("loading", "lazy");
+    expect(image).toHaveAttribute("loading", "eager");
     expect(cover).toHaveAttribute("aria-hidden", "true");
     fireEvent.error(image);
     expect(cover.querySelector("img")).toBeNull();
@@ -478,6 +478,23 @@ describe("Podcasts", () => {
     expect(
       container.querySelector(`header img[src="/api/podcasts/artwork/${withCover.id}?v=0123456789ab"]`),
     ).not.toBeNull();
+  });
+
+  it("renders already-loaded podcast covers immediately on revisit without flashing the fallback mark", async () => {
+    const cached = subscription({ id: "c".repeat(32), title: "Cached cover show", artworkVersion: "fedcba987654" });
+    const first = mount([cached]);
+    const firstRow = await screen.findByRole("button", { name: /Cached cover show/ });
+    const firstCover = firstRow.querySelector(".podcast-cover")!;
+    expect(firstCover).toHaveAttribute("data-cover-state", "loading");
+    fireEvent.load(firstCover.querySelector("img")!);
+    expect(firstCover).toHaveAttribute("data-cover-state", "image");
+    first.unmount();
+
+    mount([cached]);
+    const revisitRow = await screen.findByRole("button", { name: /Cached cover show/ });
+    const revisitCover = revisitRow.querySelector(".podcast-cover")!;
+    expect(revisitCover).toHaveAttribute("data-cover-state", "image");
+    expect(revisitCover).toHaveAttribute("data-cover-instant", "true");
   });
 
   it("uses the shared rail heading and calm transcript counts", async () => {

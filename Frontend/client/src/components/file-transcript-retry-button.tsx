@@ -182,14 +182,18 @@ export function FileTranscriptRetryButton({
         type="button"
         variant="outline"
         size="sm"
-        className="min-w-0 max-w-full gap-1.5 rounded-full"
+        className={
+          compact
+            ? "h-7 min-w-0 max-w-full gap-1 rounded-full px-2.5 text-ui-micro"
+            : "min-w-0 max-w-full gap-1.5 rounded-full"
+        }
         onClick={retry}
         disabled={state !== "idle"}
         aria-busy={state === "pending"}
         aria-label={state === "queued" ? t("Queued") : t("Retry transcription")}
         data-transcript-retry={transcriptId}
       >
-        <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+        <RotateCcw className={compact ? "h-3 w-3" : "h-3.5 w-3.5"} aria-hidden="true" />
         <span className="min-w-0 truncate">
           {state === "queued"
             ? t("Queued")

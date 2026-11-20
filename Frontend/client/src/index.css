@@ -1384,10 +1384,10 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
    glow and a single sheen sweep. Hover lifts; press sinks.
    ============================================ */
 .ui-cta {
-  --cta-accent: var(--page-accent, var(--primary));
+  --cta-accent: var(--page-accent-cta, var(--page-accent, var(--primary)));
   --cta-fill: hsl(var(--cta-accent));
-  --cta-fill-top: color-mix(in srgb, hsl(var(--cta-accent)) 82%, white);
-  --cta-ink: #fff;
+  --cta-fill-top: color-mix(in srgb, hsl(var(--cta-accent)) 84%, white);
+  --cta-ink: var(--page-accent-ink, #fff);
   position: relative;
   isolation: isolate;
   overflow: hidden;
@@ -1397,9 +1397,9 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.28),
     inset 0 -1px 0 rgba(0, 0, 0, 0.12),
-    0 0 0 1px color-mix(in srgb, var(--cta-fill) 70%, black),
-    0 10px 22px -12px hsl(var(--cta-accent) / 0.75),
-    0 2px 4px -2px hsl(var(--cta-accent) / 0.5);
+    0 0 0 1px color-mix(in srgb, var(--cta-fill) 72%, #1b263b),
+    0 10px 22px -12px hsl(var(--cta-accent) / 0.65),
+    0 2px 4px -2px hsl(var(--cta-accent) / 0.42);
   transition:
     color 260ms var(--ease-smooth-out),
     background 260ms var(--ease-smooth-out),
@@ -1408,8 +1408,8 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
     filter 160ms var(--ease-smooth-out);
 }
 .dark .ui-cta {
-  --cta-fill: color-mix(in srgb, hsl(var(--cta-accent)) 72%, black);
-  --cta-fill-top: color-mix(in srgb, hsl(var(--cta-accent)) 92%, black);
+  --cta-fill: hsl(var(--cta-accent));
+  --cta-fill-top: color-mix(in srgb, hsl(var(--cta-accent)) 88%, white);
 }
 .ui-cta > svg {
   transition: transform 260ms var(--ease-smooth-out);
@@ -1497,43 +1497,80 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
    PAGE INTRO — section accent + condensing sticky header
    ============================================ */
 
-/* One accent hue per app section. Values are HSL channels so they compose
-   with alpha: hsl(var(--page-accent) / 0.2). */
+/* Section accents built from the five-color editorial palette:
+   Powder Blue (#93b5c6), Chocolate (#e06d06), Bright Lemon (#f9e900),
+   Prussian Blue (#1b263b), and Dust Grey (#d0cfcf).
+   Values are HSL channels so they compose with alpha: hsl(var(--page-accent) / 0.2). */
+:root {
+  --palette-powder-blue: 200 31% 68%;
+  --palette-chocolate: 28 95% 45%;
+  --palette-bright-lemon: 56 100% 49%;
+  --palette-prussian-blue: 219 37% 17%;
+  --palette-dust-grey: 0 2% 82%;
+}
 [data-page-accent] {
-  --page-accent: 221 83% 53%;
+  --page-accent: var(--palette-prussian-blue);
+  --page-accent-cta: var(--palette-prussian-blue);
+  --page-accent-ink: #ffffff;
 }
 [data-page-accent="meetings"] {
-  --page-accent: 258 72% 60%;
+  /* Powder Blue identity; deep steel tone for light-surface icons/rules, true Powder Blue CTA with Prussian Blue ink. */
+  --page-accent: 200 38% 42%;
+  --page-accent-cta: var(--palette-powder-blue);
+  --page-accent-ink: #1b263b;
 }
 [data-page-accent="youtube"] {
-  --page-accent: 0 74% 54%;
+  --page-accent: var(--palette-chocolate);
+  --page-accent-cta: var(--palette-chocolate);
+  --page-accent-ink: #ffffff;
 }
 [data-page-accent="file"] {
-  --page-accent: 172 66% 36%;
+  /* Grounded bridge between Prussian Blue and Powder Blue. */
+  --page-accent: 208 35% 32%;
+  --page-accent-cta: 208 35% 32%;
+  --page-accent-ink: #ffffff;
 }
 [data-page-accent="podcasts"] {
-  --page-accent: 24 92% 52%;
+  /* Bright Lemon highlight paired with Prussian Blue ink; golden-lemon readable tone on light cards. */
+  --page-accent: 46 92% 38%;
+  --page-accent-cta: var(--palette-bright-lemon);
+  --page-accent-ink: #1b263b;
 }
 [data-page-accent="settings"] {
-  --page-accent: 215 18% 46%;
+  /* Dust Grey / neutral slate anchor for workspace controls. */
+  --page-accent: 215 12% 44%;
+  --page-accent-cta: var(--palette-prussian-blue);
+  --page-accent-ink: #ffffff;
 }
 .dark [data-page-accent] {
-  --page-accent: 217 91% 66%;
+  --page-accent: var(--palette-powder-blue);
+  --page-accent-cta: var(--palette-powder-blue);
+  --page-accent-ink: #1b263b;
 }
 .dark [data-page-accent="meetings"] {
-  --page-accent: 258 88% 74%;
+  --page-accent: var(--palette-powder-blue);
+  --page-accent-cta: var(--palette-powder-blue);
+  --page-accent-ink: #1b263b;
 }
 .dark [data-page-accent="youtube"] {
-  --page-accent: 0 86% 66%;
+  --page-accent: 28 94% 56%;
+  --page-accent-cta: var(--palette-chocolate);
+  --page-accent-ink: #ffffff;
 }
 .dark [data-page-accent="file"] {
-  --page-accent: 170 62% 52%;
+  --page-accent: 204 34% 64%;
+  --page-accent-cta: 204 36% 56%;
+  --page-accent-ink: #1b263b;
 }
 .dark [data-page-accent="podcasts"] {
-  --page-accent: 28 94% 62%;
+  --page-accent: var(--palette-bright-lemon);
+  --page-accent-cta: var(--palette-bright-lemon);
+  --page-accent-ink: #1b263b;
 }
 .dark [data-page-accent="settings"] {
-  --page-accent: 215 20% 66%;
+  --page-accent: var(--palette-dust-grey);
+  --page-accent-cta: var(--palette-dust-grey);
+  --page-accent-ink: #1b263b;
 }
 
 .page-intro {
@@ -1541,8 +1578,11 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
   --page-intro-duration: 320ms;
   position: relative;
   margin-bottom: calc(1.5rem + var(--page-intro-compensation, 0px));
-  padding: 0.25rem 0.25rem 1.25rem;
-  border-bottom: 1px solid hsl(var(--border) / 0.65);
+  padding: 0.25rem 0 1.25rem;
+  border: 1px solid transparent;
+  border-top: 0;
+  border-bottom-color: hsl(var(--border) / 0.65);
+  border-radius: 0;
   background: transparent;
 }
 @media (min-width: 768px) {
@@ -1562,7 +1602,7 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
     padding var(--page-intro-duration) var(--page-intro-ease);
 }
 .page-intro__rule {
-  background: hsl(var(--page-accent, 221 83% 53%) / 0.75);
+  background: hsl(var(--page-accent, var(--palette-prussian-blue)) / 0.78);
   transform-origin: left center;
   transition:
     width var(--page-intro-duration) var(--page-intro-ease),
@@ -1607,39 +1647,36 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
     padding var(--page-intro-duration) var(--page-intro-ease);
 }
 
-/* Sticky variant: bleeds to the page gutters so content scrolls under a
-   frosted bar, then condenses (42 → 32px title, description folds away). */
+/* Sticky variant: aligns strictly to the content column width below it (no
+   horizontal overhang) and rounds its bottom corners to match the cards below
+   when condensed. */
 .page-intro--sticky {
   position: sticky;
   top: 0;
   z-index: 20;
-  margin-inline: -1rem;
-  padding-inline: 1.25rem;
+  margin-inline: 0;
+  padding-inline: 0;
   transition:
     padding var(--page-intro-duration) var(--page-intro-ease),
+    border-radius var(--page-intro-duration) var(--page-intro-ease),
     background-color var(--page-intro-duration) var(--page-intro-ease),
     box-shadow var(--page-intro-duration) var(--page-intro-ease),
     border-color var(--page-intro-duration) var(--page-intro-ease);
 }
-@media (min-width: 768px) {
-  .page-intro--sticky {
-    margin-inline: -1.5rem;
-    padding-inline: 1.75rem;
-  }
-}
 .page-intro--sticky[data-condensed="true"] {
-  padding-top: 0.875rem;
-  padding-bottom: 0.875rem;
-  border-bottom-color: hsl(var(--border) / 0.5);
-  background: hsl(var(--background) / 0.78);
-  -webkit-backdrop-filter: saturate(1.6) blur(20px);
-  backdrop-filter: saturate(1.6) blur(20px);
+  padding: 0.875rem 1.25rem;
+  border-color: hsl(var(--border) / 0.65);
+  border-top-color: transparent;
+  border-radius: 0 0 20px 20px;
+  background: hsl(var(--background) / 0.84);
+  -webkit-backdrop-filter: saturate(1.5) blur(20px);
+  backdrop-filter: saturate(1.5) blur(20px);
   box-shadow:
-    0 1px 0 hsl(var(--background) / 0.6) inset,
-    0 22px 36px -30px hsl(var(--foreground) / 0.28);
+    0 1px 0 hsl(var(--background) / 0.65) inset,
+    0 18px 32px -24px hsl(var(--foreground) / 0.26);
 }
 .page-intro--sticky.page-intro--with-bottom[data-condensed="true"] {
-  padding-bottom: 0;
+  padding-bottom: 0.25rem;
 }
 .page-intro--sticky[data-condensed="true"] .page-intro__eyebrow {
   margin-bottom: 0.4rem;
@@ -1647,7 +1684,7 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
 }
 .page-intro--sticky[data-condensed="true"] .page-intro__rule {
   width: 1rem;
-  background: hsl(var(--page-accent, 221 83% 53%));
+  background: hsl(var(--page-accent, var(--palette-prussian-blue)));
 }
 .page-intro--sticky[data-condensed="true"] .page-intro__title {
   font-size: 28px;
