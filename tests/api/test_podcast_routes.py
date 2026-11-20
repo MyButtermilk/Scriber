@@ -61,6 +61,7 @@ def test_podcast_service_matches_the_route_local_port(assert_protocol_contract) 
             "request_refresh",
             "open_audio",
             "remove_download",
+            "artwork",
         },
         returns={
             "start": type(None),
@@ -80,6 +81,7 @@ def test_podcast_service_matches_the_route_local_port(assert_protocol_contract) 
             "request_refresh": type(None),
             "open_audio": ClientResponse | None,
             "remove_download": bool,
+            "artwork": tuple[bytes, str] | None,
         },
     )
 
@@ -299,3 +301,56 @@ async def test_transcript_episode_route_projects_camel_case_subscription_identit
         assert await (await client.get(f"/api/podcasts/transcripts/{'d' * 32}")).json() == {"episode": None}
         assert (await client.get("/api/podcasts/transcripts/invalid")).status == 404
     assert [call.args for call in service.episode_for_transcript.await_args_list] == [("c" * 32,), ("d" * 32,)]
+
+
+@pytest.mark.asyncio
+async def test_artwork_route_serves_cached_cover_and_404s_without_one() -> None:
+    png = b"\x89PNG\r\n\x1a\n" + b"0" * 16
+    service = SimpleNamespace(
+        start=Mock(), close=AsyncMock(), artwork=AsyncMock(side_effect=[(png, "image/png"), None])
+    )
+    app = web.Application()
+    register_podcast_routes(app, factory=lambda: service)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.get(f"/api/podcasts/artwork/{'a' * 32}")
+        assert response.status == 200
+        assert await response.read() == png
+        assert response.headers["Content-Type"] == "image/png"
+        assert response.headers["X-Content-Type-Options"] == "nosniff"
+        assert response.headers["Cache-Control"] == "private, max-age=86400"
+        assert (await client.get(f"/api/podcasts/artwork/{'b' * 32}")).status == 404
+        assert (await client.get("/api/podcasts/artwork/not-an-id")).status == 404
+    assert [call.args for call in service.artwork.await_args_list] == [("a" * 32,), ("b" * 32,)]
+
+
+@pytest.mark.parametrize(
+    ("status", "error", "kind"),
+    [
+        ("failed", "This podcast episode exceeds the download size limit.", "too_large"),
+        ("failed", "This episode exceeds the selected provider's audio size limit.", "too_large"),
+        (
+            "failed",
+            "Configure a transcription provider in Settings before processing podcast episodes.",
+            "provider_missing",
+        ),
+        ("failed", "There is not enough free disk space for a podcast download.", "storage_full"),
+        ("failed", "The podcast host is currently unavailable. Try again later.", "download"),
+        (
+            "failed",
+            "Podcast transcription failed. Open the transcript for details or retry the episode.",
+            "transcription",
+        ),
+        (
+            "failed",
+            "The transcript is ready, but its summary failed. Check the summary model and retry.",
+            "summary",
+        ),
+        ("failed", "Podcast processing failed. Check provider settings and retry.", "processing"),
+        ("failed", "", "processing"),
+        ("completed", "This podcast episode exceeds the download size limit.", ""),
+    ],
+)
+def test_episode_failure_kind_is_derived_from_the_bounded_error(status: str, error: str, kind: str) -> None:
+    from src.api.podcast_routes import episode_failure_kind
+
+    assert episode_failure_kind({"status": status, "error": error}) == kind

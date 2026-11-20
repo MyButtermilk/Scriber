@@ -17,6 +17,7 @@ import {
   refreshMeetingDetail,
 } from "@/lib/meeting-cache";
 import { meetingControlVisibility, meetingTimerNowMs } from "@/lib/meeting-controls";
+import { isAutoMeetingTitle } from "@/lib/meeting-display";
 import { calculateMeetingElapsedMs, formatMeetingOffset } from "@/lib/meeting-playback";
 import type { MeetingState, MeetingsResponse } from "@/lib/api-types";
 
@@ -145,6 +146,7 @@ export function ActiveMeetingPill() {
             ? t("Capture needs attention")
             : t("Mic and system audio are recording");
   const controls = meetingControlVisibility(meeting.state);
+  const displayTitle = isAutoMeetingTitle(meeting.title) ? t("Untitled meeting") : meeting.title;
   const captureMetadata = meeting.captureMetadata ?? {};
   const elapsedNow = meetingTimerNowMs(meeting.state, meeting.endedAt, now);
   const elapsedMs = calculateMeetingElapsedMs(
@@ -173,14 +175,14 @@ export function ActiveMeetingPill() {
           type="button"
           className="flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-primary active:scale-[0.99]"
           onClick={() => setLocation(`/meetings/${meeting.id}`)}
-          aria-label={t("Open active meeting {{title}}", { title: meeting.title })}
+          aria-label={t("Open active meeting {{title}}", { title: displayTitle })}
         >
           <span
             className={`h-2.5 w-2.5 shrink-0 rounded-full ${needsAttention ? "bg-amber-500" : meeting.state === "starting" || meeting.state === "paused" || processing ? "bg-primary" : "bg-red-500"}`}
             aria-hidden="true"
           />
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-semibold">{meeting.title}</span>
+            <span className="block truncate text-sm font-semibold">{displayTitle}</span>
             <span
               className="mt-0.5 flex items-center gap-2 truncate text-[11px] text-muted-foreground"
               aria-live="polite"

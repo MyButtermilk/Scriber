@@ -234,6 +234,8 @@ export const componentTranslations = {
     "Dieses Transkript wurde möglicherweise gelöscht oder existiert nicht.",
   "Time unavailable": "Zeit nicht verfügbar",
   Today: "Heute",
+  Tomorrow: "Morgen",
+  "{{day}}, {{time}}": "{{day}}, {{time}}",
   "Today at {{time}}": "Heute um {{time}}",
   "Today, {{date}}": "Heute, {{date}}",
   "Toggle Sidebar": "Seitenleiste ein- oder ausblenden",

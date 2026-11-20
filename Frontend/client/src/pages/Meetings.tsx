@@ -61,7 +61,7 @@ import {
   type MeetingPlaybackRequest,
 } from "@/lib/meeting-playback";
 import { localizeMeetingErrorMessage, meetingAnalysisFailurePresentation } from "@/lib/meeting-error-message";
-import { alphabeticalLabel, genericMeetingSpeakerLabels } from "@/lib/meeting-display";
+import { alphabeticalLabel, genericMeetingSpeakerLabels, isAutoMeetingTitle } from "@/lib/meeting-display";
 import { useSharedWebSocket, useWebSocketContext, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { useToast } from "@/hooks/use-toast";
 import { useI18n, type TranslationValues } from "@/i18n";
@@ -95,6 +95,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { AnimatedCheckbox } from "@/components/ui/animated-checkbox";
 import { Badge } from "@/components/ui/badge";
+import { SectionHeading } from "@/components/ui/section-heading";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
@@ -257,6 +258,20 @@ function formatMoment(value: string | null, formatDate: FormatDate): string {
   return formatDate(date, { dateStyle: "medium", timeStyle: "short" });
 }
 
+/** Display-only title: the store's generated `Meeting YYYY-MM-DD` repeats the date shown beside it. */
+function meetingDisplayTitle(title: string, t: Translate): string {
+  return isAutoMeetingTitle(title) ? t("Untitled meeting") : title;
+}
+
+/** Rows stay quiet when a meeting is ready; only deviating states are shown. */
+function meetingRowStateTone(state: MeetingState): string {
+  if (state === "recording") return "text-red-700 dark:text-red-300";
+  if (["capture_failed", "finalization_failed", "analysis_failed", "interrupted"].includes(state)) {
+    return "text-amber-700 dark:text-amber-300";
+  }
+  return "text-foreground/70";
+}
+
 function localCalendarDate(value = new Date()): string {
   const year = value.getFullYear();
   const month = String(value.getMonth() + 1).padStart(2, "0");
@@ -328,32 +343,26 @@ function MeetingImportInbox({
   onOpen: (meetingId: string) => void;
   onRefresh: () => void;
 }) {
-  const { t, formatDate, formatNumber } = useI18n();
+  const { t, formatRelativeDate, formatFullDateTime, formatNumber } = useI18n();
+  // The inbox only holds active or recently interrupted imports. With nothing
+  // to act on (or while the first fetch runs) the rail shows no empty block.
+  if (loading || (!error && items.length === 0)) return null;
   return (
-    <section className="my-1 border-y border-border/55 py-2" aria-labelledby="meeting-import-inbox-title">
-      <div className="flex items-center justify-between gap-2 px-2 py-1">
-        <div className="min-w-0">
-          <p id="meeting-import-inbox-title" className="text-xs font-semibold">
-            {t("Imports")}
-          </p>
-          <p className="text-[11px] text-muted-foreground">{t("Continues after you restart Scriber")}</p>
-        </div>
-        {!loading && !error && items.length > 0 && (
-          <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-ui-micro tabular-nums text-muted-foreground">
-            {formatNumber(items.length)}
-          </span>
-        )}
-      </div>
-      {loading ? (
-        <div
-          className="mt-1 grid gap-1 px-1 sm:grid-cols-2 lg:grid-cols-3 min-[1100px]:grid-cols-1"
-          aria-label={t("Loading meeting imports")}
-        >
-          <div className="col-span-full flex min-h-[76px] items-center justify-center">
-            <WavePhysicsLoader size="compact" label={t("Loading meeting imports")} />
-          </div>
-        </div>
-      ) : error ? (
+    <section
+      className="mb-3 border-b border-border/55 pb-2"
+      aria-labelledby="meeting-import-inbox-title"
+      data-testid="meeting-import-inbox"
+    >
+      <SectionHeading
+        as="h3"
+        size="rail"
+        id="meeting-import-inbox-title"
+        title={t("Imports")}
+        count={!error ? formatNumber(items.length) : undefined}
+        description={t("Continues after you restart Scriber")}
+        className="px-2 py-1"
+      />
+      {error ? (
         <div className="mt-1 flex items-center justify-between gap-2 px-2 py-2 text-xs text-destructive" role="alert">
           <span>{t("Imports could not be loaded.")}</span>
           <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={onRefresh}>
@@ -361,8 +370,6 @@ function MeetingImportInbox({
             {t("Retry")}
           </Button>
         </div>
-      ) : items.length === 0 ? (
-        <p className="px-2 py-2 text-xs text-muted-foreground">{t("No pending or recently interrupted imports.")}</p>
       ) : (
         <div className="mt-1 grid gap-x-2 px-1 sm:grid-cols-2 lg:grid-cols-3 min-[1100px]:grid-cols-1">
           {items.map((job) => {
@@ -393,7 +400,15 @@ function MeetingImportInbox({
                     </p>
                     <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-ui-micro">
                       <span className={`truncate font-medium ${importStateTone(job.state)}`}>{t(job.status)}</span>
-                      <span className="shrink-0 text-muted-foreground">{formatMoment(job.updatedAt, formatDate)}</span>
+                      {job.updatedAt ? (
+                        <time
+                          className="shrink-0 tabular-nums text-muted-foreground"
+                          dateTime={job.updatedAt}
+                          title={formatFullDateTime(job.updatedAt)}
+                        >
+                          {formatRelativeDate(job.updatedAt)}
+                        </time>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -1265,7 +1280,7 @@ function removeMeetingQueriesAfterRouteCommit(queryClient: QueryClient, meetingI
 }
 
 export default function Meetings({ params }: { params?: { id?: string } }) {
-  const { t, formatDate, formatNumber, localeTag } = useI18n();
+  const { t, formatDate, formatRelativeDate, formatFullDateTime, formatNumber, localeTag } = useI18n();
   const selectedId = params?.id || "";
   const newMeetingSetupEnabled = isNewMeetingSetupEnabled(selectedId);
   const [, setLocation] = useLocation();
@@ -2989,6 +3004,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   return (
     <div
       className="app-page-shell transcription-page meetings-page flex min-h-[calc(100dvh-3.5rem)] flex-col px-4 py-5 md:px-6 md:py-6"
+      data-page-accent="meetings"
       data-page-shell="meetings"
       data-websocket-connected={meetingWsConnected ? "true" : "false"}
     >
@@ -2996,7 +3012,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         eyebrow={t("Meeting workspace")}
         title={t("Meetings")}
         description={t("Record, review, summarize, and follow up in one place.")}
-        sticky={false}
+        accent="meetings"
         titleAccessory={
           activeMeeting ? (
             <Badge variant="outline" className={stateTone(activeMeeting.state)}>
@@ -3074,24 +3090,6 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       <h2 className="sr-only">{t("Meeting workspace")}</h2>
       <div className="grid min-h-[680px] flex-1 gap-4 min-[1100px]:grid-cols-[244px_minmax(0,1fr)]">
         <aside className={`${selectedId ? "hidden min-[1100px]:block" : ""} meetings-history-rail rounded-[22px] p-3`}>
-          <div className="meetings-history-header flex items-center justify-between rounded-[16px] px-3 py-3">
-            <div>
-              <p className="text-sm font-semibold">{t("Meetings")}</p>
-              <p className="text-xs text-muted-foreground">
-                {t("{{count}} saved", { count: formatNumber(meetingsTotal) })}
-              </p>
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              className="h-9 px-3"
-              onClick={() => setLocation("/meetings")}
-              aria-label={t("Create meeting")}
-            >
-              <Plus className="h-4 w-4" />
-              <span>{t("New")}</span>
-            </Button>
-          </div>
           <MeetingImportInbox
             items={meetingImportsQuery.data?.items ?? []}
             loading={meetingImportsQuery.isLoading}
@@ -3103,15 +3101,27 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
             onOpen={(meetingId) => setLocation(`/meetings/${meetingId}`)}
             onRefresh={() => void meetingImportsQuery.refetch()}
           />
-          <div className="mt-3 flex items-center justify-between px-2">
-            <p className="text-xs font-semibold text-foreground">{t("Saved meetings")}</p>
-            {meetings.length > 0 ? (
-              <span className="font-mono text-ui-micro tabular-nums text-muted-foreground">
-                {formatNumber(meetingsTotal)}
-              </span>
-            ) : null}
-          </div>
-          <div className="mt-1.5 grid grid-cols-1 gap-1 sm:grid-cols-2 lg:grid-cols-3 min-[1100px]:block min-[1100px]:space-y-1">
+          <SectionHeading
+            as="h3"
+            size="rail"
+            title={t("Saved meetings")}
+            count={meetings.length > 0 ? formatNumber(meetingsTotal) : undefined}
+            countLabel={t("{{count}} saved", { count: formatNumber(meetingsTotal) })}
+            className="meetings-rail-heading flex-row items-center justify-between gap-2 py-1 pl-2 lg:items-center"
+            actions={
+              <Button
+                type="button"
+                variant="outline"
+                className="h-8 shrink-0 gap-1.5 px-2.5 text-xs"
+                onClick={() => setLocation("/meetings")}
+                aria-label={t("Create meeting")}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>{t("New")}</span>
+              </Button>
+            }
+          />
+          <div className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2 lg:grid-cols-3 min-[1100px]:block min-[1100px]:space-y-1">
             {meetingsQuery.isLoading && (
               <div className="col-span-full flex min-h-[64px] items-center justify-center">
                 <WavePhysicsLoader size="compact" label={t("Loading…")} />
@@ -3125,54 +3135,93 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 className="meetings-history-empty flex min-w-full items-center gap-3 rounded-[14px] px-3 py-4 text-left text-sm text-muted-foreground min-[1100px]:block min-[1100px]:py-8 min-[1100px]:text-center"
                 data-testid="meeting-catalog-empty"
               >
-                <CalendarClock className="h-6 w-6 shrink-0 min-[1100px]:mx-auto min-[1100px]:mb-3 min-[1100px]:h-7 min-[1100px]:w-7" />
+                <CalendarClock
+                  aria-hidden="true"
+                  className="meetings-accent-glyph h-6 w-6 shrink-0 min-[1100px]:mx-auto min-[1100px]:mb-3 min-[1100px]:h-7 min-[1100px]:w-7"
+                />
                 {t("Your first meeting will appear here.")}
               </div>
             )}
-            {meetings.map((meeting) => (
-              <div
-                key={meeting.id}
-                className={`neu-nav-item group flex min-w-0 items-center rounded-[14px] px-1 py-1 min-[1100px]:w-full ${selectedId === meeting.id ? "neu-nav-active text-foreground" : "text-muted-foreground"}`}
-                data-testid={`meeting-catalog-item-${meeting.id}`}
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    meetingDetailPrefetch.forget(meeting.id, true);
-                    setLocation(`/meetings/${meeting.id}`);
-                  }}
-                  onPointerEnter={() => prefetchMeetingDetail(meeting.id, "pointer")}
-                  onPointerLeave={() => meetingDetailPrefetch.leave(meeting.id, "pointer")}
-                  onFocus={() => prefetchMeetingDetail(meeting.id, "focus")}
-                  onBlur={() => meetingDetailPrefetch.leave(meeting.id, "focus")}
-                  className="min-w-0 flex-1 rounded-[10px] px-2 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            {meetings.map((meeting) => {
+              const untitled = isAutoMeetingTitle(meeting.title);
+              const displayTitle = meetingDisplayTitle(meeting.title, t);
+              const createdLabel = meeting.createdAt ? formatRelativeDate(meeting.createdAt) : "";
+              return (
+                <div
+                  key={meeting.id}
+                  className={`meetings-history-item neu-nav-item group flex min-w-0 items-center rounded-[14px] px-1 py-1 min-[1100px]:w-full ${selectedId === meeting.id ? "neu-nav-active text-foreground" : "text-muted-foreground"}`}
+                  data-testid={`meeting-catalog-item-${meeting.id}`}
+                  data-state={meeting.state}
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate text-sm font-medium text-foreground">{meeting.title}</span>
-                    {meeting.state === "recording" && (
-                      <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-red-500" />
-                    )}
-                  </div>
-                  <div className="mt-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                    <span>{formatMoment(meeting.createdAt, formatDate)}</span>
-                    <span className="truncate">{stateLabel(meeting.state, t)}</span>
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  data-testid={`meeting-catalog-discard-${meeting.id}`}
-                  aria-label={t("Delete {{title}}", { title: meeting.title })}
-                  title={
-                    OPEN_STATES.has(meeting.state) ? t("Stop this meeting before deleting it") : t("Delete meeting")
-                  }
-                  disabled={OPEN_STATES.has(meeting.state)}
-                  onClick={() => setMeetingPendingDelete(meeting)}
-                  className={`mr-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground outline-none hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-30 min-[1100px]:h-8 min-[1100px]:w-8 ${selectedId === meeting.id ? "opacity-100" : "opacity-100 min-[1100px]:pointer-events-none min-[1100px]:opacity-0 min-[1100px]:group-hover:pointer-events-auto min-[1100px]:group-hover:opacity-100 min-[1100px]:group-focus-within:pointer-events-auto min-[1100px]:group-focus-within:opacity-100"}`}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            ))}
+                  <button
+                    type="button"
+                    aria-current={selectedId === meeting.id ? "page" : undefined}
+                    onClick={() => {
+                      meetingDetailPrefetch.forget(meeting.id, true);
+                      setLocation(`/meetings/${meeting.id}`);
+                    }}
+                    onPointerEnter={() => prefetchMeetingDetail(meeting.id, "pointer")}
+                    onPointerLeave={() => meetingDetailPrefetch.leave(meeting.id, "pointer")}
+                    onFocus={() => prefetchMeetingDetail(meeting.id, "focus")}
+                    onBlur={() => meetingDetailPrefetch.leave(meeting.id, "focus")}
+                    className="min-w-0 flex-1 rounded-[10px] px-2 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span
+                        className={`truncate text-sm font-medium ${untitled ? "text-muted-foreground" : "text-foreground"}`}
+                        data-untitled={untitled ? "true" : undefined}
+                        data-testid={`meeting-catalog-title-${meeting.id}`}
+                      >
+                        {displayTitle}
+                      </span>
+                      {meeting.state === "recording" && (
+                        <span
+                          className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-red-500 motion-reduce:animate-none"
+                          aria-hidden="true"
+                        />
+                      )}
+                    </div>
+                    <div className="mt-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                      {createdLabel ? (
+                        <time
+                          className="truncate tabular-nums"
+                          dateTime={meeting.createdAt}
+                          title={formatFullDateTime(meeting.createdAt)}
+                        >
+                          {createdLabel}
+                        </time>
+                      ) : (
+                        <span>-</span>
+                      )}
+                      {meeting.state === "ready" ? (
+                        // Ready is the normal resting state; keep it for screen readers only.
+                        <span className="sr-only">{stateLabel(meeting.state, t)}</span>
+                      ) : (
+                        <span
+                          className={`truncate font-medium ${meetingRowStateTone(meeting.state)}`}
+                          data-testid={`meeting-catalog-state-${meeting.id}`}
+                        >
+                          {stateLabel(meeting.state, t)}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid={`meeting-catalog-discard-${meeting.id}`}
+                    aria-label={t("Delete {{title}}", { title: displayTitle })}
+                    title={
+                      OPEN_STATES.has(meeting.state) ? t("Stop this meeting before deleting it") : t("Delete meeting")
+                    }
+                    disabled={OPEN_STATES.has(meeting.state)}
+                    onClick={() => setMeetingPendingDelete(meeting)}
+                    className={`mr-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground outline-none hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-30 min-[1100px]:h-8 min-[1100px]:w-8 ${selectedId === meeting.id ? "opacity-100" : "opacity-100 min-[1100px]:pointer-events-none min-[1100px]:opacity-0 min-[1100px]:group-hover:pointer-events-auto min-[1100px]:group-hover:opacity-100 min-[1100px]:group-focus-within:pointer-events-auto min-[1100px]:group-focus-within:opacity-100"}`}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              );
+            })}
             {meetingsQuery.hasNextPage && (
               <Button
                 type="button"
@@ -3191,9 +3240,11 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
 
         <main className="meetings-workspace-panel min-w-0 overflow-hidden rounded-[26px]">
           {!selectedId ? (
-            <div className="h-full overflow-y-auto">
+            <div className="meetings-new-meeting-scroll h-full overflow-y-auto">
               <header className="border-b border-border/60 px-5 py-5 md:px-6 md:py-6 lg:px-7">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">{t("New meeting")}</p>
+                <p className="meetings-accent-text text-[11px] font-semibold uppercase tracking-[0.16em]">
+                  {t("New meeting")}
+                </p>
                 <h2 className="mt-1 font-heading text-[26px] font-semibold leading-tight tracking-[-0.03em] md:text-[28px]">
                   {t("Ready to start")}
                 </h2>
@@ -3215,8 +3266,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     { icon: Waves, label: "Audio cleanup", detail: "Reduces echo, noise, and reverberation" },
                   ].map(({ icon: Icon, label, detail }) => (
                     <div key={label} className="flex min-w-0 items-center gap-2.5">
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-                        <Icon className="h-4 w-4 text-primary" />
+                      <span className="meetings-accent-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-lg">
+                        <Icon className="h-4 w-4" aria-hidden="true" />
                       </span>
                       <div>
                         <p className="text-sm font-medium">{t(label)}</p>
@@ -3575,7 +3626,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     </div>
                   </div>
                 </section>
-                <aside className="h-fit min-w-0 rounded-[22px] border border-border/70 bg-background/45 p-4 min-[1380px]:sticky min-[1380px]:top-4">
+                <aside className="h-fit min-w-0 rounded-[22px] border border-border/70 bg-background/45 p-4 min-[1380px]:sticky min-[1380px]:top-24">
                   <div className="flex items-center gap-2">
                     <ShieldCheck
                       className={`h-4 w-4 ${longSessionReady ? "text-emerald-600 dark:text-emerald-300" : "text-amber-600 dark:text-amber-300"}`}
@@ -3753,9 +3804,10 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                       <div className="flex min-w-0 items-start gap-1.5">
                         <h2
                           data-testid="meeting-detail-title"
-                          className="min-w-0 text-balance font-heading text-[22px] font-semibold leading-[1.15] tracking-[-0.025em] md:text-[24px]"
+                          className={`min-w-0 text-balance font-heading text-[22px] font-semibold leading-[1.15] tracking-[-0.025em] md:text-[24px] ${isAutoMeetingTitle(detail.title) ? "text-muted-foreground" : ""}`}
+                          data-untitled={isAutoMeetingTitle(detail.title) ? "true" : undefined}
                         >
-                          {detail.title}
+                          {meetingDisplayTitle(detail.title, t)}
                         </h2>
                         <Button
                           data-testid="meeting-title-edit"
@@ -3777,7 +3829,10 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                       {stateLabel(detail.state, t)}
                     </Badge>
                   </div>
-                  <p className="mt-1 text-xs text-muted-foreground">
+                  <p
+                    className="mt-1 text-xs text-muted-foreground"
+                    title={formatFullDateTime(detail.startedAt || detail.createdAt) || undefined}
+                  >
                     {t("Started {{moment}}", {
                       moment: formatMoment(detail.startedAt || detail.createdAt, formatDate),
                     })}

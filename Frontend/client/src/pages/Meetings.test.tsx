@@ -2,8 +2,9 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { LocaleProvider, LANGUAGE_STORAGE_KEY } from "@/i18n";
-import type { MeetingDetail, MeetingSegment } from "@/lib/api-types";
+import type { MeetingDetail, MeetingImportJob, MeetingSegment } from "@/lib/api-types";
 import { MEETING_HISTORY_QUERY_KEY } from "@/lib/meeting-cache";
+import { MEETING_IMPORTS_QUERY_KEY } from "@/lib/meeting-import-cache";
 import { createReviewPlaybackLookup } from "@/lib/meeting-review-timeline";
 import Meetings from "./Meetings";
 
@@ -430,4 +431,95 @@ it("memoized rows refresh speaker labels and translations without a segment text
   });
   expect(row()).toHaveTextContent("Ada");
   expect(row()).toHaveTextContent("Review passage 0");
+});
+
+function seedHistory(items: MeetingDetail[]) {
+  client.setQueryData(MEETING_HISTORY_QUERY_KEY, {
+    pages: [{ items, total: items.length, offset: 0, activeMeeting: null }],
+    pageParams: [0],
+  });
+}
+
+function importJob(overrides: Partial<MeetingImportJob> = {}): MeetingImportJob {
+  return {
+    apiVersion: "1",
+    id: "import-1",
+    state: "failed",
+    sourceFilename: "weekly.m4a",
+    title: "Weekly sync recording",
+    language: "en",
+    profileId: "",
+    expectedBytes: 1024,
+    receivedBytes: 512,
+    progress: 0.5,
+    status: "Import interrupted",
+    meetingId: null,
+    cancelRequested: false,
+    canCancel: false,
+    canRetry: false,
+    errorCode: null,
+    errorMessage: null,
+    createdAt: "2026-10-01T12:00:00Z",
+    updatedAt: "2026-10-01T12:05:00Z",
+    finishedAt: null,
+    ...overrides,
+  };
+}
+
+it("shows the imports block only while imports need attention and counts meetings once", async () => {
+  seedHistory([meeting("meeting-2")]);
+  client.setQueryData(MEETING_IMPORTS_QUERY_KEY, { apiVersion: "1", items: [], total: 0, limit: 24 });
+  renderMeeting();
+  expect(screen.queryByTestId("meeting-import-inbox")).not.toBeInTheDocument();
+  expect(screen.queryByText("No pending or recently interrupted imports.")).not.toBeInTheDocument();
+  // One count, attached to the rail heading.
+  expect(screen.getByRole("heading", { name: "Saved meetings" })).toBeInTheDocument();
+  expect(screen.queryByText("1 saved")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("1 saved")).toHaveTextContent("1");
+
+  act(() => {
+    client.setQueryData(MEETING_IMPORTS_QUERY_KEY, {
+      apiVersion: "1",
+      items: [importJob()],
+      total: 1,
+      limit: 24,
+    });
+  });
+  const inbox = await screen.findByTestId("meeting-import-inbox");
+  expect(inbox).toHaveTextContent("Imports");
+  expect(inbox).toHaveTextContent("Weekly sync recording");
+  const updated = inbox.querySelector("time")!;
+  expect(updated).toHaveAttribute("datetime", "2026-10-01T12:05:00Z");
+  expect(updated.getAttribute("title")).toBeTruthy();
+});
+
+it("hides the ready state in history rows but keeps deviating states and accessible names", () => {
+  const ready = meeting("meeting-ready");
+  const failed = { ...meeting("meeting-failed"), state: "finalization_failed" as const };
+  seedHistory([ready, failed]);
+  renderMeeting();
+  expect(screen.queryByTestId("meeting-catalog-state-meeting-ready")).not.toBeInTheDocument();
+  const readyRow = screen.getByTestId("meeting-catalog-item-meeting-ready");
+  expect(readyRow.querySelector(".sr-only")).toHaveTextContent("Ready");
+  expect(screen.getByTestId("meeting-catalog-state-meeting-failed")).toHaveTextContent("Transcript needs attention");
+  const created = readyRow.querySelector("time")!;
+  expect(created).toHaveAttribute("datetime", ready.createdAt);
+  expect(created.getAttribute("title")).toBeTruthy();
+});
+
+it("shows store-generated titles as untitled without changing the stored title", () => {
+  const generated = { ...meeting("meeting-auto"), title: "Meeting 2026-10-27" };
+  const custom = { ...meeting("meeting-custom"), title: "Meeting 2026-10-27 Budget" };
+  seedHistory([generated, custom]);
+  renderMeeting({ ...meeting(), title: "Meeting 2026-10-01" });
+
+  const autoTitle = screen.getByTestId("meeting-catalog-title-meeting-auto");
+  expect(autoTitle).toHaveTextContent("Untitled meeting");
+  expect(autoTitle).toHaveAttribute("data-untitled", "true");
+  expect(screen.getByTestId("meeting-catalog-title-meeting-custom")).toHaveTextContent("Meeting 2026-10-27 Budget");
+  expect(screen.getByTestId("meeting-detail-title")).toHaveTextContent("Untitled meeting");
+
+  fireEvent.click(screen.getByTestId("meeting-title-edit"));
+  expect(screen.getByTestId("meeting-title-input")).toHaveValue("Meeting 2026-10-01");
+  expect(client.getQueryData<MeetingDetail>(["/api/meetings", "meeting-1"])?.title).toBe("Meeting 2026-10-01");
 });

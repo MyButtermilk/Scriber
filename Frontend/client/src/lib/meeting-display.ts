@@ -35,3 +35,12 @@ export function genericMeetingSpeakerLabels(
   });
   return labels;
 }
+
+// The meeting store names an untitled meeting `Meeting YYYY-MM-DD`
+// (src/data/meeting_store.py, `f"Meeting {now[:10]}"`). Only that exact
+// generated form counts; any title with extra user text is kept as written.
+const AUTO_MEETING_TITLE = /^Meeting \d{4}-\d{2}-\d{2}$/;
+
+export function isAutoMeetingTitle(title: string): boolean {
+  return AUTO_MEETING_TITLE.test(title);
+}

@@ -21,6 +21,11 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def subscription_identifier(feed_url: str) -> str:
+    """Stable ID of a normalized feed URL; directory search results share it."""
+    return sha256(feed_url.encode()).hexdigest()[:32]
+
+
 class RefreshResult(NamedTuple):
     queued: int
     discovered: int
@@ -50,7 +55,8 @@ class PodcastStore:
                     id TEXT PRIMARY KEY, feed_url TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
                     author TEXT NOT NULL, description TEXT NOT NULL, website_url TEXT NOT NULL,
                     auto_process INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
-                    last_checked_at TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT ''
+                    last_checked_at TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
+                    artwork_url TEXT NOT NULL DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS episodes (
                     id TEXT PRIMARY KEY, subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
@@ -68,6 +74,11 @@ class PodcastStore:
                 CREATE INDEX IF NOT EXISTS podcast_episode_transcript ON episodes(transcript_id);
                 CREATE INDEX IF NOT EXISTS podcast_episode_subscription ON episodes(subscription_id, published_at DESC);
             """)
+            # Cover artwork is additive: older subscriptions start without one
+            # and receive it from their next successful feed refresh.
+            subscription_columns = {row["name"] for row in con.execute("PRAGMA table_info(subscriptions)")}
+            if "artwork_url" not in subscription_columns:
+                con.execute("ALTER TABLE subscriptions ADD COLUMN artwork_url TEXT NOT NULL DEFAULT ''")
             columns = {row["name"] for row in con.execute("PRAGMA table_info(episodes)")}
             if "download_only" not in columns:
                 con.execute("ALTER TABLE episodes ADD COLUMN download_only INTEGER NOT NULL DEFAULT 0")
@@ -112,7 +123,7 @@ class PodcastStore:
             return dict(row) if row else None
 
     def add(self, feed_url: str, feed: PodcastFeed, *, auto_process: bool) -> str:
-        identifier = sha256(feed_url.encode()).hexdigest()[:32]
+        identifier = subscription_identifier(feed_url)
         stamp = now_iso()
         with self._connect() as con:
             existing = con.execute("SELECT id FROM subscriptions WHERE feed_url=?", (feed_url,)).fetchone()
@@ -122,8 +133,9 @@ class PodcastStore:
                 raise PodcastError("The subscription limit of 100 podcasts has been reached.")
             con.execute(
                 """
-                INSERT INTO subscriptions (id,feed_url,title,author,description,website_url,auto_process,created_at,last_checked_at)
-                VALUES (?,?,?,?,?,?,?,?,?)
+                INSERT INTO subscriptions
+                (id,feed_url,title,author,description,website_url,auto_process,created_at,last_checked_at,artwork_url)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
             """,
                 (
                     identifier,
@@ -135,6 +147,7 @@ class PodcastStore:
                     int(auto_process),
                     stamp,
                     stamp,
+                    feed.artwork_url,
                 ),
             )
             # The back catalogue the user just subscribed to is not "new".
@@ -227,9 +240,20 @@ class PodcastStore:
                 seen_at="",
             )
             self._insert_episodes(con, identifier, feed, queue_limit=0, stamp=stamp, seen_at=stamp)
+            # A feed that stops declaring artwork keeps the last known cover.
             con.execute(
-                "UPDATE subscriptions SET title=?,author=?,description=?,website_url=?,last_checked_at=?,error='' WHERE id=?",
-                (feed.title, feed.author, feed.description, feed.website_url, stamp, identifier),
+                """UPDATE subscriptions SET title=?,author=?,description=?,website_url=?,last_checked_at=?,error='',
+                artwork_url=CASE WHEN ?<>'' THEN ? ELSE artwork_url END WHERE id=?""",
+                (
+                    feed.title,
+                    feed.author,
+                    feed.description,
+                    feed.website_url,
+                    stamp,
+                    feed.artwork_url,
+                    feed.artwork_url,
+                    identifier,
+                ),
             )
             con.execute(
                 """DELETE FROM episodes WHERE subscription_id=? AND status='available' AND id NOT IN

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -8,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import aiohttp
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -120,6 +122,12 @@ class FakeTransport:
 
     async def search(self, query: str) -> list[dict[str, str]]:
         return [{"id": "a" * 32, "title": "Podcast", "author": "Creator", "feedUrl": "https://example.com/feed"}]
+
+    def search_artwork(self, identifier: str) -> str:
+        return ""
+
+    async def artwork(self, url: str) -> tuple[bytes, str]:
+        raise PodcastError("The podcast artwork is not a supported image.")
 
     async def download(self, url: str, target: Path, *, max_bytes: int) -> int:
         self.downloads.append(url)
@@ -1587,3 +1595,256 @@ def test_podcast_parser_frozen_contract_and_probe() -> None:
     modules = {name for name, _ in RUNTIME_REQUIRED_IMPORTS}
     assert {"html", "email.utils", "ipaddress", "xml.etree.ElementTree"} <= modules
     assert check_podcast_feed_runtime() == []
+
+
+_PNG = b"\x89PNG\r\n\x1a\n" + b"p" * 32
+_JPEG = b"\xff\xd8\xff\xe0" + b"j" * 32
+_ITEM = '<item><guid>a</guid><enclosure url="https://example.com/a.mp3" type="audio/mpeg"/></item>'
+
+
+def _rss(channel_extra: str) -> bytes:
+    return (
+        '<rss xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel><title>Show</title>'
+        f"{channel_extra}{_ITEM}</channel></rss>"
+    ).encode()
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        (
+            '<itunes:image href="https://cdn.example.com/cover.jpg"/>'
+            "<image><url>https://example.com/rss.png</url></image>",
+            "https://cdn.example.com/cover.jpg",
+        ),
+        ("<image><url>https://example.com/rss.png</url></image>", "https://example.com/rss.png"),
+        (
+            '<itunes:image href="http://example.com/plain.jpg"/><image><url>https://example.com/rss.png</url></image>',
+            "https://example.com/rss.png",
+        ),
+        ('<itunes:image href="https://127.0.0.1/private.jpg"/>', ""),
+        ('<itunes:image href="file:///C:/cover.jpg"/>', ""),
+        ("", ""),
+    ],
+    ids=["itunes-preferred", "rss-image", "http-skipped", "private", "file", "missing"],
+)
+def test_rss_artwork_prefers_itunes_image_and_accepts_only_public_https(extra: str, expected: str) -> None:
+    assert parse_feed(_rss(extra)).artwork_url == expected
+
+
+@pytest.mark.asyncio
+async def test_search_keeps_directory_artwork_backend_side_keyed_by_result_id() -> None:
+    transport = PodcastHttp()
+    transport._bytes = AsyncMock(
+        return_value=b"""{"results":[
+        {"collectionName":"Big","artistName":"A","feedUrl":"https://example.com/big",
+         "artworkUrl100":"https://img.example.com/100.jpg","artworkUrl600":"https://img.example.com/600.jpg"},
+        {"collectionName":"Small","artistName":"B","feedUrl":"https://example.com/small",
+         "artworkUrl100":"https://img.example.com/small100.jpg"},
+        {"collectionName":"None","artistName":"C","feedUrl":"https://example.com/none",
+         "artworkUrl600":"http://img.example.com/insecure.jpg"}]}"""
+    )
+    results = await transport.search("shows")
+    assert all(set(item) == {"id", "title", "author", "feedUrl"} for item in results)
+    big, small, none = (item["id"] for item in results)
+    assert transport.search_artwork(big) == "https://img.example.com/600.jpg"
+    assert transport.search_artwork(small) == "https://img.example.com/small100.jpg"
+    assert transport.search_artwork(none) == ""
+
+
+def _image_response(body: bytes, content_type: str, *, length: int | None = None):
+    class Content:
+        async def iter_chunked(self, size: int):
+            for start in range(0, len(body), 1024 * 1024):
+                yield body[start : start + 1024 * 1024]
+
+    return SimpleNamespace(
+        headers={"Content-Type": content_type}, content_length=length, content=Content(), release=Mock()
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "content_type", "length", "accepted"),
+    [
+        (_PNG, "image/png", None, True),
+        (_JPEG, "image/jpeg; charset=binary", None, True),
+        (b"RIFF0000WEBPVP8 ", "image/webp", None, True),
+        (b"<svg onload=alert(1)>", "image/svg+xml", None, False),
+        (b"<html></html>", "text/html", None, False),
+        (_PNG, "image/jpeg", None, False),
+        (_PNG, "image/png", 3 * 1024 * 1024, False),
+        (b"\x89PNG\r\n\x1a\n" + b"x" * (2 * 1024 * 1024), "image/png", None, False),
+    ],
+    ids=["png", "jpeg", "webp", "svg", "html", "mismatch", "declared-too-large", "streamed-too-large"],
+)
+async def test_artwork_fetch_enforces_type_allowlist_signature_and_size(
+    body: bytes, content_type: str, length: int | None, accepted: bool
+) -> None:
+    transport = PodcastHttp()
+    response = _image_response(body, content_type, length=length)
+    transport._response = AsyncMock(return_value=response)
+    if accepted:
+        assert await transport.artwork("https://img.example.com/cover") == (body, content_type.split(";")[0])
+    else:
+        with pytest.raises(PodcastError):
+            await transport.artwork("https://img.example.com/cover")
+    assert transport._response.await_args.kwargs == {"artwork": True}
+    response.release.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_artwork_uses_a_cookieless_pool_and_rejects_plain_http_including_redirects() -> None:
+    transport = PodcastHttp()
+    client = transport._artwork_client()
+    try:
+        assert client is not transport._client()
+        assert isinstance(client.cookie_jar, aiohttp.DummyCookieJar)
+        assert client.connector.limit == 2
+    finally:
+        await transport.close()
+    assert transport._artwork_session is None
+    transport = PodcastHttp()
+    transport._artwork_session = SimpleNamespace(get=AsyncMock(side_effect=AssertionError("network")))
+    with pytest.raises(PodcastError, match="HTTPS"):
+        await transport._response("http://img.example.com/cover.jpg", artwork=True)
+    redirect = SimpleNamespace(status=302, headers={"Location": "http://img.example.com/plain.jpg"}, release=Mock())
+    transport._artwork_session = SimpleNamespace(get=AsyncMock(return_value=redirect))
+    with pytest.raises(PodcastError, match="HTTPS"):
+        await transport._response("https://img.example.com/cover.jpg", artwork=True)
+    assert transport._artwork_session.get.await_count == 1
+
+
+def test_store_migration_adds_artwork_and_refresh_fills_it_without_clearing(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = tmp_path / "podcasts.db"
+    with sqlite3.connect(path) as legacy:
+        legacy.execute(
+            """CREATE TABLE subscriptions (
+            id TEXT PRIMARY KEY, feed_url TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
+            author TEXT NOT NULL, description TEXT NOT NULL, website_url TEXT NOT NULL,
+            auto_process INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
+            last_checked_at TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '')"""
+        )
+        legacy.execute(
+            "INSERT INTO subscriptions (id,feed_url,title,author,description,website_url,created_at) "
+            "VALUES ('a','https://example.com/feed','Old','A','D','','2026-01-01T00:00:00+00:00')"
+        )
+    legacy.close()
+    store = PodcastStore(path)
+    store.initialize()
+    store.initialize()
+    assert store.subscription("a")["artwork_url"] == ""
+    store.refresh("a", replace(_feed(1), artwork_url="https://img.example.com/cover.jpg"))
+    assert store.subscription("a")["artwork_url"] == "https://img.example.com/cover.jpg"
+    store.refresh("a", _feed(1))
+    assert store.subscription("a")["artwork_url"] == "https://img.example.com/cover.jpg"
+    identifier = store.add(
+        "https://example.com/new", replace(_feed(2), artwork_url="https://img.example.com/n.png"), auto_process=False
+    )
+    assert store.subscription(identifier)["artwork_url"] == "https://img.example.com/n.png"
+
+
+class _ArtworkTransport(FakeTransport):
+    def __init__(self, feed: PodcastFeed, *, search: dict[str, str] | None = None) -> None:
+        super().__init__(feed)
+        self.search_covers = search or {}
+        self.artwork_calls: list[str] = []
+        self.artwork_result: tuple[bytes, str] | Exception = (_PNG, "image/png")
+
+    def search_artwork(self, identifier: str) -> str:
+        return self.search_covers.get(identifier, "")
+
+    async def artwork(self, url: str) -> tuple[bytes, str]:
+        self.artwork_calls.append(url)
+        if isinstance(self.artwork_result, Exception):
+            raise self.artwork_result
+        return self.artwork_result
+
+
+@pytest.mark.asyncio
+async def test_service_caches_cover_on_disk_and_route_reports_missing_artwork(tmp_path: Path) -> None:
+    cover = "https://img.example.com/cover.png?token=PRIVATE_TOKEN"
+    transport = _ArtworkTransport(replace(_feed(1), artwork_url=cover))
+    service = PodcastService(
+        tmp_path / "podcasts", PodcastProcessor(FakeController(tmp_path)), transport=transport, startup_delay=600
+    )
+    records: list[str] = []
+    from loguru import logger
+
+    sink = logger.add(lambda record: records.append(str(record)), serialize=True)
+    try:
+        app = web.Application()
+        register_podcast_routes(app, factory=lambda: service)
+        async with TestClient(TestServer(app)) as client:
+            created = await client.post(
+                "/api/podcasts/subscriptions", json={"feedUrl": "https://example.com/feed", "autoProcess": False}
+            )
+            identifier = (await created.json())["id"]
+            library = await (await client.get("/api/podcasts")).json()
+            assert library["subscriptions"][0]["hasArtwork"] is True
+            assert "artworkUrl" not in library["subscriptions"][0]
+            assert cover not in json.dumps(library)
+            for _ in range(2):
+                response = await client.get(f"/api/podcasts/artwork/{identifier}")
+                assert response.status == 200
+                assert response.headers["Content-Type"] == "image/png"
+                assert await response.read() == _PNG
+            assert transport.artwork_calls == [cover]
+            cached = list((tmp_path / "podcasts" / "artwork").iterdir())
+            assert [path.suffix for path in cached] == [".png"]
+            assert (await client.get(f"/api/podcasts/artwork/{'f' * 32}")).status == 404
+            assert (await client.delete(f"/api/podcasts/subscriptions/{identifier}")).status == 200
+            assert list((tmp_path / "podcasts" / "artwork").iterdir()) == []
+            assert (await client.get(f"/api/podcasts/artwork/{identifier}")).status == 404
+    finally:
+        logger.remove(sink)
+        await service.close()
+    assert "PRIVATE_TOKEN" not in "".join(records)
+    assert "img.example.com" not in "".join(records)
+
+
+@pytest.mark.asyncio
+async def test_failed_cover_falls_back_quietly_and_is_not_refetched_each_render(tmp_path: Path) -> None:
+    transport = _ArtworkTransport(replace(_feed(1), artwork_url="https://img.example.com/huge.png"))
+    transport.artwork_result = PodcastError("The podcast artwork is too large.")
+    service = PodcastService(
+        tmp_path / "podcasts", PodcastProcessor(FakeController(tmp_path)), transport=transport, startup_delay=600
+    )
+    try:
+        identifier = await service.subscribe("https://example.com/feed", auto_process=False)
+        assert await service.artwork(identifier) is None
+        assert await service.artwork(identifier) is None
+        assert len(transport.artwork_calls) == 1
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_subscription_without_feed_cover_keeps_the_directory_artwork(tmp_path: Path) -> None:
+    from src.podcasts.store import subscription_identifier
+
+    identifier = subscription_identifier("https://example.com/feed")
+    transport = _ArtworkTransport(_feed(1), search={identifier: "https://img.example.com/600.jpg"})
+    transport.artwork_result = (_JPEG, "image/jpeg")
+    service = PodcastService(
+        tmp_path / "podcasts", PodcastProcessor(FakeController(tmp_path)), transport=transport, startup_delay=600
+    )
+    try:
+        # A search result can be previewed before subscribing.
+        assert await service.artwork(identifier) == (_JPEG, "image/jpeg")
+        assert await service.subscribe("https://example.com/feed", auto_process=False) == identifier
+        assert service._store.subscription(identifier)["artwork_url"] == "https://img.example.com/600.jpg"
+        assert await service.artwork("e" * 32) is None
+    finally:
+        await service.close()
+
+
+def test_every_classified_failure_message_is_still_raised_by_the_podcast_domain() -> None:
+    from src.api.podcast_routes import _FAILURE_KINDS
+
+    source = "".join(
+        path.read_text(encoding="utf-8") for path in (Path(__file__).parents[1] / "src" / "podcasts").glob("*.py")
+    )
+    assert [message for message in _FAILURE_KINDS if message not in source] == []

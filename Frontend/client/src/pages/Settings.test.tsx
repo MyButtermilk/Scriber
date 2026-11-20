@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { LANGUAGE_STORAGE_KEY, LocaleProvider } from "@/i18n";
 import { InfoTooltip } from "@/components/ui/info-tooltip";
 import { invalidateSettingsBootstrap } from "@/lib/settings-bootstrap";
@@ -108,6 +108,41 @@ it("shows persisted settings before slow devices and autostart, and keeps them a
   expect(view.container.textContent).toContain("Ctrl + Alt + X");
   expect(toast).toHaveBeenCalledTimes(1);
   expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: "Failed to load microphones" }));
+});
+
+it("section nav scrolls only the app viewport, clamped to its range, so the layout frame never shifts", async () => {
+  const scrollIntoView = vi.fn();
+  const originalScrollIntoView = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = scrollIntoView;
+  onTestFinished(() => {
+    Element.prototype.scrollIntoView = originalScrollIntoView;
+  });
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+    callback(0);
+    return 0;
+  });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <LocaleProvider>
+        <div className="app-scroll-viewport" data-testid="viewport">
+          <Settings />
+        </div>
+      </LocaleProvider>
+    </QueryClientProvider>,
+  );
+  const viewport = view.getByTestId("viewport");
+  const scrollTo = vi.fn();
+  viewport.scrollTo = scrollTo as unknown as typeof viewport.scrollTo;
+  Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 3000 });
+  Object.defineProperty(viewport, "clientHeight", { configurable: true, value: 800 });
+  await waitFor(() => expect(view.container.querySelector('[data-page-shell="settings"]')).toHaveClass("opacity-100"));
+  const language = view.container.querySelector<HTMLElement>("#settings-language")!;
+  language.getBoundingClientRect = () => ({ top: 5000 }) as DOMRect;
+
+  fireEvent.click(view.container.querySelector('[data-settings-nav-section="language"]')!);
+
+  expect(scrollIntoView).not.toHaveBeenCalled();
+  expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ top: 2200 }));
 });
 
 it("reports only the primary settings error when settings and microphones both fail", async () => {
@@ -340,4 +375,43 @@ it("persists a return to the saved slider value behind an outstanding commit", a
   });
   await waitFor(() => expect(settingsPuts()).toEqual([{ visualizerBarCount: 60 }, { visualizerBarCount: 45 }]));
   expect(slider).toHaveValue("45");
+});
+
+const DESKTOP_UPDATE_CACHE_KEY = "scriber:desktop-update-cache:v2";
+
+function updateTileValue(label: string): HTMLElement {
+  const value = screen.getByText(label).nextElementSibling;
+  if (!(value instanceof HTMLElement)) throw new Error(`Update tile "${label}" has no value`);
+  return value;
+}
+
+it("labels the installed version tile and offers install only when an update is available", async () => {
+  localStorage.removeItem(DESKTOP_UPDATE_CACHE_KEY);
+  await mountLoaded();
+  expect(screen.getByText("Installed")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Check for updates" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Install and restart" })).not.toBeInTheDocument();
+  expect(updateTileValue("Last check")).toHaveTextContent("Never");
+});
+
+it("shows install for an available update with relative check times and full-date tooltips", async () => {
+  const lastCheckedAt = new Date();
+  localStorage.setItem(
+    DESKTOP_UPDATE_CACHE_KEY,
+    JSON.stringify({
+      phase: "available",
+      enabled: true,
+      currentVersion: "0.5.144",
+      version: "99.0.0",
+      lastCheckedAt: lastCheckedAt.toISOString(),
+      message: "Scriber {{version}} is available.",
+      messageValues: { version: "99.0.0" },
+    }),
+  );
+  onTestFinished(() => localStorage.removeItem(DESKTOP_UPDATE_CACHE_KEY));
+  await mountLoaded();
+  expect(screen.getByRole("button", { name: "Install and restart" })).toBeEnabled();
+  const lastCheck = updateTileValue("Last check");
+  expect(lastCheck.textContent).toMatch(/^Today, /);
+  expect(lastCheck).toHaveAttribute("title", expect.stringContaining(String(lastCheckedAt.getFullYear())));
 });

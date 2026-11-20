@@ -4,6 +4,7 @@ import {
   BarChart3,
   CalendarClock,
   ChevronDown,
+  ChevronRight,
   Cloud,
   Download,
   ExternalLink,
@@ -164,7 +165,8 @@ import {
 } from "@/lib/meta-transcription-settings";
 
 type Translate = ReturnType<typeof useI18n>["t"];
-type FormatDate = ReturnType<typeof useI18n>["formatDate"];
+type FormatRelativeDate = ReturnType<typeof useI18n>["formatRelativeDate"];
+type FormatFullDateTime = ReturnType<typeof useI18n>["formatFullDateTime"];
 
 const LANGUAGE_OPTIONS = [
   { value: "auto", label: "Auto-detect" },
@@ -207,14 +209,20 @@ function captureScrollSnapshot(): ScrollSnapshot | null {
   };
 }
 
-function formatUpdateTimestamp(value: string | undefined, formatDate: FormatDate, t: Translate): string {
-  if (!value) return t("Never");
+type SettingsTimestamp = { label: string; title?: string };
+
+// Settings timestamps share the app-wide relative shape ("Heute, 09:32",
+// "Morgen, 11:14", "17. Nov., 14:44"); the unambiguous timestamp is the tooltip.
+function formatSettingsTimestamp(
+  value: string | undefined,
+  formatRelativeDate: FormatRelativeDate,
+  formatFullDateTime: FormatFullDateTime,
+  t: Translate,
+): SettingsTimestamp {
+  if (!value) return { label: t("Never") };
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return t("Unknown");
-  return formatDate(parsed, {
-    dateStyle: "short",
-    timeStyle: "short",
-  });
+  if (Number.isNaN(parsed.getTime())) return { label: t("Unknown") };
+  return { label: formatRelativeDate(parsed), title: formatFullDateTime(parsed) };
 }
 
 function outlookSyncErrorMessage(value: string | undefined, t: Translate): string {
@@ -1300,6 +1308,18 @@ function SettingsSubsection({
   );
 }
 
+// The settings section nav lives inside the sticky page header, so sections
+// must clear the header's stuck (condensed) height, not its resting height.
+function settingsStickyOffset(): number {
+  const intro = document.querySelector<HTMLElement>(".settings-page [data-page-intro]");
+  const condensedHeight = Number(intro?.dataset.condensedHeight);
+  const height =
+    Number.isFinite(condensedHeight) && condensedHeight > 0
+      ? condensedHeight
+      : (intro?.getBoundingClientRect().height ?? 0);
+  return Math.ceil(height) + 16;
+}
+
 function revealRequestedSettingsSection(section: string) {
   if (!isSettingsSectionKey(section)) {
     return;
@@ -1314,11 +1334,22 @@ function revealRequestedSettingsSection(section: string) {
     if (!target) {
       return;
     }
-    const stickyHeader = document.querySelector<HTMLElement>(".settings-page .settings-sticky-nav");
-    const stickyOffset = Math.ceil(stickyHeader?.getBoundingClientRect().height || 0) + 16;
+    const stickyOffset = settingsStickyOffset();
     target.style.scrollMarginTop = `${stickyOffset}px`;
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    target.scrollIntoView({ block: "start", behavior: reduceMotion ? "auto" : "smooth" });
+    const behavior: ScrollBehavior = reduceMotion ? "auto" : "smooth";
+    // Scroll only the app viewport. scrollIntoView() also scrolls overflow-hidden
+    // layout ancestors when the last sections cannot reach the top, which shifts
+    // the whole window frame and hides the sticky section nav.
+    const viewport = target.closest<HTMLElement>(".app-scroll-viewport");
+    if (viewport && typeof viewport.scrollTo === "function") {
+      const offsetTop =
+        target.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop - stickyOffset;
+      const maxTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+      viewport.scrollTo({ top: Math.min(Math.max(0, offsetTop), maxTop), behavior });
+    } else {
+      target.scrollIntoView({ block: "start", behavior });
+    }
     target.classList.add("settings-section-attention");
     window.setTimeout(() => {
       target.classList.remove("settings-section-attention");
@@ -1917,7 +1948,7 @@ function ApiCredentialRow({
               <Button
                 variant={saved ? "default" : "outline"}
                 onClick={onSave}
-                className={cn(saved && "border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700")}
+                className={cn(saved && "settings-cta-saved")}
               >
                 <TransitionIcon
                   state={saved ? "b" : "a"}
@@ -1938,7 +1969,8 @@ function ApiCredentialRow({
 }
 
 export default function Settings() {
-  const { t, locale, localeTag, setLocale, formatDate, formatNumber } = useI18n();
+  const { t, locale, localeTag, setLocale, formatDate, formatNumber, formatRelativeDate, formatFullDateTime } =
+    useI18n();
   const [transcriptionProviderModels, setTranscriptionProviderModels] = useState<Record<string, string>>({});
   const providerModelOptions = useMemo(
     () => createProviderModelOptions(localeTag, t, transcriptionProviderModels),
@@ -2542,9 +2574,13 @@ export default function Settings() {
       return;
     }
 
-    const stickyHeader = document.querySelector<HTMLElement>(".settings-page .settings-sticky-nav");
+    // The section nav sits inside the sticky PageIntro, so the activation line is
+    // the header's live bottom edge (it shrinks while condensing), not the nav's.
+    const stickyHeader =
+      document.querySelector<HTMLElement>(".settings-page [data-page-intro]") ??
+      document.querySelector<HTMLElement>(".settings-page .settings-sticky-nav");
     const scrollContainer = document.querySelector<HTMLElement>('[data-app-scroll-container="true"]');
-    const stickyOffset = Math.ceil(stickyHeader?.getBoundingClientRect().height || 0) + 16;
+    const stickyOffset = settingsStickyOffset();
     let animationFrame: number | null = null;
     const updateActiveSection = () => {
       animationFrame = null;
@@ -4812,12 +4848,18 @@ export default function Settings() {
     if (desktopUpdate.enabled) return t("Current");
     return t("Not configured");
   })();
-  const desktopUpdateLastCheckedLabel = formatUpdateTimestamp(desktopUpdate.lastCheckedAt, formatDate, t);
-  const desktopUpdateNextCheckLabel = !desktopUpdate.autoCheckEnabled
-    ? t("Automatic checks disabled")
+  const formatTimestamp = (value: string | undefined) =>
+    formatSettingsTimestamp(value, formatRelativeDate, formatFullDateTime, t);
+  const desktopUpdateLastChecked = formatTimestamp(desktopUpdate.lastCheckedAt);
+  const desktopUpdateNextCheck: SettingsTimestamp = !desktopUpdate.autoCheckEnabled
+    ? { label: t("Automatic checks disabled") }
     : desktopUpdate.lastCheckedAt && desktopUpdate.nextCheckAt
-      ? formatUpdateTimestamp(desktopUpdate.nextCheckAt, formatDate, t)
-      : t("When Scriber starts");
+      ? formatTimestamp(desktopUpdate.nextCheckAt)
+      : { label: t("When Scriber starts") };
+  // Install is offered only for an actionable update or one already underway;
+  // otherwise "Check for updates" is the single action, with no disabled CTA.
+  const showDesktopUpdateInstall =
+    desktopUpdate.available || desktopUpdate.phase === "installing" || isInstallingDesktopUpdate;
   const desktopUpdateAvailableVersionLabel = (() => {
     if (desktopUpdate.version) return desktopUpdate.version;
     if (desktopUpdate.phase === "idle") return t("Not checked");
@@ -5417,6 +5459,7 @@ export default function Settings() {
 
   return (
     <div
+      data-page-accent="settings"
       data-page-shell="settings"
       className={cn(
         "app-page-shell settings-page px-4 py-5 text-[13px] transition-opacity duration-150 md:px-6 md:py-6",
@@ -5438,39 +5481,40 @@ export default function Settings() {
         description={t(
           "Configure capture, transcription providers, AI processing, credentials, updates, and language behavior.",
         )}
-        sticky={false}
+        accent="settings"
+        bottomContent={
+          <nav
+            aria-label={t("Settings sections")}
+            className="settings-sticky-nav settings-section-nav -mx-1 overflow-x-auto px-1"
+          >
+            <div className="flex w-max items-center gap-1">
+              {settingsNavItems.map((item) => {
+                const active = activeSettingsSection === item.section;
+                return (
+                  <a
+                    key={item.href}
+                    href={item.href}
+                    aria-current={active ? "location" : undefined}
+                    data-settings-nav-section={item.section}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      window.history.replaceState(null, "", item.href);
+                      requestSettingsSection(item.section);
+                    }}
+                    className={cn(
+                      "neu-nav-item inline-flex h-9 items-center gap-1.5 rounded-[12px] border border-transparent px-2.5 text-[11.5px] font-semibold no-underline outline-none transition-[background-color,color,box-shadow,transform] duration-200 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-ring",
+                      active ? "neu-nav-active text-foreground" : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <item.icon className="h-3.5 w-3.5" aria-hidden="true" />
+                    {t(item.label)}
+                  </a>
+                );
+              })}
+            </div>
+          </nav>
+        }
       />
-
-      <nav
-        aria-label={t("Settings sections")}
-        className="settings-sticky-nav settings-section-nav sticky top-0 z-20 -mx-4 mb-6 overflow-x-auto border-b border-border/60 bg-background px-5 py-2.5 md:-mx-6 md:px-7"
-      >
-        <div className="flex w-max items-center gap-1">
-          {settingsNavItems.map((item) => {
-            const active = activeSettingsSection === item.section;
-            return (
-              <a
-                key={item.href}
-                href={item.href}
-                aria-current={active ? "location" : undefined}
-                data-settings-nav-section={item.section}
-                onClick={(event) => {
-                  event.preventDefault();
-                  window.history.replaceState(null, "", item.href);
-                  requestSettingsSection(item.section);
-                }}
-                className={cn(
-                  "neu-nav-item inline-flex h-9 items-center gap-1.5 rounded-[12px] border border-transparent px-2.5 text-[11.5px] font-semibold no-underline outline-none transition-[background-color,color,box-shadow,transform] duration-200 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-ring",
-                  active ? "neu-nav-active text-foreground" : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <item.icon className="h-3.5 w-3.5" aria-hidden="true" />
-                {t(item.label)}
-              </a>
-            );
-          })}
-        </div>
-      </nav>
 
       <div className="grid gap-5 min-[1280px]:grid-cols-2 min-[1280px]:items-start">
         <SectionPanel
@@ -6664,8 +6708,11 @@ export default function Settings() {
                       </p>
                     )}
                   {outlookQuery.data?.lastSyncAt && (
-                    <p className="mt-1.5 font-mono text-ui-micro text-slate-500">
-                      {t("Last sync ·")} {formatUpdateTimestamp(outlookQuery.data.lastSyncAt, formatDate, t)}
+                    <p
+                      className="mt-1.5 font-mono text-ui-micro text-slate-500"
+                      title={formatTimestamp(outlookQuery.data.lastSyncAt).title}
+                    >
+                      {t("Last sync ·")} {formatTimestamp(outlookQuery.data.lastSyncAt).label}
                     </p>
                   )}
                   {outlookQuery.data?.lastError && (
@@ -6742,8 +6789,9 @@ export default function Settings() {
                     </ol>
                   )}
                 {!outlookQuery.isLoading && !outlookQuery.isError && !outlookQuery.data?.configured && (
-                  <details className="rounded-lg border border-slate-200/80 px-3 py-2 dark:border-[var(--workspace-border)]">
-                    <summary className="cursor-pointer text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                  <details className="settings-disclosure rounded-lg border border-slate-200/80 px-3 py-2 dark:border-[var(--workspace-border)]">
+                    <summary className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                      <ChevronRight className="settings-disclosure__chevron" aria-hidden="true" />
                       {t("Help for self-built copies")}
                     </summary>
                     <p className="mt-2 text-ui-micro leading-4 text-slate-500 dark:text-slate-400">
@@ -6760,8 +6808,11 @@ export default function Settings() {
                     <p className="truncate text-xs font-semibold text-slate-950 dark:text-slate-100">
                       {outlookQuery.data.nextEvent.subject}
                     </p>
-                    <p className="mt-1 text-ui-micro text-slate-500">
-                      {t("Next event,")} {formatUpdateTimestamp(outlookQuery.data.nextEvent.start_at, formatDate, t)},{" "}
+                    <p
+                      className="mt-1 text-ui-micro text-slate-500"
+                      title={formatTimestamp(outlookQuery.data.nextEvent.start_at).title}
+                    >
+                      {t("Next event,")} {formatTimestamp(outlookQuery.data.nextEvent.start_at).label},{" "}
                       {formatNumber(outlookQuery.data.nextEvent.participants.length)} {t("participants")}
                     </p>
                   </div>
@@ -7281,7 +7332,7 @@ export default function Settings() {
 
             <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
               <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
-                <p className="text-ui-micro leading-3 text-slate-500">{t("Current")}</p>
+                <p className="text-ui-micro leading-3 text-slate-500">{t("Installed")}</p>
                 <p className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100">
                   {desktopUpdate.currentVersion || t("Unknown")}
                 </p>
@@ -7294,14 +7345,20 @@ export default function Settings() {
               </div>
               <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
                 <p className="text-ui-micro leading-3 text-slate-500">{t("Last check")}</p>
-                <p className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100">
-                  {desktopUpdateLastCheckedLabel}
+                <p
+                  className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100"
+                  title={desktopUpdateLastChecked.title}
+                >
+                  {desktopUpdateLastChecked.label}
                 </p>
               </div>
               <div className="rounded-lg bg-slate-50 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
                 <p className="text-ui-micro leading-3 text-slate-500">{t("Next check")}</p>
-                <p className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100">
-                  {desktopUpdateNextCheckLabel}
+                <p
+                  className="truncate font-semibold leading-4 text-slate-950 dark:text-slate-100"
+                  title={desktopUpdateNextCheck.title}
+                >
+                  {desktopUpdateNextCheck.label}
                 </p>
               </div>
             </div>
@@ -7333,18 +7390,20 @@ export default function Settings() {
                   )}
                   {t("Check for updates")}
                 </Button>
-                <Button
-                  className="h-8 text-[12px]"
-                  onClick={handleInstallDesktopUpdate}
-                  disabled={!desktopUpdate.available || isCheckingDesktopUpdate || isInstallingDesktopUpdate}
-                >
-                  {isInstallingDesktopUpdate ? (
-                    <WavePhysicsLoader className="mr-2" size="inline" />
-                  ) : (
-                    <Download className="mr-2 h-4 w-4" />
-                  )}
-                  {t("Install and restart")}
-                </Button>
+                {showDesktopUpdateInstall && (
+                  <Button
+                    className="h-8 text-[12px]"
+                    onClick={handleInstallDesktopUpdate}
+                    disabled={!desktopUpdate.available || isCheckingDesktopUpdate || isInstallingDesktopUpdate}
+                  >
+                    {isInstallingDesktopUpdate ? (
+                      <WavePhysicsLoader className="mr-2" size="inline" />
+                    ) : (
+                      <Download className="mr-2 h-4 w-4" />
+                    )}
+                    {t("Install and restart")}
+                  </Button>
+                )}
               </div>
               {desktopUpdate.available && (
                 <div className="grid grid-cols-2 gap-2">

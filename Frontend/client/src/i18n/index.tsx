@@ -138,6 +138,54 @@ export function localizeLegacyDateLabel(locale: AppLocale, value: string): strin
   return translate(locale, source);
 }
 
+export interface RelativeDateOptions {
+  /** Append the clock time (default true). */
+  time?: boolean;
+  /** Reference "now"; injectable for tests. */
+  now?: Date;
+}
+
+function startOfLocalDay(date: Date): number {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+/**
+ * The single list/card date format used across the app:
+ * "Today, 09:32" · "Yesterday, 18:04" · "17 Nov, 14:44" · "17 Nov 2025".
+ * Older years drop the clock time; full timestamps belong in tooltips
+ * (see formatFullDateTime).
+ */
+export function formatRelativeDateLabel(
+  locale: AppLocale,
+  value: Date | number | string,
+  options: RelativeDateOptions = {},
+): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const tag = LOCALE_TAGS[locale];
+  const now = options.now ?? new Date();
+  const withTime = options.time !== false;
+  const time = dateFormatter(tag, { hour: "2-digit", minute: "2-digit" }).format(date);
+  const dayDelta = Math.round((startOfLocalDay(now) - startOfLocalDay(date)) / 86_400_000);
+  if (dayDelta === 0 || dayDelta === 1 || dayDelta === -1) {
+    // Tomorrow covers scheduled times such as the next update check.
+    const day = translate(locale, dayDelta === 0 ? "Today" : dayDelta === 1 ? "Yesterday" : "Tomorrow");
+    return withTime ? translate(locale, "{{day}}, {{time}}", { day, time }) : day;
+  }
+  if (date.getFullYear() === now.getFullYear()) {
+    const day = dateFormatter(tag, { day: "numeric", month: "short" }).format(date);
+    return withTime ? translate(locale, "{{day}}, {{time}}", { day, time }) : day;
+  }
+  return dateFormatter(tag, { day: "numeric", month: "short", year: "numeric" }).format(date);
+}
+
+/** Unambiguous timestamp for tooltips: "Friday, 20 November 2026 at 09:32". */
+export function formatFullDateTimeLabel(locale: AppLocale, value: Date | number | string): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return dateFormatter(LOCALE_TAGS[locale], { dateStyle: "full", timeStyle: "short" }).format(date);
+}
+
 export function translateNow(source: string, values?: TranslationValues): string {
   return translate(currentLocale, source, values);
 }
@@ -162,6 +210,8 @@ interface I18nContextValue {
   t: (source: string, values?: TranslationValues) => string;
   formatDate: (value: Date | number | string, options?: Intl.DateTimeFormatOptions) => string;
   formatLegacyDate: (value: string) => string;
+  formatRelativeDate: (value: Date | number | string, options?: RelativeDateOptions) => string;
+  formatFullDateTime: (value: Date | number | string) => string;
   formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string;
 }
 
@@ -230,6 +280,14 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
   );
 
   const formatLegacyDate = useCallback((value: string) => localizeLegacyDateLabel(locale, value), [locale]);
+  const formatRelativeDate = useCallback(
+    (value: Date | number | string, options?: RelativeDateOptions) => formatRelativeDateLabel(locale, value, options),
+    [locale],
+  );
+  const formatFullDateTime = useCallback(
+    (value: Date | number | string) => formatFullDateTimeLabel(locale, value),
+    [locale],
+  );
 
   const formatNumber = useCallback(
     (value: number, options?: Intl.NumberFormatOptions) => numberFormatter(LOCALE_TAGS[locale], options).format(value),
@@ -245,9 +303,21 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
       t,
       formatDate,
       formatLegacyDate,
+      formatRelativeDate,
+      formatFullDateTime,
       formatNumber,
     }),
-    [formatDate, formatLegacyDate, formatNumber, locale, setLocale, t, toggleLocale],
+    [
+      formatDate,
+      formatFullDateTime,
+      formatLegacyDate,
+      formatNumber,
+      formatRelativeDate,
+      locale,
+      setLocale,
+      t,
+      toggleLocale,
+    ],
   );
 
   return <I18nContext.Provider value={contextValue}>{children}</I18nContext.Provider>;

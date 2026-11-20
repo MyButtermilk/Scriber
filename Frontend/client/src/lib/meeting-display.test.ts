@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { genericMeetingSpeakerLabel, genericMeetingSpeakerLabels } from "./meeting-display";
+import { genericMeetingSpeakerLabel, genericMeetingSpeakerLabels, isAutoMeetingTitle } from "./meeting-display";
 
 test("technical anonymous speaker labels become stable letters", () => {
   assert.equal(genericMeetingSpeakerLabel("SPEAKER_00", 0), "Speaker A");
@@ -31,4 +31,14 @@ test("named speakers keep their ordinal reserved for remaining anonymous speaker
   assert.equal(labels.has("speaker-1"), false);
   assert.equal(labels.get("speaker-2"), "Speaker B");
   assert.equal(labels.get("speaker-3"), "Speaker C");
+});
+
+test("only the store-generated default title counts as untitled", () => {
+  assert.equal(isAutoMeetingTitle("Meeting 2026-10-27"), true);
+  assert.equal(isAutoMeetingTitle("Meeting 2026-10-27 Budget"), false);
+  assert.equal(isAutoMeetingTitle("Kickoff Meeting 2026-10-27"), false);
+  assert.equal(isAutoMeetingTitle(" Meeting 2026-10-27"), false);
+  assert.equal(isAutoMeetingTitle("Meeting 27.10.2026"), false);
+  assert.equal(isAutoMeetingTitle("Meeting"), false);
+  assert.equal(isAutoMeetingTitle("Edeka Forchheim"), false);
 });

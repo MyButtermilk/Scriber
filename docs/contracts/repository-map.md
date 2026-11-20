@@ -195,6 +195,14 @@
   allocates a fresh transcript identity. Summary registration ends in the
   summary function's identity-checked `finally`, even when its caller is a
   persistent podcast worker.
+  Cover artwork (RSS `itunes:image`/`image`, Apple `artworkUrl600`) is stored
+  per subscription and served only through the authenticated
+  `GET /api/podcasts/artwork/{id}` route, because the webview CSP allows local
+  images only. Its fetches use a separate cookie-less two-connection pool with
+  the same public-address and redirect checks, HTTPS on every hop, a 2 MB limit,
+  and a JPEG/PNG/WebP content-type and magic-byte allowlist. The disk cache under
+  the podcasts root holds at most 300 files and is pruned on unsubscribe; logs
+  never contain artwork URLs.
   Commit completion before deleting audio after successful transcription and
   summary. Startup and pre-download cleanup verify both saved results before
   reclaiming legacy completed audio, including files whose byte-count commit was

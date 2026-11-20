@@ -10,7 +10,8 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "border border-primary-border bg-primary text-primary-foreground",
+        // Section-tinted primary action; see .ui-cta in index.css.
+        default: "ui-cta border-0 font-semibold disabled:opacity-100 aria-disabled:opacity-100",
         destructive: "border border-destructive-border bg-destructive text-destructive-foreground shadow-sm",
         outline: "border [border-color:var(--button-outline)] shadow-xs active:shadow-none",
         secondary: "border border-secondary-border bg-secondary text-secondary-foreground",

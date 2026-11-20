@@ -1,0 +1,59 @@
+/* Page polish: settings. Loaded after index.css (unlayered, so it wins over Tailwind utilities). */
+
+/*
+ * Disclosures (<details>/<summary>) use the app's own chevron instead of the
+ * native triangle. Markup: <details class="settings-disclosure"><summary>
+ * <ChevronRight class="settings-disclosure__chevron" /> Label</summary>…
+ */
+.settings-disclosure > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  max-width: 100%;
+  margin-inline: -0.25rem;
+  padding: 0.125rem 0.25rem;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  outline: none;
+  transition: color var(--duration-quick, 150ms) var(--ease-smooth-out, ease-out);
+}
+.settings-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+.settings-disclosure > summary::marker {
+  content: "";
+}
+.settings-disclosure > summary:hover,
+.settings-disclosure[open] > summary {
+  color: hsl(var(--foreground));
+}
+.settings-disclosure > summary:focus-visible {
+  box-shadow: 0 0 0 2px hsl(var(--ring));
+}
+.settings-disclosure__chevron {
+  width: 0.875rem;
+  height: 0.875rem;
+  flex-shrink: 0;
+  opacity: 0.7;
+  transition: transform var(--duration-quick, 150ms) var(--ease-smooth-out, ease-out);
+}
+.settings-disclosure[open] > summary .settings-disclosure__chevron {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-disclosure > summary,
+  .settings-disclosure__chevron {
+    transition: none;
+  }
+}
+
+/*
+ * Saved confirmation on credential dialogs: the CTA keeps its shape and
+ * charges with a success tint. The .ui-cta gradient ignores Tailwind bg-*
+ * utilities, so the tint goes through the accent token instead.
+ */
+.ui-cta.settings-cta-saved {
+  --page-accent: 161 94% 30%;
+}

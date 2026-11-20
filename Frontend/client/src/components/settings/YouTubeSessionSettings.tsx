@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 import { apiRequest } from "@/lib/queryClient";
@@ -246,8 +247,11 @@ export function YouTubeSessionSettings({
       <p className="text-[12px] text-muted-foreground">
         {t("Session sharing requires add-on version 0.2.1 or later. You can sign in above at any time.")}
       </p>
-      <details className="text-[12px] text-muted-foreground">
-        <summary className="cursor-pointer">{t("Advanced: import a sign-in file")}</summary>
+      <details className="settings-disclosure text-[12px] text-muted-foreground">
+        <summary>
+          <ChevronRight className="settings-disclosure__chevron" aria-hidden="true" />
+          {t("Advanced: import a sign-in file")}
+        </summary>
         <Button
           className="mt-2"
           variant="outline"
