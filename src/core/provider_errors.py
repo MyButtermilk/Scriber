@@ -936,7 +936,7 @@ def _is_audio_error(text: str, status: int | None, code: str) -> bool:
 
 def _classify_soniox(provider: str, label: str, text: str, status: int | None, code: str) -> ProviderUserError | None:
     if _has(text, "model_not_available", "invalid model", "model not available"):
-        model_hint = "stt-async-v5" if provider == "soniox_async" else "stt-rt-v5"
+        model_hint = "stt-async-v6" if provider == "soniox_async" else "stt-rt-v6"
         return _make_error(
             provider,
             label,

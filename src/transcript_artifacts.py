@@ -165,7 +165,7 @@ def provider_batch_model(provider: str) -> str:
         "gemini_realtime": Config.GEMINI_REALTIME_STT_MODEL,
         "groq": "whisper-large-v3-turbo",
         "google": "latest_long",
-        "elevenlabs": "scribe_v2_realtime",
+        "elevenlabs": Config.DEFAULT_ELEVENLABS_RT_MODEL,
         "speechmatics": "linden-1",
     }
     return str(configured.get(key) or key or "unknown")

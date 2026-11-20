@@ -28,9 +28,9 @@ test("formats currencies with Intl conventions and discloses the fixed estimate 
   assert.equal(formatCurrency(12.5, "USD", "en-US"), "$12.50");
   assert.equal(formatCurrency(12.5, "EUR", "en-US"), "€12.50");
   assert.match(formatCurrency(12.5, "EUR", "de-DE"), /12,50\s*€/);
-  assert.equal(formatEstimatedEuroFromUsd(1, "en-US", 3), "€0.877");
-  assert.equal(fixedEstimateExchangeRateLabel("en-US"), "$1 = €0.877");
-  assert.match(fixedEstimateExchangeRateLabel("de-DE"), /1\s*\$\s*=\s*0,877\s*€/);
+  assert.equal(formatEstimatedEuroFromUsd(1, "en-US", 3), "€0.910");
+  assert.equal(fixedEstimateExchangeRateLabel("en-US"), "$1 = €0.910");
+  assert.match(fixedEstimateExchangeRateLabel("de-DE"), /1\s*\$\s*=\s*0,910\s*€/);
 });
 
 test("keeps the clicked settings section active when its row is aligned below the sticky navigation", () => {

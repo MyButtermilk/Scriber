@@ -3,6 +3,8 @@
 
   const bridge = globalThis.ScriberYoutubeBridge;
   const ROOT_ID = "scriber-youtube-action";
+  const CONNECT_TOAST_ID = "scriber-youtube-connect-toast";
+  const CONNECT_HASH_PATTERN = /^#scriber-connect=([a-f0-9]{32})$/;
   const LABELS = {
     idle: "Mit Scriber transkribieren",
     opening: "Öffne Scriber …",
@@ -10,6 +12,8 @@
     unavailable: "Kein Video erkannt",
   };
   let scheduled = false;
+  let connectToastTimer = null;
+  const handledConnectIds = new Set();
   const stateTimers = new Set();
 
   function clearStateTimers() {
@@ -128,8 +132,117 @@
     return null;
   }
 
+  function extractConnectId() {
+    let hash = String(window.location.hash || "");
+    if (!hash) {
+      try {
+        hash = new URL(String(window.location.href || "")).hash;
+      } catch {
+        hash = "";
+      }
+    }
+    const match = CONNECT_HASH_PATTERN.exec(hash);
+    return match ? match[1] : null;
+  }
+
+  function showConnectToast(message, tone, dismissMs) {
+    if (connectToastTimer !== null) {
+      window.clearTimeout(connectToastTimer);
+      connectToastTimer = null;
+    }
+    let toast = document.getElementById(CONNECT_TOAST_ID);
+    if (!toast) {
+      toast = document.createElement("div");
+      toast.id = CONNECT_TOAST_ID;
+      toast.setAttribute("role", "status");
+      toast.setAttribute("aria-live", "polite");
+      (document.body || document.documentElement).appendChild(toast);
+    }
+    toast.dataset.tone = tone;
+    toast.textContent = message;
+    if (dismissMs > 0) {
+      connectToastTimer = window.setTimeout(() => {
+        connectToastTimer = null;
+        toast?.remove();
+      }, dismissMs);
+    }
+  }
+
+  function checkScriberConnect() {
+    const connectId = extractConnectId();
+    if (!connectId || handledConnectIds.has(connectId)) {
+      return;
+    }
+    handledConnectIds.add(connectId);
+    try {
+      const parsed = new URL(String(window.location.href || ""));
+      window.history?.replaceState?.(
+        window.history.state,
+        "",
+        `${parsed.pathname}${parsed.search}`,
+      );
+    } catch {
+      // Best-effort cleanup of the transient fragment.
+    }
+    showConnectToast("Verbinde YouTube-Anmeldung mit Scriber …", "info", 0);
+    let responsePromise;
+    try {
+      responsePromise = chrome.runtime.sendMessage({
+        type: "youtube-session-connect",
+        connectId,
+      });
+    } catch {
+      showConnectToast(
+        "Bitte lade die Seite neu oder klicke auf das Scriber-Symbol.",
+        "warning",
+        8000,
+      );
+      return;
+    }
+    Promise.resolve(responsePromise)
+      .then((result) => {
+        if (result?.connected) {
+          showConnectToast(
+            "YouTube-Anmeldung an Scriber übergeben. Du kannst diesen Tab schließen.",
+            "success",
+            6000,
+          );
+          return;
+        }
+        if (result?.reason === "permission_required") {
+          showConnectToast(
+            "Klicke einmal auf das Scriber-Symbol oben rechts, um deine YouTube-Anmeldung für Scriber freizugeben.",
+            "warning",
+            12000,
+          );
+          return;
+        }
+        if (result?.reason === "not_signed_in") {
+          showConnectToast(
+            "Bitte melde dich bei YouTube an und klicke danach auf „Mit Scriber transkribieren“.",
+            "warning",
+            12000,
+          );
+          return;
+        }
+        showConnectToast(
+          "Keine offene Verbindungsanfrage in Scriber gefunden. Starte die Verbindung erneut in Scriber.",
+          "warning",
+          8000,
+        );
+      })
+      .catch(() => {
+        showConnectToast(
+          "Scriber konnte nicht erreicht werden. Stelle sicher, dass Scriber läuft.",
+          "warning",
+          8000,
+        );
+      });
+  }
+
   function ensureButton() {
     scheduled = false;
+    checkScriberConnect();
     const videoId = bridge.extractVideoId(window.location.href);
     let root = document.getElementById(ROOT_ID);
     if (!videoId) {

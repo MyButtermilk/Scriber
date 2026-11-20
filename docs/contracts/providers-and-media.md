@@ -10,13 +10,16 @@ Join launch/cleanup across cancellation; close only that owned instance. A
 session revision prevents late sign-in from overriding a newer clear/import.
 The extension uses `activeTab` for the ordinary video handoff. Session transfer
 requests the optional `cookies` permission and host access limited to
-`https://*.youtube.com/*` and `http://127.0.0.1:8765/*`. Each video handoff offers a one-use RAM capability; the
-authenticated app accepts the matching video before the extension uploads.
+`https://*.youtube.com/*` and `http://127.0.0.1:8765/*`. Each video handoff or
+app-initiated browser connect (`POST /api/youtube/session/browser-connect`)
+offers a one-use RAM capability; the authenticated app must match the pending
+video or one-use connect correlation ID before the extension uploads.
 Keep this narrow extension-origin loopback lane separate from general API
 CORS/token authentication. Never put cookies or capabilities into deep links,
 logs, job persistence, files, or status responses. Filter domains before
 transmission and again in `src.youtube_session`; private HTTPS extractor jars
-expire after two hours. Manual cookies.txt import is an advanced fallback.
+expire after two hours. Private-window sign-in and manual cookies.txt import
+remain available as fallbacks without an add-on.
 The recovery UI links to the official Store ID `ilbdnbhdihacgkaedacmndeabbiondob`.
 Verify the published version before describing Store availability.
 Cookie permission must never gate the in-page video deep link. Session uploads
@@ -172,9 +175,10 @@ Validate accepted authentication with a real download before reporting sign-in r
   assume separate microphone and system tracks; imported Meeting audio assumes
   one track. Add provider diarization cost only to the system/import track on
   which it is requested, and keep pricing sources plus the checked date visible.
-- Soniox Async defaults to `stt-async-v5`. Keep
-  `SCRIBER_SONIOX_ASYNC_MODEL` as an override for temporary compatibility, but
-  do not restore `stt-async-v4` as the code default. Direct Soniox async upload
+- Soniox Async defaults to `stt-async-v6` (`stt-async-v5` is deprecated and
+  sunsetting on 2026-12-15). Keep `SCRIBER_SONIOX_ASYNC_MODEL` as an override
+  for temporary compatibility, but do not restore `stt-async-v4` or
+  `stt-async-v5` as the code default. Direct Soniox async upload
   prefers WebM/Opus, which the provider accepts; WAV is only a local encoding
   fallback when bundled ffmpeg cannot produce WebM, not an API-rejection retry.
 - Soniox realtime authenticates every WebSocket upgrade (including reconnects)
@@ -188,9 +192,10 @@ Validate accepted authentication with a real download before reporting sign-in r
   cannot expose credentials. The shared transport boundary strips raw exception
   and close-reason text while retaining normal/error closure classes and codes.
   Installed replay enforces the same handshake.
-- Soniox realtime live transcription defaults to `stt-rt-v5`. Keep
-  `SCRIBER_SONIOX_RT_MODEL` as an override for temporary compatibility, but do
-  not restore `stt-rt-v4` as the code default.
+- Soniox realtime live transcription defaults to `stt-rt-v6` (`stt-rt-v5` is
+  deprecated and sunsetting on 2026-12-15). Keep `SCRIBER_SONIOX_RT_MODEL` as
+  an override for temporary compatibility, but do not restore `stt-rt-v4` or
+  `stt-rt-v5` as the code default.
 - Soniox data residency defaults to `SCRIBER_SONIOX_REGION=us`. Settings may
   select only `us` or `eu`; persist the choice independently of the API key.
   Every Soniox boundary in one session must resolve from that same choice:
@@ -412,10 +417,12 @@ Validate accepted authentication with a real download before reporting sign-in r
   to their matching 1.3 tier without rewriting custom model codes. This also
   applies to stored Meeting analysis selections at database initialization;
   keep historical analysis output and model provenance unchanged.
-- AssemblyAI defaults to Universal-3.5-Pro for both async/batch and realtime
-  paths. Keep `SCRIBER_ASSEMBLYAI_ASYNC_MODEL` and
-  `SCRIBER_ASSEMBLYAI_RT_MODEL` as temporary compatibility overrides, but do not
-  restore Universal-3 as the release default.
+- AssemblyAI defaults to `assemblyai-stt-3-7` for async/batch and
+  `assemblyai-stt-3-7-realtime-agent` for realtime streaming. Keep
+  `SCRIBER_ASSEMBLYAI_ASYNC_MODEL` and `SCRIBER_ASSEMBLYAI_RT_MODEL` as
+  compatibility overrides (e.g. `assemblyai-stt-3-7-realtime` for ambient/live
+  captions), and do not restore `universal-3-5-pro` or `universal-3-pro` as the
+  release default.
 - AWS Transcribe is no longer a supported frontend/backend provider. Keep
   `boto3`, `botocore`, `s3transfer`, `aioboto3`, `aiobotocore`, and Pipecat AWS
   service modules out of the standard sidecar unless AWS support is explicitly
@@ -442,9 +449,18 @@ Validate accepted authentication with a real download before reporting sign-in r
   Google subclass instead ends the request stream (gRPC half-close), drains the
   finals with a bounded wait, and carries the rotation chunk to the next
   stream in order. OpenAI live STT uses Pipecat's OpenAI Realtime STT service with
-  `gpt-realtime-whisper`, while `openai_async` uses the direct OpenAI Audio
-  Transcriptions HTTP adapter with `gpt-4o-mini-transcribe-2025-12-15`. Keep
+  `gpt-live-transcribe`, while `openai_async` uses the direct OpenAI Audio
+  Transcriptions HTTP adapter with `gpt-transcribe` (legacy `gpt-realtime-whisper`
+  and `gpt-4o-mini-transcribe-2025-12-15` remain accepted for frozen routes). Keep
   the explicit `openai` SDK and `websockets` dependencies for these paths.
+  AssemblyAI batch defaults to `assemblyai-stt-3-7` (32 languages) and realtime
+  defaults to `assemblyai-stt-3-7-realtime-agent` (with `assemblyai-stt-3-7-realtime`,
+  `universal-3-6-pro`, and legacy `universal-3-5-pro` registered in
+  `src/core/provider_audio_formats.py`); Scriber's AssemblyAI subclass adapts
+  Pipecat 1.14 turn mode and `language_codes` query serialization for 3.7 models.
+  ElevenLabs live defaults to `scribe_v3_live` and Mistral defaults to
+  `voxtral-small-transcribe-3-0` (30-minute conservative meeting cap; legacy
+  `voxtral-mini-2602` retains its 3-hour cap).
   Groq STT uses Pipecat's `groq` SDK dependency. Pipecat 1.12+ segments
   sentences with the embedded `sentencex` rules and measures loudness with the
   NumPy-only `loudness` package, so the frozen backend bundles neither NLTK,

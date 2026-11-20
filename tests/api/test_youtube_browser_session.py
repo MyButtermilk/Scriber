@@ -160,3 +160,94 @@ async def test_clear_wakes_waiting_acceptance_and_foreign_extensions_cannot_rese
     await asyncio.sleep(0)
     manager.clear()
     assert not await asyncio.wait_for(accepted, 0.2)
+
+
+@pytest.mark.asyncio
+async def test_app_initiated_browser_connect_is_one_use_and_rejects_unsolicited_offers(monkeypatch):
+    session = YouTubeSession()
+    monkeypatch.setattr(bridge, "youtube_session", session)
+    monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "app-secret")
+    app = web.Application(middlewares=[bridge.browser_session_middleware, cors_middleware, session_token_middleware])
+    register_youtube_routes(app, controller=SimpleNamespace())
+    async with TestClient(TestServer(app, host="127.0.0.1")) as client:
+        ext_headers = {"Origin": ORIGIN}
+        app_headers = {"X-Scriber-Token": "app-secret"}
+
+        unauth = await client.post("/api/youtube/session/browser-connect", json={"url": f"https://youtu.be/{VIDEO}"})
+        assert unauth.status == 401
+
+        unsolicited = await client.post(
+            "/api/youtube/browser-session/offer",
+            headers=ext_headers,
+            json={"secret": SECRET, "connectId": "a" * 32},
+        )
+        assert unsolicited.status == 409
+
+        started = await client.post(
+            "/api/youtube/session/browser-connect",
+            headers=app_headers,
+            json={"url": f"https://www.youtube.com/watch?v={VIDEO}"},
+        )
+        assert started.status == 200
+        started_data = await started.json()
+        assert started_data["state"] == "waiting"
+        assert started_data["attempt"] == 1
+        assert started_data["url"].startswith(f"https://www.youtube.com/watch?v={VIDEO}#scriber-connect=")
+        connect_id = started_data["url"].split("#scriber-connect=", 1)[1]
+        assert len(connect_id) == 32
+
+        status_resp = await client.get("/api/youtube/session/browser-connect", headers=app_headers)
+        assert status_resp.status == 200
+        status_data = await status_resp.json()
+        assert status_data == {"state": "waiting", "attempt": 1}
+        assert connect_id not in str(status_data)
+
+        wrong = await client.post(
+            "/api/youtube/browser-session/offer",
+            headers=ext_headers,
+            json={"secret": SECRET, "connectId": "0" * 32},
+        )
+        assert wrong.status == 409
+
+        offered = await client.post(
+            "/api/youtube/browser-session/offer",
+            headers=ext_headers,
+            json={"secret": SECRET, "connectId": connect_id},
+        )
+        assert offered.status == 200
+        uploaded = await client.post(
+            "/api/youtube/browser-session/upload",
+            headers=ext_headers,
+            json={"secret": SECRET, "cookies": COOKIES},
+        )
+        assert uploaded.status == 200
+        assert session.status() == {"connected": True}
+
+        done_status = await client.get("/api/youtube/session/browser-connect", headers=app_headers)
+        assert await done_status.json() == {"state": "connected", "attempt": 1}
+
+        replay_connect = await client.post(
+            "/api/youtube/browser-session/offer",
+            headers=ext_headers,
+            json={"secret": "c" * 64, "connectId": connect_id},
+        )
+        assert replay_connect.status == 409
+
+
+@pytest.mark.asyncio
+async def test_browser_connect_cancel_and_disconnect_revoke_pending_connect(monkeypatch):
+    session = YouTubeSession()
+    monkeypatch.setattr(bridge, "youtube_session", session)
+    manager = bridge.BrowserSessionHandoff()
+    started = manager.start_connect(video_id=VIDEO)
+    connect_id = str(started["url"]).split("#scriber-connect=", 1)[1]
+    assert manager.cancel_connect()["state"] == "idle"
+    assert not manager.offer(ORIGIN, SECRET, connect_id=connect_id)
+
+    started2 = manager.start_connect()
+    assert str(started2["url"]).startswith("https://www.youtube.com/#scriber-connect=")
+    connect_id2 = str(started2["url"]).split("#scriber-connect=", 1)[1]
+    assert manager.offer(ORIGIN, SECRET, connect_id=connect_id2)
+    session.disconnect()
+    assert not manager.upload(ORIGIN, SECRET, COOKIES)
+    assert session.snapshot() == ()

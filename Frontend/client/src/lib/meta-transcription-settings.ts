@@ -8,6 +8,7 @@ export const META_TRANSCRIPTION_OPTIONS = [
     group: "cloud_streaming",
     icon: "meta",
     usdPerHour: 0.18,
+    wordErrorRatePercent: 3.06,
     routeNote: "Live partials and completed turns · up to 60 minutes · Meta Model API key",
   },
   {

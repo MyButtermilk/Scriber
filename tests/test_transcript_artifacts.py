@@ -173,8 +173,8 @@ def test_google_route_freezes_speech_v2_model_and_raw_pcm_request_contract():
         ),
         (
             "elevenlabs",
-            "scribe_v2_realtime",
-            "scribe_v2_realtime",
+            "scribe_v3_live",
+            "scribe_v3_live",
             "pipecat_elevenlabs_scribe_v2_realtime_raw_pcm16",
         ),
         (

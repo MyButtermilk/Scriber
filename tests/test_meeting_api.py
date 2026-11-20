@@ -1907,7 +1907,7 @@ def test_azure_mai_meeting_cost_uses_published_transcribe_2_price_and_source():
 
     assert estimate["singleTrackFinalPerAudioHour"] == 0.10
     assert estimate["finalPerMeetingHour"] == 0.20
-    assert estimate["pricingUpdatedAt"] == "2026-09-08"
+    assert estimate["pricingUpdatedAt"] == "2026-11-20"
     assert "December 31, 2026" in estimate["assumption"]
     assert estimate["estimateKind"] == "published_hourly"
     assert estimate["sources"] == [
@@ -5785,7 +5785,7 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
         assert profile_payload["providerCapabilities"]["soniox_async"]["maxDurationSeconds"] == 18_000
         assert profile_payload["providerCapabilities"]["gladia_async"]["maxDurationSeconds"] == 8_100
         assert profile_payload["providerCapabilities"]["gemini_stt"]["maxDurationSeconds"] == 1_800
-        assert profile_payload["providerCapabilities"]["mistral_async"]["maxDurationSeconds"] == 10_800
+        assert profile_payload["providerCapabilities"]["mistral_async"]["maxDurationSeconds"] == 1_800
         assert profile_payload["profiles"][0]["fiveHourSupported"] is True
         assert profile_payload["profiles"][0]["name"] == "Live text + Soniox Async final"
         assert [stage["model"] for stage in profile_payload["profiles"][0]["stages"]] == [

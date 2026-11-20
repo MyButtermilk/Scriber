@@ -21,7 +21,14 @@ from aiohttp import ClientSession, ClientTimeout, web
 from loguru import logger
 
 from src.api.app_keys import APP_HTTP_SESSION
-from src.api.youtube_browser_session import APP_BROWSER_SESSION, BrowserSessionHandoff, accept_browser_session
+from src.api.youtube_browser_session import (
+    APP_BROWSER_SESSION,
+    BrowserSessionHandoff,
+    accept_browser_session,
+    browser_connect_cancel,
+    browser_connect_start,
+    browser_connect_status,
+)
 from src.config import Config
 from src.youtube_api import (
     UNSUPPORTED_YOUTUBE_URL_MESSAGE,
@@ -384,6 +391,9 @@ def register_youtube_routes(app: web.Application, *, controller: YoutubeControll
     app.router.add_get("/api/youtube/session/login", login_status)
     app.router.add_post("/api/youtube/session/login", login_start)
     app.router.add_delete("/api/youtube/session/login", login_cancel)
+    app.router.add_get("/api/youtube/session/browser-connect", browser_connect_status)
+    app.router.add_post("/api/youtube/session/browser-connect", browser_connect_start)
+    app.router.add_delete("/api/youtube/session/browser-connect", browser_connect_cancel)
     app.router.add_post("/api/youtube/session/browser-accept", accept_browser_session)
 
     app.router.add_get("/api/youtube/search", search)

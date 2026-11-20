@@ -284,12 +284,12 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
     value: GEMINI_ASYNC_TRANSCRIPTION_OPTION.value,
     label: GEMINI_ASYNC_TRANSCRIPTION_OPTION.label,
   },
-  { value: "mistral-realtime", label: "Mistral Segmented (Voxtral)" },
-  { value: "mistral-async", label: "Mistral Async (Voxtral V2)" },
+  { value: "mistral-realtime", label: "Mistral Segmented (Voxtral 3)" },
+  { value: "mistral-async", label: "Mistral Async (Voxtral 3)" },
   { value: "smallest-realtime", label: "Smallest AI STT Streaming (Pulse)" },
   { value: "smallest-async", label: "Smallest AI Async (Pulse)" },
-  { value: "assemblyai-realtime", label: "AssemblyAI Universal-3.5 Pro Realtime" },
-  { value: "assemblyai", label: "AssemblyAI Universal-3.5 Pro Async" },
+  { value: "assemblyai-realtime", label: "AssemblyAI STT-3.7 Realtime" },
+  { value: "assemblyai", label: "AssemblyAI STT-3.7 Async" },
   { value: "deepgram", label: "Deepgram STT Streaming" },
   { value: "deepgram-async", label: "Deepgram Async" },
   { value: "openai", label: "OpenAI Realtime" },
@@ -307,9 +307,11 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
 
 // Multilingual transcription base rates from https://www.modulate.ai/api-pricing.
 // Optional redaction, deepfake, emotion, accent, and other enrichment charges are excluded.
+// AA-WER benchmarks from Artificial Analysis Speech-to-Text (2026-11-20).
 const MODULATE_BATCH_USD_PER_AUDIO_HOUR = 0.03;
 const MODULATE_STREAMING_USD_PER_AUDIO_HOUR = 0.06;
-const MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT = 4.43;
+const MODULATE_BATCH_ERROR_RATE_PERCENT = 4.23;
+const MODULATE_STREAMING_ERROR_RATE_PERCENT = 4.77;
 const DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest";
 const DEFAULT_POST_PROCESSING_MODEL = "cerebras/gemma-4-31b";
 const DEFAULT_POST_PROCESSING_FALLBACK_MODEL = "minimax/minimax-m3:nitro";
@@ -911,15 +913,26 @@ function createProviderModelOptions(
     wordErrorRatePercent,
   });
 
+  // Prices ($/1,000 audio minutes) and AA-WER (%) sourced from Artificial Analysis
+  // Speech-to-Text batch & streaming leaderboards (verified 2026-11-20), converted to €/h.
   return [
-    benchmarkOption("elevenlabs", "ElevenLabs Live", 6.5, 3.6, "cloud_streaming", "elevenlabs"),
-    ...META_TRANSCRIPTION_OPTIONS.map((option) => ({
-      ...option,
-      model: providerModels[option.value] || option.model,
-      detail: `${formatEstimatedEuroFromUsd(option.usdPerHour, localeTag)}/h`,
-      routeNote: t(option.routeNote),
-      hourlyCostEur: option.usdPerHour * USD_TO_EUR_FOR_ESTIMATES,
-    })),
+    benchmarkOption("elevenlabs", "ElevenLabs Live", 3.6667, 2.86, "cloud_streaming", "elevenlabs"),
+    ...META_TRANSCRIPTION_OPTIONS.map((option) => {
+      const wordErrorRatePercent = "wordErrorRatePercent" in option ? option.wordErrorRatePercent : undefined;
+      return {
+        ...option,
+        model: providerModels[option.value] || option.model,
+        detail:
+          wordErrorRatePercent !== undefined
+            ? sttHourlyBenchmarkDetail(option.usdPerHour, wordErrorRatePercent, localeTag, t)
+            : `${formatEstimatedEuroFromUsd(option.usdPerHour, localeTag)}/h`,
+        routeNote: t(option.routeNote),
+        hourlyCostEur: option.usdPerHour * USD_TO_EUR_FOR_ESTIMATES,
+        wordErrorRatePercent,
+      };
+    }),
+    benchmarkOption("assemblyai-realtime", "AssemblyAI", 7.5, 3.22, "cloud_streaming", "assemblyai"),
+    benchmarkOption("openai", "OpenAI Realtime", 17.0, 3.92, "cloud_streaming", "openai"),
     benchmarkOption(
       GEMINI_REALTIME_TRANSCRIPTION_OPTION.value,
       GEMINI_REALTIME_TRANSCRIPTION_OPTION.label,
@@ -929,27 +942,25 @@ function createProviderModelOptions(
       GEMINI_REALTIME_TRANSCRIPTION_OPTION.icon,
       t(GEMINI_REALTIME_TRANSCRIPTION_OPTION.routeNote),
     ),
-    benchmarkOption("assemblyai-realtime", "AssemblyAI", 7.5, 4.1, "cloud_streaming", "assemblyai"),
+    benchmarkOption("speechmatics", "Speechmatics", 5.0, 4.42, "cloud_streaming", "speechmatics"),
+    benchmarkOption("soniox-realtime", "Soniox", 2.0, 4.57, "cloud_streaming", "soniox"),
     hourlyOption(
       "modulate-realtime",
       "Modulate.AI Multilingual Realtime",
       MODULATE_STREAMING_USD_PER_AUDIO_HOUR,
-      MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT,
+      MODULATE_STREAMING_ERROR_RATE_PERCENT,
       "cloud_streaming",
       "modulate",
     ),
-    benchmarkOption("soniox-realtime", "Soniox", 2.0, 4.5, "cloud_streaming", "soniox"),
     benchmarkOption("google", "Google Cloud", 16.0, 4.8, "cloud_streaming", "googlecloud"),
-    benchmarkOption("openai", "OpenAI Realtime", 17.0, 4.9, "cloud_streaming", "openai"),
-    benchmarkOption("smallest-realtime", "Smallest AI", 8.0, 6.5, "cloud_streaming", "smallest"),
-    benchmarkOption("deepgram", "Deepgram", 4.8, 6.6, "cloud_streaming", "deepgram"),
-    benchmarkOption("gladia", "Gladia", 12.5, 7.8, "cloud_streaming", "gladia"),
-    benchmarkOption("speechmatics", "Speechmatics", 17.5, 8.0, "cloud_streaming", "speechmatics"),
+    benchmarkOption("smallest-realtime", "Smallest AI", 4.0, 4.98, "cloud_streaming", "smallest"),
+    benchmarkOption("deepgram", "Deepgram", 7.7, 6.59, "cloud_streaming", "deepgram"),
+    benchmarkOption("gladia", "Gladia", 12.65, 7.82, "cloud_streaming", "gladia"),
     benchmarkOption(
       "openrouter_stt",
       t("Microsoft MAI · OpenRouter"),
-      1.6667,
-      2.0,
+      1.67,
+      2.04,
       "cloud_async",
       "openrouter",
       t("One key for STT and AI · about 5% credit purchase fee"),
@@ -957,28 +968,15 @@ function createProviderModelOptions(
     benchmarkOption(
       "azure_mai",
       t("Microsoft MAI · Azure direct"),
-      1.6667,
-      2.0,
+      1.67,
+      2.04,
       "cloud_async",
       "azure",
       t("Azure direct · $0.10/audio hour through December 31, 2026 · no OpenRouter fee"),
     ),
-    benchmarkOption("assemblyai", "AssemblyAI", 3.5, 3.1, "cloud_async", "assemblyai"),
-    benchmarkOption("mistral-async", "Mistral Batch", 3.0, 3.6, "cloud_async", "mistral"),
-    benchmarkOption("groq", "Groq Segmented", 4.0, 3.7, "cloud_async", "groq"),
-    benchmarkOption("soniox-async", "Soniox", 1.66, 3.8, "cloud_async", "soniox"),
-    benchmarkOption("speechmatics-async", "Speechmatics", 6.7, 4.0, "cloud_async", "speechmatics"),
-    benchmarkOption("gladia-async", "Gladia", 4.07, 4.1, "cloud_async", "gladia"),
-    benchmarkOption("smallest-async", "Smallest AI", 5.0, 4.4, "cloud_async", "smallest"),
-    hourlyOption(
-      "modulate-async",
-      "Modulate.AI Multilingual Batch",
-      MODULATE_BATCH_USD_PER_AUDIO_HOUR,
-      MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT,
-      "cloud_async",
-      "modulate",
-    ),
-    benchmarkOption("openai-async", "OpenAI Batch", 3.0, 4.5, "cloud_async", "openai"),
+    benchmarkOption("mistral-async", "Mistral Batch", 4.0, 2.09, "cloud_async", "mistral"),
+    benchmarkOption("mistral-realtime", "Mistral Segmented", 4.0, 2.09, "cloud_async", "mistral"),
+    benchmarkOption("assemblyai", "AssemblyAI", 3.5, 2.51, "cloud_async", "assemblyai"),
     benchmarkOption(
       GEMINI_ASYNC_TRANSCRIPTION_OPTION.value,
       GEMINI_ASYNC_TRANSCRIPTION_OPTION.label,
@@ -988,8 +986,21 @@ function createProviderModelOptions(
       GEMINI_ASYNC_TRANSCRIPTION_OPTION.icon,
       t(GEMINI_ASYNC_TRANSCRIPTION_OPTION.routeNote),
     ),
-    benchmarkOption("deepgram-async", "Deepgram", 4.3, 5.2, "cloud_async", "deepgram"),
-    benchmarkOption("mistral-realtime", "Mistral Segmented", 6.0, 5.2, "cloud_async", "mistral"),
+    benchmarkOption("soniox-async", "Soniox", 1.66, 2.96, "cloud_async", "soniox"),
+    benchmarkOption("openai-async", "OpenAI Batch", 4.5, 3.31, "cloud_async", "openai"),
+    benchmarkOption("smallest-async", "Smallest AI", 3.0, 3.33, "cloud_async", "smallest"),
+    benchmarkOption("speechmatics-async", "Speechmatics", 12.5, 4.05, "cloud_async", "speechmatics"),
+    benchmarkOption("gladia-async", "Gladia", 5.02, 4.07, "cloud_async", "gladia"),
+    hourlyOption(
+      "modulate-async",
+      "Modulate.AI Multilingual Batch",
+      MODULATE_BATCH_USD_PER_AUDIO_HOUR,
+      MODULATE_BATCH_ERROR_RATE_PERCENT,
+      "cloud_async",
+      "modulate",
+    ),
+    benchmarkOption("groq", "Groq Segmented", 0.667, 4.62, "cloud_async", "groq"),
+    benchmarkOption("deepgram-async", "Deepgram", 4.3, 5.18, "cloud_async", "deepgram"),
     {
       value: "onnx_local",
       label: "Local ONNX",
@@ -1006,7 +1017,7 @@ const MEETING_FINAL_STT_OPTIONS = [
   {
     value: "soniox_async",
     label: "Soniox Async",
-    model: "stt-async-v5",
+    model: "stt-async-v6",
     credentialModel: "soniox-async",
     recommended: true,
     nativeDiarization: true,
@@ -1017,7 +1028,7 @@ const MEETING_FINAL_STT_OPTIONS = [
   {
     value: "assemblyai",
     label: "AssemblyAI",
-    model: "Universal-3.5 Pro",
+    model: "AssemblyAI-STT-3.7",
     credentialModel: "assemblyai",
     recommended: true,
     nativeDiarization: true,
@@ -1027,12 +1038,12 @@ const MEETING_FINAL_STT_OPTIONS = [
   {
     value: "mistral_async",
     label: "Mistral Voxtral",
-    model: "Voxtral Mini Transcribe 2",
+    model: "Voxtral Small Transcribe 3",
     credentialModel: "mistral-async",
     recommended: false,
     nativeDiarization: true,
     fiveHourSupported: false,
-    detail: "Includes speaker names and timing for recordings up to 3 hours.",
+    detail: "Includes speaker names and timing for recordings up to 30 minutes.",
   },
   {
     value: "deepgram_async",
@@ -1077,7 +1088,7 @@ const MEETING_FINAL_STT_OPTIONS = [
   {
     value: "openai_async",
     label: "OpenAI Batch",
-    model: "gpt-4o-mini-transcribe",
+    model: "gpt-transcribe",
     credentialModel: "openai-async",
     recommended: false,
     nativeDiarization: false,
@@ -2076,7 +2087,7 @@ export default function Settings() {
   const [meetingHotkey, setMeetingHotkey] = useState("Ctrl + Shift + M");
   const [remoteDesktopHotkeys, setRemoteDesktopHotkeys] = useState(false);
   const [remoteDesktopHotkeysSaving, setRemoteDesktopHotkeysSaving] = useState(false);
-  const [sonioxRealtimeModel, setSonioxRealtimeModel] = useState("stt-rt-v5");
+  const [sonioxRealtimeModel, setSonioxRealtimeModel] = useState("stt-rt-v6");
   const [meetingTranscriptionMode, setMeetingTranscriptionMode] = useState<MeetingTranscriptionMode>("live_final");
   const [meetingFinalProvider, setMeetingFinalProvider] = useState("soniox_async");
   const [meetingAnalysisModel, setMeetingAnalysisModel] = useState(DEFAULT_SUMMARIZATION_MODEL);
@@ -3022,7 +3033,7 @@ export default function Settings() {
         );
         setMeetingHotkey(settings.meetingHotkey || settings.meetingHotkeyRaw || "Ctrl + Shift + M");
         setRemoteDesktopHotkeys(settings.remoteDesktopHotkeys === true);
-        setSonioxRealtimeModel(settings.sonioxRealtimeModel || "stt-rt-v5");
+        setSonioxRealtimeModel(settings.sonioxRealtimeModel || "stt-rt-v6");
         setTranscriptionProviderModels(settings.transcriptionProviderModels || {});
         setSonioxRegion(settings.sonioxRegion === "eu" ? "eu" : "us");
         setMeetingTranscriptionMode(settings.meetingTranscriptionMode === "final_only" ? "final_only" : "live_final");

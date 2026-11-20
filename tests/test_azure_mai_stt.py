@@ -799,3 +799,146 @@ async def test_azure_mai_capture_time_mp3_matches_post_stop_control(
         candidate_stream.close()
 
     assert candidate == baseline
+
+
+@pytest.mark.asyncio
+async def test_azure_mai_retries_pre_connect_client_connector_error_after_clearing_dns_cache(monkeypatch):
+    import aiohttp
+
+    monkeypatch.setattr("src.azure_mai_stt._AZURE_MAI_PRE_CONNECT_RETRY_DELAYS", (0.0, 0.0))
+
+    cleared: list[tuple[str | None, int | None]] = []
+    seen_payloads: list[bytes] = []
+
+    class Connector:
+        def clear_dns_cache(self, host=None, port=None):
+            cleared.append((host, port))
+
+    class Response:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self):
+            return '{"combinedPhrases":[{"text":"Recovered after connect retry."}]}'
+
+    class Session:
+        def __init__(self):
+            self.connector = Connector()
+            self.calls = 0
+
+        def post(self, _url, **kwargs):
+            self.calls += 1
+            data = kwargs["data"]
+            audio_field = next(field[2] for field in data._fields if field[0].get("name") == "audio")
+            seen_payloads.append(audio_field.read())
+            if self.calls == 1:
+                # Simulate aiohttp closing payload on failed connect before raising.
+                audio_field.close()
+                conn_key = aiohttp.client_reqrep.ConnectionKey(
+                    host="northeurope.api.cognitive.microsoft.com",
+                    port=443,
+                    is_ssl=True,
+                    ssl=True,
+                    proxy=None,
+                    proxy_auth=None,
+                    proxy_headers_hash=None,
+                )
+                raise aiohttp.ClientConnectorError(conn_key, OSError(10054, "connection reset"))
+            return Response()
+
+    source = io.BytesIO(b"mp3-stream-bytes")
+    session = Session()
+    payload = await transcribe_with_azure_mai(
+        session=session,
+        speech_key="key",
+        region="northeurope",
+        audio_source=source,
+        filename="audio.mp3",
+        content_type="audio/mpeg",
+        language="de-DE",
+        model="MAI-Transcribe-2",
+    )
+
+    assert payload["combinedPhrases"][0]["text"] == "Recovered after connect retry."
+    assert session.calls == 2
+    assert cleared == [("northeurope.api.cognitive.microsoft.com", 443)]
+    assert seen_payloads == [b"mp3-stream-bytes", b"mp3-stream-bytes"]
+    assert not source.closed
+
+
+@pytest.mark.asyncio
+async def test_azure_mai_does_not_retry_certificate_or_post_send_disconnect_errors(monkeypatch):
+    import aiohttp
+
+    monkeypatch.setattr("src.azure_mai_stt._AZURE_MAI_PRE_CONNECT_RETRY_DELAYS", (0.0, 0.0))
+
+    conn_key = aiohttp.client_reqrep.ConnectionKey(
+        host="northeurope.api.cognitive.microsoft.com",
+        port=443,
+        is_ssl=True,
+        ssl=True,
+        proxy=None,
+        proxy_auth=None,
+        proxy_headers_hash=None,
+    )
+
+    for exc in (
+        aiohttp.ClientConnectorCertificateError(conn_key, ValueError("cert mismatch")),
+        aiohttp.ServerDisconnectedError("closed after send"),
+    ):
+        calls = 0
+
+        async def transport(*, _error: Exception = exc, **_kwargs):
+            nonlocal calls
+            calls += 1
+            raise _error
+
+        with pytest.raises(type(exc)):
+            await transcribe_with_azure_mai(
+                session=object(),
+                speech_key="key",
+                region="northeurope",
+                audio_source=b"audio",
+                filename="audio.mp3",
+                content_type="audio/mpeg",
+                language="de-DE",
+                model="MAI-Transcribe-2",
+                raw_transport=transport,
+            )
+        assert calls == 1
+
+
+def test_live_mic_provider_failure_deduplicates_circuit_breaker_counts_per_session():
+    from src.core.provider_circuit_breaker import CircuitState, ProviderCircuitBreaker
+    from src.runtime.provider_router import ProviderRouter
+    from src.web_api import ScriberWebController
+
+    controller = ScriberWebController.__new__(ScriberWebController)
+    breaker = ProviderCircuitBreaker(failure_threshold=3, cooldown_seconds=30.0)
+    controller._provider_breaker = breaker
+    controller._provider_router = ProviderRouter(
+        default_provider_getter=lambda: "azure_mai",
+        breaker=breaker,
+    )
+    controller._live_mic_provider_failure_recorded = set()
+
+    # Two failed live sessions each reporting via both pipeline_error and stop_listening
+    # must count as 2 failures (circuit stays CLOSED), not 4 (premature OPEN).
+    controller._record_live_mic_provider_failure("sess-1", "azure_mai", "Could not connect to STT service.")
+    controller._record_live_mic_provider_failure("sess-1", "azure_mai", "Could not connect to STT service.")
+    assert breaker.snapshot("azure_mai").consecutive_failures == 1
+    assert breaker.snapshot("azure_mai").state == CircuitState.CLOSED
+
+    controller._record_live_mic_provider_failure("sess-2", "azure_mai", "Could not connect to STT service.")
+    controller._record_live_mic_provider_failure("sess-2", "azure_mai", "Could not connect to STT service.")
+    assert breaker.snapshot("azure_mai").consecutive_failures == 2
+    assert breaker.snapshot("azure_mai").state == CircuitState.CLOSED
+
+    controller._record_live_mic_provider_failure("sess-3", "azure_mai", "Could not connect to STT service.")
+    assert breaker.snapshot("azure_mai").consecutive_failures == 3
+    assert breaker.snapshot("azure_mai").state == CircuitState.OPEN

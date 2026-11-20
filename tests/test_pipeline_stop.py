@@ -2131,7 +2131,7 @@ def test_mistral_segmented_live_uses_transcribe_model_when_rt_model_is_realtime_
     ("service_name", "api_key_attribute", "expected_class_name"),
     (
         ("soniox", "SONIOX_API_KEY", "SonioxSTTService"),
-        ("assemblyai_realtime", "ASSEMBLYAI_API_KEY", "AssemblyAISTTService"),
+        ("assemblyai_realtime", "ASSEMBLYAI_API_KEY", "ScriberAssemblyAISTTService"),
         ("elevenlabs", "ELEVENLABS_API_KEY", "ScriberElevenLabsRealtimeSTTService"),
         ("deepgram", "DEEPGRAM_API_KEY", "ScriberDeepgramSTTService"),
         ("gladia", "GLADIA_API_KEY", "ScriberGladiaSTTService"),
@@ -2810,10 +2810,33 @@ def test_elevenlabs_factory_uses_realtime_service(monkeypatch):
     assert service.sample_rate == Config.SAMPLE_RATE
     assert service.commit_strategy == "manual"
     assert service.settings.kwargs == {
-        "model": "scribe_v2_realtime",
+        "model": "scribe_v3_live",
         "language": Language.DE,
         "keyterms": ["Scriber", "Pipecat"],
     }
+
+
+@pytest.mark.parametrize("model", ["assemblyai-stt-3-7-realtime-agent", "assemblyai-stt-3-7-realtime"])
+def test_assemblyai_37_realtime_pipecat_ws_url_uses_37_turn_mode_and_language_codes(monkeypatch, model):
+    from urllib.parse import parse_qs, urlsplit
+
+    monkeypatch.setattr(Config, "ASSEMBLYAI_API_KEY", "key")
+    monkeypatch.setattr(Config, "ASSEMBLYAI_RT_MODEL", model)
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Scriber, Pipecat")
+
+    service = ScriberPipeline(service_name="assemblyai_realtime")._create_stt_service(object())
+    ws_url = service._build_ws_url()
+    params = parse_qs(urlsplit(ws_url).query)
+
+    assert params["speech_model"] == [model]
+    assert params["language_codes"] == ['["de"]']
+    assert "language_code" not in params
+    assert "end_of_turn_confidence_threshold" not in params
+    assert params["min_turn_silence"] == ["100"]
+    assert params["max_turn_silence"] == ["100"]
+    assert params["speaker_labels"] == ["false"]
+    assert params["keyterms_prompt"] == ['["Scriber", "Pipecat"]']
 
 
 def test_deepgram_factory_disables_live_diarization_by_default(monkeypatch):

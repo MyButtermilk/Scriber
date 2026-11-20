@@ -4,6 +4,26 @@ export const settingsTranslations = {
   "Open add-on in Chrome Web Store": "Add-on im Chrome Web Store öffnen",
   "The Chrome Web Store could not be opened. Please try again.":
     "Der Chrome Web Store konnte nicht geöffnet werden. Bitte versuche es erneut.",
+  "Connect from browser": "Anmeldung aus Browser übernehmen",
+  "Cancel browser connection": "Verbindung abbrechen",
+  "Your browser could not be opened. Please try again.":
+    "Dein Browser konnte nicht geöffnet werden. Bitte versuche es erneut.",
+  "Browser connection could not be cancelled. Please try again.":
+    "Die Browserverbindung konnte nicht abgebrochen werden. Bitte versuche es erneut.",
+  "Reuse your existing YouTube sign-in from your normal browser via the Scriber add-on. Scriber uses only your YouTube sign-in, for up to two hours or until Scriber closes.":
+    "Übernimm deine bestehende YouTube-Anmeldung aus deinem normalen Browser über das Scriber-Add-on. Scriber verwendet nur deine YouTube-Anmeldung, höchstens zwei Stunden oder bis Scriber geschlossen wird.",
+  "YouTube opened in your browser. With add-on version 0.2.2 or later, your sign-in connects automatically and restarts this video. On older versions, click “Transcribe with Scriber” on the opened page.":
+    "YouTube wurde im Browser geöffnet. Ab Add-on-Version 0.2.2 wird deine Anmeldung automatisch übernommen und dieses Video startet sofort neu. Bei älteren Versionen klicke auf der geöffneten Seite auf „Mit Scriber transkribieren“.",
+  "YouTube opened in your browser. With add-on version 0.2.2 or later, your sign-in connects automatically. On older versions, click the Scriber add-on icon on the opened page.":
+    "YouTube wurde im Browser geöffnet. Ab Add-on-Version 0.2.2 wird deine Anmeldung automatisch übernommen. Bei älteren Versionen klicke auf der geöffneten Seite auf das Scriber-Add-on-Symbol.",
+  "Browser connection timed out. Make sure the Scriber add-on is installed and YouTube sign-in is allowed, then try again.":
+    "Die Browserverbindung hat zu lange gedauert. Prüfe, ob das Scriber-Add-on installiert und die YouTube-Anmeldung freigegeben ist, und versuche es erneut.",
+  "Confirm the installation in Chrome, then allow YouTube sign-in once in the add-on. Future videos from inside Scriber can then connect with one click.":
+    "Bestätige die Installation in Chrome und gib deine YouTube-Anmeldung einmal im Add-on frei. Danach lassen sich Videos direkt aus Scriber mit einem Klick verbinden.",
+  "Alternative: private sign-in window or sign-in file":
+    "Alternativen: privates Anmeldefenster oder Anmeldedatei",
+  "Without the browser add-on you can try a private browser window or import a YouTube sign-in file. Note: Google may reject direct sign-in in isolated browser windows.":
+    "Ohne Browser-Add-on kannst du ein privates Browserfenster oder den Import einer Anmeldedatei versuchen. Hinweis: Google lehnt die direkte Anmeldung in isolierten Browserfenstern häufig ab.",
   "Confirm the installation in Chrome, then allow YouTube sign-in in the add-on when sending a video.":
     "Bestätige die Installation in Chrome. Gib anschließend beim Übertragen eines Videos im Add-on deine YouTube-Anmeldung frei.",
   "Sign in to YouTube in a private browser window. No add-on is required. Scriber uses only your YouTube sign-in, for up to two hours or until Scriber closes.":
@@ -215,8 +235,8 @@ export const settingsTranslations = {
     "Verwendet denselben Dienst für Live- und finale Transkription. Trennt Sprecher an gemeinsam genutzten Mikrofonen sowie im Systemaudio und erhält bei Meetings bis zu 5 Stunden exakte Zeitangaben.",
   "Strong speaker naming and timing for meetings up to 5 hours.":
     "Zuverlässige Sprecherbenennung und Zeitangaben für Meetings bis zu 5 Stunden.",
-  "Includes speaker names and timing for recordings up to 3 hours.":
-    "Enthält Sprechernamen und Zeitangaben für Aufnahmen bis zu 3 Stunden.",
+  "Includes speaker names and timing for recordings up to 30 minutes.":
+    "Enthält Sprechernamen und Zeitangaben für Aufnahmen bis zu 30 Minuten.",
   "Includes word timing and speaker names. The current Scriber setup is not recommended for 5-hour meetings.":
     "Enthält Wortzeitangaben und Sprechernamen. Die aktuelle Scriber-Konfiguration wird für 5-stündige Meetings nicht empfohlen.",
   "Includes speaker names and timing for recordings up to 2 hours 15 minutes.":

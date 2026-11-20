@@ -287,17 +287,43 @@ _local_polishing_variant_env = _migrated_local_polishing_variant_env()
 
 class Config:
     DEFAULT_LOCAL_POLISHING_VARIANT = DEFAULT_LOCAL_POLISHING_VARIANT
-    DEFAULT_SONIOX_ASYNC_MODEL = "stt-async-v5"
-    DEFAULT_SONIOX_RT_MODEL = "stt-rt-v5"
+    DEFAULT_SONIOX_ASYNC_MODEL = "stt-async-v6"
+    DEFAULT_SONIOX_RT_MODEL = "stt-rt-v6"
     DEFAULT_SONIOX_REGION = SONIOX_DEFAULT_REGION
     _LEGACY_DEFAULT_SONIOX_ASYNC_MODELS: ClassVar[set[str]] = {
         "stt-async-preview",
         "stt-async-v3",
         "stt-async-v4",
+        "stt-async-v5",
     }
-    _LEGACY_DEFAULT_SONIOX_RT_MODELS: ClassVar[set[str]] = {"stt-rt-v3", "stt-rt-v4"}
-    DEFAULT_ASSEMBLYAI_ASYNC_MODEL = "universal-3-5-pro"
-    DEFAULT_ASSEMBLYAI_RT_MODEL = "universal-3-5-pro"
+    _LEGACY_DEFAULT_SONIOX_RT_MODELS: ClassVar[set[str]] = {"stt-rt-v3", "stt-rt-v4", "stt-rt-v5"}
+    DEFAULT_ASSEMBLYAI_ASYNC_MODEL = "assemblyai-stt-3-7"
+    DEFAULT_ASSEMBLYAI_RT_MODEL = "assemblyai-stt-3-7-realtime-agent"
+    _LEGACY_DEFAULT_ASSEMBLYAI_ASYNC_MODELS: ClassVar[set[str]] = {
+        "universal-3-pro",
+        "universal-3-5-pro",
+    }
+    _LEGACY_DEFAULT_ASSEMBLYAI_RT_MODELS: ClassVar[set[str]] = {
+        "u3-rt-pro",
+        "universal-3-5-pro",
+    }
+    DEFAULT_MISTRAL_ASYNC_MODEL = "voxtral-small-transcribe-3-0"
+    DEFAULT_MISTRAL_RT_MODEL = "voxtral-small-transcribe-3-0"
+    _LEGACY_DEFAULT_MISTRAL_MODELS: ClassVar[set[str]] = {
+        "voxtral-mini-2507",
+        "voxtral-mini-transcribe-2507",
+        "voxtral-mini-2602",
+    }
+    DEFAULT_OPENAI_REALTIME_STT_MODEL = "gpt-live-transcribe"
+    DEFAULT_OPENAI_STT_MODEL = "gpt-transcribe"
+    _LEGACY_DEFAULT_OPENAI_REALTIME_STT_MODELS: ClassVar[set[str]] = {"gpt-realtime-whisper"}
+    _LEGACY_DEFAULT_OPENAI_STT_MODELS: ClassVar[set[str]] = {
+        "gpt-4o-mini-transcribe",
+        "gpt-4o-mini-transcribe-2025-12-15",
+        "gpt-4o-transcribe",
+        "whisper-1",
+    }
+    DEFAULT_ELEVENLABS_RT_MODEL = "scribe_v3_live"
     DEFAULT_AZURE_MAI_MODEL = "MAI-Transcribe-2"
     DEFAULT_OPENROUTER_STT_MODEL = "microsoft/mai-transcribe-2"
     DEFAULT_GEMINI_STT_MODEL = "gemini-3.5-transcribe"
@@ -350,10 +376,26 @@ class Config:
         DEFAULT_SONIOX_RT_MODEL,
         legacy_dotenv_defaults=_LEGACY_DEFAULT_SONIOX_RT_MODELS,
     )
-    ASSEMBLYAI_ASYNC_MODEL = os.getenv("SCRIBER_ASSEMBLYAI_ASYNC_MODEL", DEFAULT_ASSEMBLYAI_ASYNC_MODEL)
-    ASSEMBLYAI_RT_MODEL = os.getenv("SCRIBER_ASSEMBLYAI_RT_MODEL", DEFAULT_ASSEMBLYAI_RT_MODEL)
-    MISTRAL_RT_MODEL = os.getenv("SCRIBER_MISTRAL_RT_MODEL", "voxtral-mini-2602")
-    MISTRAL_ASYNC_MODEL = os.getenv("SCRIBER_MISTRAL_ASYNC_MODEL", "voxtral-mini-2602")
+    ASSEMBLYAI_ASYNC_MODEL = _versioned_model_env(
+        "SCRIBER_ASSEMBLYAI_ASYNC_MODEL",
+        DEFAULT_ASSEMBLYAI_ASYNC_MODEL,
+        legacy_dotenv_defaults=_LEGACY_DEFAULT_ASSEMBLYAI_ASYNC_MODELS,
+    )
+    ASSEMBLYAI_RT_MODEL = _versioned_model_env(
+        "SCRIBER_ASSEMBLYAI_RT_MODEL",
+        DEFAULT_ASSEMBLYAI_RT_MODEL,
+        legacy_dotenv_defaults=_LEGACY_DEFAULT_ASSEMBLYAI_RT_MODELS,
+    )
+    MISTRAL_RT_MODEL = _versioned_model_env(
+        "SCRIBER_MISTRAL_RT_MODEL",
+        DEFAULT_MISTRAL_RT_MODEL,
+        legacy_dotenv_defaults=_LEGACY_DEFAULT_MISTRAL_MODELS,
+    )
+    MISTRAL_ASYNC_MODEL = _versioned_model_env(
+        "SCRIBER_MISTRAL_ASYNC_MODEL",
+        DEFAULT_MISTRAL_ASYNC_MODEL,
+        legacy_dotenv_defaults=_LEGACY_DEFAULT_MISTRAL_MODELS,
+    )
     DEEPGRAM_MODEL = os.getenv("SCRIBER_DEEPGRAM_MODEL", "nova-3")
     GEMINI_STT_MODEL = _versioned_model_env(
         "SCRIBER_GEMINI_STT_MODEL",
@@ -456,8 +498,8 @@ class Config:
         "mistral_async": "Mistral (Async)",
         "smallest": "Smallest AI (Realtime)",
         "smallest_async": "Smallest AI (Async)",
-        "assemblyai": "Assembly AI Universal-3.5-Pro",
-        "assemblyai_realtime": "Assembly AI Universal-3.5-Pro Realtime",
+        "assemblyai": "AssemblyAI STT-3.7",
+        "assemblyai_realtime": "AssemblyAI STT-3.7 Realtime",
         "google": "Google Cloud",
         "elevenlabs": "ElevenLabs",
         "deepgram": "Deepgram (Streaming)",
@@ -676,8 +718,16 @@ ${output}"""
 
     # OpenAI Speech-to-Text models. Keep realtime and batch separate so the
     # low-latency websocket model cannot accidentally be used for file upload.
-    OPENAI_REALTIME_STT_MODEL = os.getenv("SCRIBER_OPENAI_REALTIME_STT_MODEL", "gpt-realtime-whisper")
-    OPENAI_STT_MODEL = os.getenv("SCRIBER_OPENAI_STT_MODEL", "gpt-4o-mini-transcribe-2025-12-15")
+    OPENAI_REALTIME_STT_MODEL = _versioned_model_env(
+        "SCRIBER_OPENAI_REALTIME_STT_MODEL",
+        DEFAULT_OPENAI_REALTIME_STT_MODEL,
+        legacy_dotenv_defaults=_LEGACY_DEFAULT_OPENAI_REALTIME_STT_MODELS,
+    )
+    OPENAI_STT_MODEL = _versioned_model_env(
+        "SCRIBER_OPENAI_STT_MODEL",
+        DEFAULT_OPENAI_STT_MODEL,
+        legacy_dotenv_defaults=_LEGACY_DEFAULT_OPENAI_STT_MODELS,
+    )
 
     # ONNX Local STT settings
     # Supported models include Parakeet/Canary ONNX snapshots and the fp32 DeskScribe Primeline package.
@@ -900,11 +950,11 @@ ${output}"""
             normalized = str(value or "").strip()
             return normalized or fallback
 
-        mistral_segmented = configured(cls.MISTRAL_RT_MODEL, "voxtral-mini-2602")
+        mistral_segmented = configured(cls.MISTRAL_RT_MODEL, cls.DEFAULT_MISTRAL_RT_MODEL)
         if "realtime" in mistral_segmented.lower():
             # Scriber's current Mistral "live" path uploads completed speech
             # segments and therefore cannot send Mistral's realtime-only model.
-            mistral_segmented = configured(cls.MISTRAL_ASYNC_MODEL, "voxtral-mini-2602")
+            mistral_segmented = configured(cls.MISTRAL_ASYNC_MODEL, cls.DEFAULT_MISTRAL_ASYNC_MODEL)
 
         return {
             "soniox-realtime": configured(cls.SONIOX_RT_MODEL, cls.DEFAULT_SONIOX_RT_MODEL),
@@ -919,7 +969,7 @@ ${output}"""
                 cls.DEFAULT_GEMINI_REALTIME_STT_MODEL,
             ),
             "mistral-realtime": mistral_segmented,
-            "mistral-async": configured(cls.MISTRAL_ASYNC_MODEL, "voxtral-mini-2602"),
+            "mistral-async": configured(cls.MISTRAL_ASYNC_MODEL, cls.DEFAULT_MISTRAL_ASYNC_MODEL),
             "smallest-realtime": "pulse",
             "smallest-async": "pulse",
             "assemblyai-realtime": configured(
@@ -932,10 +982,10 @@ ${output}"""
             ),
             "deepgram": configured(cls.DEEPGRAM_MODEL, "nova-3"),
             "deepgram-async": configured(cls.DEEPGRAM_MODEL, "nova-3"),
-            "openai": configured(cls.OPENAI_REALTIME_STT_MODEL, "gpt-realtime-whisper"),
+            "openai": configured(cls.OPENAI_REALTIME_STT_MODEL, cls.DEFAULT_OPENAI_REALTIME_STT_MODEL),
             "openai-async": configured(
                 cls.OPENAI_STT_MODEL,
-                "gpt-4o-mini-transcribe-2025-12-15",
+                cls.DEFAULT_OPENAI_STT_MODEL,
             ),
             "openrouter_stt": cls.DEFAULT_OPENROUTER_STT_MODEL,
             "azure_mai": configured(cls.AZURE_MAI_MODEL, cls.DEFAULT_AZURE_MAI_MODEL),
@@ -947,7 +997,7 @@ ${output}"""
             # accuracy/latency operating point rather than a public model slug.
             "speechmatics": "linden-1",
             "speechmatics-async": "enhanced",
-            "elevenlabs": "scribe_v2_realtime",
+            "elevenlabs": cls.DEFAULT_ELEVENLABS_RT_MODEL,
             "google": "latest_long",
             "onnx_local": configured(cls.ONNX_MODEL, "nemo-parakeet-tdt-0.6b-v3"),
         }

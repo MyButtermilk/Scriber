@@ -771,22 +771,22 @@ def test_persist_to_env_file_includes_modulate_api_key(monkeypatch, tmp_path):
     assert "MODULATE_API_KEY=modulate-secret" in contents
 
 
-def test_persist_to_env_file_includes_soniox_async_v5_default(monkeypatch, tmp_path):
+def test_persist_to_env_file_includes_soniox_async_v6_default(monkeypatch, tmp_path):
     target = tmp_path / ".env"
     monkeypatch.setattr(Config, "SONIOX_ASYNC_MODEL", Config.DEFAULT_SONIOX_ASYNC_MODEL)
 
     Config.persist_to_env_file(str(target))
 
-    assert "SCRIBER_SONIOX_ASYNC_MODEL=stt-async-v5" in target.read_text(encoding="utf-8")
+    assert "SCRIBER_SONIOX_ASYNC_MODEL=stt-async-v6" in target.read_text(encoding="utf-8")
 
 
-def test_persist_to_env_file_includes_soniox_realtime_v5_default(monkeypatch, tmp_path):
+def test_persist_to_env_file_includes_soniox_realtime_v6_default(monkeypatch, tmp_path):
     target = tmp_path / ".env"
     monkeypatch.setattr(Config, "SONIOX_RT_MODEL", Config.DEFAULT_SONIOX_RT_MODEL)
 
     Config.persist_to_env_file(str(target))
 
-    assert "SCRIBER_SONIOX_RT_MODEL=stt-rt-v5" in target.read_text(encoding="utf-8")
+    assert "SCRIBER_SONIOX_RT_MODEL=stt-rt-v6" in target.read_text(encoding="utf-8")
 
 
 def test_persist_to_env_file_includes_soniox_region(monkeypatch, tmp_path):
@@ -822,8 +822,61 @@ def test_persist_to_env_file_includes_assemblyai_models(monkeypatch, tmp_path):
     Config.persist_to_env_file(str(target))
 
     contents = target.read_text(encoding="utf-8")
-    assert "SCRIBER_ASSEMBLYAI_ASYNC_MODEL=universal-3-5-pro" in contents
-    assert "SCRIBER_ASSEMBLYAI_RT_MODEL=universal-3-5-pro" in contents
+    assert "SCRIBER_ASSEMBLYAI_ASYNC_MODEL=assemblyai-stt-3-7" in contents
+    assert "SCRIBER_ASSEMBLYAI_RT_MODEL=assemblyai-stt-3-7-realtime-agent" in contents
+
+
+@pytest.mark.parametrize(
+    ("env_name", "legacy_value", "expected", "legacy_set"),
+    [
+        (
+            "SCRIBER_SONIOX_ASYNC_MODEL",
+            "stt-async-v5",
+            Config.DEFAULT_SONIOX_ASYNC_MODEL,
+            Config._LEGACY_DEFAULT_SONIOX_ASYNC_MODELS,
+        ),
+        (
+            "SCRIBER_SONIOX_RT_MODEL",
+            "stt-rt-v5",
+            Config.DEFAULT_SONIOX_RT_MODEL,
+            Config._LEGACY_DEFAULT_SONIOX_RT_MODELS,
+        ),
+        (
+            "SCRIBER_ASSEMBLYAI_ASYNC_MODEL",
+            "universal-3-5-pro",
+            Config.DEFAULT_ASSEMBLYAI_ASYNC_MODEL,
+            Config._LEGACY_DEFAULT_ASSEMBLYAI_ASYNC_MODELS,
+        ),
+        (
+            "SCRIBER_ASSEMBLYAI_RT_MODEL",
+            "universal-3-5-pro",
+            Config.DEFAULT_ASSEMBLYAI_RT_MODEL,
+            Config._LEGACY_DEFAULT_ASSEMBLYAI_RT_MODELS,
+        ),
+        (
+            "SCRIBER_MISTRAL_ASYNC_MODEL",
+            "voxtral-mini-2602",
+            Config.DEFAULT_MISTRAL_ASYNC_MODEL,
+            Config._LEGACY_DEFAULT_MISTRAL_MODELS,
+        ),
+        (
+            "SCRIBER_OPENAI_STT_MODEL",
+            "gpt-4o-mini-transcribe-2025-12-15",
+            Config.DEFAULT_OPENAI_STT_MODEL,
+            Config._LEGACY_DEFAULT_OPENAI_STT_MODELS,
+        ),
+        (
+            "SCRIBER_OPENAI_REALTIME_STT_MODEL",
+            "gpt-realtime-whisper",
+            Config.DEFAULT_OPENAI_REALTIME_STT_MODEL,
+            Config._LEGACY_DEFAULT_OPENAI_REALTIME_STT_MODELS,
+        ),
+    ],
+)
+def test_stt_legacy_dotenv_defaults_auto_upgrade(monkeypatch, env_name, legacy_value, expected, legacy_set):
+    monkeypatch.setenv(env_name, legacy_value)
+    monkeypatch.setattr(config_module, "_PROCESS_ENV_KEYS_BEFORE_DOTENV", frozenset())
+    assert config_module._versioned_model_env(env_name, expected, legacy_dotenv_defaults=legacy_set) == expected
 
 
 def test_persist_to_env_file_includes_gemini_transcribe_models(monkeypatch, tmp_path):

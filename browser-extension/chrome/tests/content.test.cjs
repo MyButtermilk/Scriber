@@ -5,10 +5,14 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 // Minimal inert DOM: run the actual content script; never navigate a browser.
-function harness(sendMessage) {
+function harness(
+  sendMessage,
+  href = "https://www.youtube.com/watch?v=BFKcC0VyuZA",
+) {
   const elements = [],
     timers = new Map(),
-    launches = [];
+    launches = [],
+    replacedUrls = [];
   let timerId = 0;
   function element(tag) {
     const node = {
@@ -51,6 +55,7 @@ function harness(sendMessage) {
     querySelector: () => null,
     getElementById: (id) => elements.find((node) => node.id === id) || null,
   };
+  const parsed = new URL(href);
   const context = vm.createContext({
     URL,
     URLSearchParams,
@@ -60,7 +65,13 @@ function harness(sendMessage) {
       observe() {}
     },
     window: {
-      location: { href: "https://www.youtube.com/watch?v=BFKcC0VyuZA" },
+      location: { href, hash: parsed.hash },
+      history: {
+        state: null,
+        replaceState(_state, _title, nextUrl) {
+          replacedUrls.push(nextUrl);
+        },
+      },
       addEventListener() {},
       clearTimeout: (id) => timers.delete(id),
       setTimeout: (callback) => {
@@ -84,7 +95,10 @@ function harness(sendMessage) {
   flushTimers();
   return {
     button: elements.find((node) => node.tag === "button"),
+    toast: () =>
+      elements.find((node) => node.id === "scriber-youtube-connect-toast"),
     launches,
+    replacedUrls,
     flushTimers,
   };
 }
@@ -109,3 +123,21 @@ for (const [name, sendMessage] of [
     h.button.click();
     assert.equal(h.launches.length, 2);
   });
+
+test("scriber-connect hash strips fragment and requests session handoff once", async () => {
+  const sent = [];
+  const connectId = "a1b2c3d4".repeat(4);
+  const h = harness(
+    async (message) => {
+      sent.push(message);
+      return { connected: true, reason: "connected" };
+    },
+    `https://www.youtube.com/watch?v=BFKcC0VyuZA#scriber-connect=${connectId}`,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(JSON.parse(JSON.stringify(sent)), [
+    { type: "youtube-session-connect", connectId },
+  ]);
+  assert.deepEqual(h.replacedUrls, ["/watch?v=BFKcC0VyuZA"]);
+  assert.equal(h.toast()?.dataset.tone, "success");
+});

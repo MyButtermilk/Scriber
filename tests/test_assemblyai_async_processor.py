@@ -130,6 +130,8 @@ def test_build_u3pro_language_fields_rules():
     assert build_u3pro_language_fields("auto") == {"language_detection": True}
     assert build_u3pro_language_fields("de-DE") == {"language_code": "de"}
     assert build_u3pro_language_fields("nl") == {"language_code": "nl"}
+    assert build_u3pro_language_fields("ko-KR") == {"language_code": "ko"}
+    assert build_u3pro_language_fields("ru") == {"language_code": "ru"}
     assert build_u3pro_language_fields("pl") == {"language_detection": True}
 
 
@@ -204,7 +206,7 @@ async def test_transcribe_with_assemblyai_pre_recorded_happy_path(monkeypatch):
     assert payload.get("status") == "completed"
     assert len(session.post_calls) == 2
     submit_json = session.post_calls[1][1]["json"]
-    assert submit_json["speech_models"] == ["universal-3-5-pro"]
+    assert submit_json["speech_models"] == ["assemblyai-stt-3-7"]
     assert submit_json["speaker_labels"] is True
     assert submit_json["language_code"] == "nl"
     assert submit_json["keyterms_prompt"] == ["Alpha"]
@@ -299,7 +301,7 @@ async def test_pipeline_direct_upload_assemblyai_uses_diarized_speaker_output(
         assert kwargs["speaker_labels"] is True
         assert kwargs["language"] == "de"
         assert kwargs["custom_vocab"] == "Scriber,Pipecat"
-        assert kwargs["model"] == "universal-3-5-pro"
+        assert kwargs["model"] == "assemblyai-stt-3-7"
         assert kwargs["upload_timeout_secs"] == 300.0
         return {
             "status": "completed",

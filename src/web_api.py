@@ -648,8 +648,8 @@ _MEETING_FIVE_HOUR_ROUTE_REASONS: dict[str, str] = {
     "soniox_async": "Soniox accepts up to 300 minutes; this route targets that exact five-hour boundary.",
     "assemblyai": "A worst-case five-hour 16-kHz mono track remains below AssemblyAI's upload limit.",
     "deepgram_async": "Deepgram accepts pre-recorded files up to 2 GB, but Scriber's synchronous request is not yet verified for five-hour processing; chunking is still required.",
-    "mistral": "The configured Voxtral Mini Transcribe 2 route accepts up to 3 hours per request.",
-    "mistral_async": "The configured Voxtral Mini Transcribe 2 route accepts up to 3 hours per request.",
+    "mistral": "The configured Voxtral 3 route accepts up to 30 minutes per request (legacy Voxtral Mini Transcribe 2 supports 3 hours).",
+    "mistral_async": "The configured Voxtral 3 route accepts up to 30 minutes per request (legacy Voxtral Mini Transcribe 2 supports 3 hours).",
     "azure_mai": "Scriber transcodes each track to bounded mono 64-kbit/s MP3 before upload.",
     "openrouter_stt": "OpenRouter accepts MP3 uploads, but this route is not yet verified for five-hour processing.",
     "onnx_local": "Local ONNX transcription does not require a cloud file upload.",
@@ -682,7 +682,7 @@ _MEETING_FINAL_STT_PROVIDERS = frozenset(
     }
 )
 _MEETING_TRANSCRIPTION_MODES = frozenset({"live_final", "final_only"})
-_MEETING_PRICING_UPDATED_AT = "2026-09-08"
+_MEETING_PRICING_UPDATED_AT = "2026-11-20"
 _MEETING_LIVE_SONIOX_USD_PER_TRACK_HOUR = 0.12
 _MEETING_FINAL_COSTS: dict[str, dict[str, Any]] = {
     "soniox_async": {
@@ -698,19 +698,19 @@ _MEETING_FINAL_COSTS: dict[str, dict[str, Any]] = {
         "estimateKind": "published_hourly",
     },
     "mistral_async": {
-        "perTrackHourUsd": 0.18,
+        "perTrackHourUsd": 0.24,
         "systemDiarizationHourUsd": 0.0,
         "pricingUrl": "https://mistral.ai/pricing/api/",
         "estimateKind": "published_minute",
     },
     "deepgram_async": {
-        "perTrackHourUsd": 0.35,
+        "perTrackHourUsd": 0.26,
         "systemDiarizationHourUsd": 0.12,
         "pricingUrl": "https://deepgram.com/pricing",
         "estimateKind": "published_hourly",
     },
     "gladia_async": {
-        "perTrackHourUsd": 0.61,
+        "perTrackHourUsd": 0.30,
         "systemDiarizationHourUsd": 0.0,
         "pricingUrl": "https://support.gladia.io/article/understanding-our-transcription-pricing-pv1atikh8y9c8sw7sudm3rcy",
         "estimateKind": "published_hourly",
@@ -722,15 +722,15 @@ _MEETING_FINAL_COSTS: dict[str, dict[str, Any]] = {
         "estimateKind": "published_minute",
     },
     "speechmatics_async": {
-        "perTrackHourUsd": 0.40,
+        "perTrackHourUsd": 0.75,
         "systemDiarizationHourUsd": 0.0,
         "pricingUrl": "https://www.speechmatics.com/pricing",
         "estimateKind": "published_hourly",
     },
     "openai_async": {
-        "perTrackHourUsd": 0.18,
+        "perTrackHourUsd": 0.27,
         "systemDiarizationHourUsd": 0.0,
-        "pricingUrl": "https://developers.openai.com/api/docs/models/gpt-4o-mini-transcribe",
+        "pricingUrl": "https://developers.openai.com/api/docs/models/gpt-transcribe",
         "estimateKind": "token_estimate",
     },
     "openrouter_stt": {
@@ -3529,6 +3529,7 @@ class ScriberWebController:
         self._live_transcribing_visible = False
         self._pending_post_processing_fallback_event: tuple[float, dict[str, Any]] | None = None
         self._live_mic_stop_owner: object | None = None
+        self._live_mic_provider_failure_recorded: set[str] = set()
         self._pending_live_mic_native_cleanup: tuple[str, Any] | None = None
         self._listening_lock = asyncio.Lock()  # Prevent race conditions on rapid hotkey presses
         self._mic_prewarm = RustAudioPrewarmManager()
@@ -6196,6 +6197,27 @@ class ScriberWebController:
         if provider_user_error(provider, error).provider == "microphone":
             return
         self._provider_router.record_failure(provider, error)
+
+    def _record_live_mic_provider_failure(
+        self,
+        session_id: str | None,
+        provider: str,
+        error: Exception | str,
+    ) -> None:
+        # Both on_pipeline_error and _stop_listening_session can observe the same
+        # terminal provider failure for one Live Mic dictation. Count it once so
+        # transient errors do not prematurely trip the circuit breaker.
+        if session_id:
+            recorded = getattr(self, "_live_mic_provider_failure_recorded", None)
+            if not isinstance(recorded, set):
+                recorded = set()
+                self._live_mic_provider_failure_recorded = recorded
+            if session_id in recorded:
+                return
+            if len(recorded) >= 128:
+                recorded.clear()
+            recorded.add(session_id)
+        self._record_provider_failure(provider, error)
 
     def _retry_delay_seconds(self, attempts: int) -> float:
         exponent = max(0, int(attempts) - 1)
@@ -12747,7 +12769,7 @@ class ScriberWebController:
                 if provider_replay_execution is not None:
                     provider_replay_execution.fail("provider_failed")
                 provider_used = self._active_provider
-                self._record_provider_failure(provider_used or "", error_msg)
+                self._record_live_mic_provider_failure(session_id, provider_used or "", error_msg)
                 self._set_recording_state(RecordingState.FAILED, context="pipeline_error")
                 self._set_status("Error")
                 self._overlay_audio_enabled = False
@@ -13155,7 +13177,7 @@ class ScriberWebController:
                         else None
                     ),
                     soniox_replay_model=(
-                        "stt-rt-v5"
+                        Config.DEFAULT_SONIOX_RT_MODEL
                         if provider_replay_execution is not None and provider_replay_execution.provider == "soniox"
                         else None
                     ),
@@ -14335,7 +14357,7 @@ class ScriberWebController:
         except Exception as exc:
             stop_error = exc
             stop_error_info = self._provider_user_error(exc, provider=provider_used)
-            self._record_provider_failure(provider_used or "", exc)
+            self._record_live_mic_provider_failure(session_id, provider_used or "", exc)
             logger.exception("Error while stopping live pipeline")
             category = stop_error_info.category
             user_msg = stop_error_info.message
@@ -14407,6 +14429,10 @@ class ScriberWebController:
                             self._cancel_pending_live_mic_start()
                         else:
                             retrigger_hotkey_toggle = True
+                if session_id:
+                    recorded = getattr(self, "_live_mic_provider_failure_recorded", None)
+                    if isinstance(recorded, set):
+                        recorded.discard(session_id)
 
             if current:
                 current.finish("failed" if stop_error else "completed")

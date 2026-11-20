@@ -1301,6 +1301,7 @@ export default function TranscriptDetail() {
                 <YouTubeSessionSettings
                   key={transcript.id}
                   recoveryKey={transcript.id}
+                  videoUrl={transcript.sourceUrl}
                   onConnected={retryYoutubeTranscription}
                 />
               )}

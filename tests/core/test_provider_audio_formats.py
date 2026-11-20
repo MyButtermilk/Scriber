@@ -126,10 +126,15 @@ def test_batch_and_realtime_formats_are_route_scoped_and_separate():
 @pytest.mark.parametrize(
     ("provider", "route", "model"),
     (
+        ("assemblyai_realtime", "streaming", "assemblyai-stt-3-7-realtime-agent"),
+        ("assemblyai_realtime", "streaming", "assemblyai-stt-3-7-realtime"),
+        ("assemblyai_realtime", "streaming", "universal-3-6-pro"),
         ("assemblyai_realtime", "streaming", "universal-3-5-pro"),
         ("deepgram", "nova_streaming", "nova-3"),
+        ("openai", "realtime_transcription", "gpt-live-transcribe"),
         ("openai", "realtime_transcription", "gpt-realtime-whisper"),
         ("google", "cloud_streaming_v2", "latest_long"),
+        ("elevenlabs", "scribe_v3_live", "scribe_v3_live"),
         ("elevenlabs", "scribe_v2_realtime", "scribe_v2_realtime"),
         ("speechmatics", "agent_v2", "linden-1"),
         ("gemini_realtime", "live_transcription", "gemini-3.5-transcribe-live"),

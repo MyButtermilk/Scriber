@@ -1171,7 +1171,7 @@ async def test_soniox_loopback_uses_real_websocket_messages_and_receive_boundary
             await websocket.send(
                 json.dumps(
                     {
-                        "model": "stt-rt-v5",
+                        "model": "stt-rt-v6",
                         "audio_format": "pcm_s16le",
                     }
                 )
@@ -1209,7 +1209,7 @@ async def test_soniox_replay_rejects_missing_wrong_or_legacy_authentication(auth
     from websockets.exceptions import ConnectionClosed
 
     server = await LocalSonioxReplayServer().start()
-    config = {"model": "stt-rt-v5", "audio_format": "pcm_s16le"}
+    config = {"model": "stt-rt-v6", "audio_format": "pcm_s16le"}
     if legacy:
         config["api_key"] = "local-replay"
     try:
@@ -1248,7 +1248,7 @@ async def test_soniox_replay_traverses_real_pipecat_service_and_parser(monkeypat
             soniox_replay_url=server.url,
             soniox_replay_final_message_sha256=server.final_message_sha256,
             on_soniox_last_final_token_received=lambda: markers.append("received"),
-            soniox_replay_model="stt-rt-v5",
+            soniox_replay_model="stt-rt-v6",
         )
         service = pipeline._create_stt_service(object())
 
@@ -1266,7 +1266,7 @@ async def test_soniox_replay_traverses_real_pipecat_service_and_parser(monkeypat
         assert [frame.text for frame in transcripts] == ["Scriber deterministic Soniox provider replay."]
         assert markers == ["received"]
         assert service._api_key == "local-replay"
-        assert service._settings.model == "stt-rt-v5"
+        assert service._settings.model == "stt-rt-v6"
         assert server.error_code is None
     finally:
         if service is not None:
@@ -1288,7 +1288,7 @@ def test_soniox_replay_pipeline_rejects_non_loopback_or_partial_configuration():
             soniox_replay_url="wss://stt-rt.soniox.com/transcribe-websocket",
             soniox_replay_final_message_sha256="a" * 64,
             on_soniox_last_final_token_received=lambda: None,
-            soniox_replay_model="stt-rt-v5",
+            soniox_replay_model="stt-rt-v6",
         )
 
 

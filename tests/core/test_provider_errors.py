@@ -20,7 +20,7 @@ def test_soniox_realtime_model_error_points_to_v5():
     assert info.provider_label == "Soniox"
     assert info.category is ErrorCategory.CONFIG_INVALID
     assert info.code == "model_not_available"
-    assert "stt-rt-v5" in info.message
+    assert "stt-rt-v6" in info.message
     assert info.retryable is False
 
 
@@ -28,7 +28,7 @@ def test_soniox_async_model_error_points_to_async_v5():
     info = provider_user_error("soniox_async", "Soniox async error: model_not_available")
 
     assert info.category is ErrorCategory.CONFIG_INVALID
-    assert "stt-async-v5" in info.message
+    assert "stt-async-v6" in info.message
 
 
 def test_gemini_model_error_explains_dedicated_transcribe_contract():
@@ -161,8 +161,8 @@ def test_missing_api_key_is_provider_specific_configuration_error():
 
 def test_missing_api_key_uses_provider_specific_labels_for_async_and_optional_providers():
     cases = {
-        "assemblyai": "Assembly AI Universal-3.5-Pro",
-        "assemblyai_realtime": "Assembly AI Universal-3.5-Pro Realtime",
+        "assemblyai": "AssemblyAI STT-3.7",
+        "assemblyai_realtime": "AssemblyAI STT-3.7 Realtime",
         "mistral": "Mistral (Segmented)",
         "mistral_async": "Mistral (Async)",
         "smallest": "Smallest AI (Realtime)",

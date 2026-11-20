@@ -9,27 +9,68 @@ vi.mock("@/lib/queryClient", () => ({ apiRequest: request }));
 vi.mock("@/lib/backend", () => ({ isTauriRuntime: () => false }));
 
 const loginKey = ["/api/youtube/session/login"];
+const browserConnectKey = ["/api/youtube/session/browser-connect"];
 const idle = { state: "idle", error: "", available: true, attempt: 0 };
+const idleConnect = { state: "idle", attempt: 0 };
 
-function setup(onConnected = vi.fn()) {
+function setup(onConnected = vi.fn(), videoUrl?: string) {
   const client = new QueryClient({
     defaultOptions: {
       queries: {
-        queryFn: async ({ queryKey }) => (queryKey[0] === loginKey[0] ? idle : { connected: false }),
+        queryFn: async ({ queryKey }) => {
+          if (queryKey[0] === loginKey[0]) return idle;
+          if (queryKey[0] === browserConnectKey[0]) return idleConnect;
+          return { connected: false };
+        },
         retry: false,
       },
     },
   });
   const view = render(
     <QueryClientProvider client={client}>
-      <YouTubeSessionSettings onConnected={onConnected} />
+      <YouTubeSessionSettings onConnected={onConnected} videoUrl={videoUrl} />
     </QueryClientProvider>,
   );
   return { client, onConnected, ...view };
 }
 
+function openAlternatives() {
+  const summary = screen.getByText("Alternative: private sign-in window or sign-in file");
+  const details = summary.closest("details");
+  if (details && !details.open) {
+    fireEvent.click(summary);
+  }
+}
+
 describe("YouTube session recovery", () => {
   beforeEach(() => request.mockReset());
+
+  it("connects via the user's normal browser and restarts the video automatically", async () => {
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    try {
+      const { client, onConnected } = setup(vi.fn(), "https://www.youtube.com/watch?v=BFKcC0VyuZA");
+      await screen.findByText("No YouTube sign-in loaded");
+      const connectUrl = `https://www.youtube.com/watch?v=BFKcC0VyuZA#scriber-connect=${"a".repeat(32)}`;
+      request.mockResolvedValueOnce({
+        json: async () => ({ state: "waiting", attempt: 1, url: connectUrl }),
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Connect from browser" }));
+      await screen.findByRole("button", { name: "Cancel browser connection" });
+      expect(request).toHaveBeenCalledWith("POST", browserConnectKey[0], {
+        url: "https://www.youtube.com/watch?v=BFKcC0VyuZA",
+      });
+      expect(openSpy).toHaveBeenCalledWith(connectUrl, "_blank", "noopener,noreferrer");
+      expect(onConnected).not.toHaveBeenCalled();
+
+      act(() => {
+        client.setQueryData(browserConnectKey, { state: "connected", attempt: 1 });
+      });
+      await waitFor(() => expect(onConnected).toHaveBeenCalledTimes(1));
+      client.clear();
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
 
   it("offers the official store link and starts sign-in without an add-on only on request", async () => {
     const { client, onConnected } = setup();
@@ -38,6 +79,7 @@ describe("YouTube session recovery", () => {
     expect(screen.getByRole("link", { name: "Open add-on in Chrome Web Store" }).getAttribute("href")).toBe(
       "https://chromewebstore.google.com/detail/scriber-f%C3%BCr-youtube/ilbdnbhdihacgkaedacmndeabbiondob",
     );
+    openAlternatives();
     request.mockResolvedValueOnce({ json: async () => ({ ...idle, state: "opening", attempt: 1 }) });
     fireEvent.click(screen.getByRole("button", { name: "Sign in to YouTube" }));
     await screen.findByText("Complete sign-in in the browser. This video will then restart automatically.");
@@ -60,6 +102,7 @@ describe("YouTube session recovery", () => {
       client.setQueryData(loginKey, { ...idle, state: "connected", attempt: 1 });
     });
     expect(onConnected).not.toHaveBeenCalled();
+    openAlternatives();
     request.mockResolvedValueOnce({ json: async () => ({ ...idle, state: "waiting", attempt: 2 }) });
     fireEvent.click(screen.getByRole("button", { name: "Sign in to YouTube" }));
     const cancel = await screen.findByRole("button", { name: "Cancel sign-in" });
@@ -75,19 +118,21 @@ describe("YouTube session recovery", () => {
 
   it("keeps the store and import options available if no browser can open", async () => {
     const { client, onConnected } = setup();
+    openAlternatives();
     request.mockResolvedValueOnce({
       json: async () => ({ ...idle, state: "failed", available: false, error: "browser_missing" }),
     });
     fireEvent.click(screen.getByRole("button", { name: "Sign in to YouTube" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Chrome or Edge is needed");
     expect(screen.getByRole("link", { name: "Open add-on in Chrome Web Store" })).toBeInTheDocument();
-    expect(screen.getByText("Advanced: import a sign-in file")).toBeInTheDocument();
+    expect(screen.getByText("Alternative: private sign-in window or sign-in file")).toBeInTheDocument();
     expect(onConnected).not.toHaveBeenCalled();
     client.clear();
   });
 
   it("does not resume a video after its view has unmounted", async () => {
     const { client, onConnected, unmount } = setup();
+    openAlternatives();
     request.mockResolvedValueOnce({ json: async () => ({ ...idle, state: "waiting", attempt: 3 }) });
     fireEvent.click(screen.getByRole("button", { name: "Sign in to YouTube" }));
     await screen.findByRole("button", { name: "Cancel sign-in" });
@@ -102,6 +147,7 @@ describe("YouTube session recovery", () => {
   it("does not give an earlier video's sign-in attempt to the next video's callback", async () => {
     const { client, onConnected: first, rerender } = setup();
     const second = vi.fn();
+    openAlternatives();
     request.mockResolvedValueOnce({ json: async () => ({ ...idle, state: "waiting", attempt: 4 }) });
     fireEvent.click(screen.getByRole("button", { name: "Sign in to YouTube" }));
     await screen.findByRole("button", { name: "Cancel sign-in" });
@@ -121,7 +167,16 @@ describe("YouTube session recovery", () => {
   it("waits for an explicit import, filters other sites, then allows clearing", async () => {
     request.mockReset();
     const client = new QueryClient({
-      defaultOptions: { queries: { queryFn: async () => ({ connected: false }), retry: false } },
+      defaultOptions: {
+        queries: {
+          queryFn: async ({ queryKey }) => {
+            if (queryKey[0] === loginKey[0]) return idle;
+            if (queryKey[0] === browserConnectKey[0]) return idleConnect;
+            return { connected: false };
+          },
+          retry: false,
+        },
+      },
     });
     request.mockResolvedValueOnce({ json: async () => ({ connected: true }) });
     render(

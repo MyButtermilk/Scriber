@@ -2111,8 +2111,8 @@ second cloud request only from a validated durable StageResult.
 
 Provider selection is owned by backend configuration and persisted settings.
 Soniox is the default STT family: realtime live transcription uses
-`stt-rt-v5`, while Soniox Async file and YouTube transcription defaults to
-`stt-async-v5`. `SCRIBER_SONIOX_RT_MODEL` and
+`stt-rt-v6`, while Soniox Async file and YouTube transcription defaults to
+`stt-async-v6`. `SCRIBER_SONIOX_RT_MODEL` and
 `SCRIBER_SONIOX_ASYNC_MODEL` remain escape hatches for provider compatibility,
 but older Soniox realtime and async models are not release defaults.
 `SCRIBER_SONIOX_REGION` defaults to `us` and is the single data-residency route
@@ -2187,8 +2187,8 @@ callback boundary so single-speaker dictation is inserted as plain text. True
 known-speaker name identification is not enabled unless Scriber gains a
 UI/config source for provider-specific known speaker names or enrollment
 identifiers. OpenAI live dictation uses Pipecat's OpenAI Realtime STT service
-with `gpt-realtime-whisper`; full recording/file OpenAI transcription is
-exposed through the dedicated `openai_async` direct adapter.
+with `gpt-live-transcribe`; full recording/file OpenAI transcription is
+exposed through the dedicated `openai_async` direct adapter (`gpt-transcribe`).
 
 Live Mic treats interim text as replaceable display-only state. Pipecat
 `InterimTranscriptionFrame` values may be broadcast to the active WebView, but

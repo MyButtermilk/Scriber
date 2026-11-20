@@ -357,67 +357,62 @@ _MODULATE_BATCH = (
 
 
 PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
-    _capability(
-        "soniox",
-        "async_transcription",
-        "stt-async-v5",
-        ProviderAudioRouteKind.BATCH,
-        batch_formats=_SONIOX_BATCH,
-        direct_passthrough_formats=_SONIOX_VERIFIED_PASSTHROUGH,
-        batch_generic_containers=(AudioContainer.OGG, AudioContainer.WEBM),
-        preferred_lossy_format=AudioInputFormat.WEBM_OPUS,
-        preferred_lossless_format=AudioInputFormat.FLAC,
-        # Soniox documents 300 minutes, not a numerical per-file byte limit.
-        # The separate ingest policy still bounds local resource consumption.
-        max_upload_bytes=None,
-        evidence_kind=CapabilityEvidenceKind.SCRIBER_INTEGRATION_TEST,
-        evidence_reference="https://soniox.com/docs/stt/async/limits-and-quotas",
-        verified_at=date(2026, 10, 2),
+    *(
+        _capability(
+            provider,
+            "async_transcription",
+            model_family,
+            ProviderAudioRouteKind.BATCH,
+            batch_formats=_SONIOX_BATCH,
+            direct_passthrough_formats=_SONIOX_VERIFIED_PASSTHROUGH,
+            batch_generic_containers=(AudioContainer.OGG, AudioContainer.WEBM),
+            preferred_lossy_format=AudioInputFormat.WEBM_OPUS,
+            preferred_lossless_format=AudioInputFormat.FLAC,
+            # Soniox documents 300 minutes, not a numerical per-file byte limit.
+            # The separate ingest policy still bounds local resource consumption.
+            max_upload_bytes=None,
+            evidence_kind=CapabilityEvidenceKind.SCRIBER_INTEGRATION_TEST,
+            evidence_reference="https://soniox.com/docs/stt/async/limits-and-quotas",
+            verified_at=date(2026, 11, 20),
+        )
+        for provider in ("soniox", "soniox_async")
+        for model_family in ("stt-async-v6", "stt-async-v5")
     ),
-    _capability(
-        "soniox_async",
-        "async_transcription",
-        "stt-async-v5",
-        ProviderAudioRouteKind.BATCH,
-        batch_formats=_SONIOX_BATCH,
-        direct_passthrough_formats=_SONIOX_VERIFIED_PASSTHROUGH,
-        batch_generic_containers=(AudioContainer.OGG, AudioContainer.WEBM),
-        preferred_lossy_format=AudioInputFormat.WEBM_OPUS,
-        preferred_lossless_format=AudioInputFormat.FLAC,
-        max_upload_bytes=None,
-        evidence_kind=CapabilityEvidenceKind.SCRIBER_INTEGRATION_TEST,
-        evidence_reference="https://soniox.com/docs/stt/async/limits-and-quotas",
-        verified_at=date(2026, 10, 2),
-    ),
-    _capability(
-        "soniox",
-        "realtime_transcription",
-        "stt-rt-v5",
-        ProviderAudioRouteKind.REALTIME,
-        realtime_formats=(
-            AudioInputFormat.RAW_PCM16,
-            AudioInputFormat.RAW_PCM32_FLOAT,
-            AudioInputFormat.MULAW,
-            AudioInputFormat.ALAW,
-        ),
-        realtime_generic_containers=(AudioContainer.OGG, AudioContainer.WEBM),
-        preferred_lossless_format=AudioInputFormat.RAW_PCM16,
-        evidence_reference="https://soniox.com/docs/sdk/node-SDK/reference/types",
+    *(
+        _capability(
+            "soniox",
+            "realtime_transcription",
+            model_family,
+            ProviderAudioRouteKind.REALTIME,
+            realtime_formats=(
+                AudioInputFormat.RAW_PCM16,
+                AudioInputFormat.RAW_PCM32_FLOAT,
+                AudioInputFormat.MULAW,
+                AudioInputFormat.ALAW,
+            ),
+            realtime_generic_containers=(AudioContainer.OGG, AudioContainer.WEBM),
+            preferred_lossless_format=AudioInputFormat.RAW_PCM16,
+            evidence_reference="https://soniox.com/docs/sdk/node-SDK/reference/types",
+            verified_at=date(2026, 11, 20),
+        )
+        for model_family in ("stt-rt-v6", "stt-rt-v5")
     ),
     *(
         _capability(
             provider,
             "audio_transcriptions",
-            "voxtral-mini-2602",
+            model_family,
             ProviderAudioRouteKind.BATCH,
             batch_formats=_WAV_MP3_FLAC,
             direct_passthrough_formats=_WAV_MP3_FLAC,
             batch_generic_containers=(AudioContainer.OGG, AudioContainer.WEBM),
             preferred_lossy_format=AudioInputFormat.MP3,
             preferred_lossless_format=AudioInputFormat.FLAC,
-            evidence_reference="https://docs.mistral.ai/resources/known-limitations",
+            evidence_reference="https://docs.mistral.ai/capabilities/audio_transcription",
+            verified_at=date(2026, 11, 20),
         )
         for provider in ("mistral", "mistral_async")
+        for model_family in ("voxtral-small-transcribe-3-0", "voxtral-mini-transcribe-3-0", "voxtral-mini-2602")
     ),
     *(
         _capability(
@@ -452,28 +447,41 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
             "https://docs.smallest.ai/waves/documentation/speech-to-text-pulse/realtime-web-socket/audio-formats"
         ),
     ),
-    _capability(
-        "assemblyai",
-        "pre_recorded",
-        "universal-3-5-pro",
-        ProviderAudioRouteKind.BATCH,
-        batch_formats=_ASSEMBLYAI_BATCH,
-        direct_passthrough_formats=_ASSEMBLYAI_BATCH,
-        batch_generic_containers=(AudioContainer.OGG, AudioContainer.WEBM),
-        preferred_lossy_format=AudioInputFormat.OGG_OPUS,
-        preferred_lossless_format=AudioInputFormat.FLAC,
-        evidence_reference=(
-            "https://www.assemblyai.com/docs/faq/what-audio-and-video-file-types-are-supported-by-your-api"
-        ),
+    *(
+        _capability(
+            "assemblyai",
+            "pre_recorded",
+            model_family,
+            ProviderAudioRouteKind.BATCH,
+            batch_formats=_ASSEMBLYAI_BATCH,
+            direct_passthrough_formats=_ASSEMBLYAI_BATCH,
+            batch_generic_containers=(AudioContainer.OGG, AudioContainer.WEBM),
+            preferred_lossy_format=AudioInputFormat.OGG_OPUS,
+            preferred_lossless_format=AudioInputFormat.FLAC,
+            evidence_reference=(
+                "https://www.assemblyai.com/docs/faq/what-audio-and-video-file-types-are-supported-by-your-api"
+            ),
+            verified_at=date(2026, 11, 20),
+        )
+        for model_family in ("assemblyai-stt-3-7", "universal-3-5-pro")
     ),
-    _capability(
-        "assemblyai_realtime",
-        "streaming",
-        "universal-3-5-pro",
-        ProviderAudioRouteKind.REALTIME,
-        realtime_formats=(AudioInputFormat.RAW_PCM16, AudioInputFormat.MULAW),
-        preferred_lossless_format=AudioInputFormat.RAW_PCM16,
-        evidence_reference=("https://www.assemblyai.com/docs/streaming/guides/stream_prerecorded_file_realtime"),
+    *(
+        _capability(
+            "assemblyai_realtime",
+            "streaming",
+            model_family,
+            ProviderAudioRouteKind.REALTIME,
+            realtime_formats=(AudioInputFormat.RAW_PCM16, AudioInputFormat.MULAW),
+            preferred_lossless_format=AudioInputFormat.RAW_PCM16,
+            evidence_reference="https://www.assemblyai.com/docs/api-reference/streaming-api/streaming-api",
+            verified_at=date(2026, 11, 20),
+        )
+        for model_family in (
+            "assemblyai-stt-3-7-realtime-agent",
+            "assemblyai-stt-3-7-realtime",
+            "universal-3-6-pro",
+            "universal-3-5-pro",
+        )
     ),
     _capability(
         "deepgram_async",
@@ -506,38 +514,46 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         preferred_lossless_format=AudioInputFormat.RAW_PCM16,
         evidence_reference="https://developers.deepgram.com/docs/encoding",
     ),
-    _capability(
-        "openai_async",
-        "audio_transcriptions",
-        "gpt-4o-mini-transcribe-2025-12-15",
-        ProviderAudioRouteKind.BATCH,
-        batch_formats=(
-            AudioInputFormat.WAV_PCM16,
-            AudioInputFormat.MP3,
-            AudioInputFormat.M4A_AAC,
-        ),
-        direct_passthrough_formats=(
-            AudioInputFormat.WAV_PCM16,
-            AudioInputFormat.MP3,
-            AudioInputFormat.M4A_AAC,
-        ),
-        batch_generic_containers=(AudioContainer.MP4, AudioContainer.WEBM),
-        preferred_lossy_format=AudioInputFormat.MP3,
-        preferred_lossless_format=AudioInputFormat.WAV_PCM16,
-        evidence_reference="https://platform.openai.com/docs/guides/speech-to-text",
+    *(
+        _capability(
+            "openai_async",
+            "audio_transcriptions",
+            model_family,
+            ProviderAudioRouteKind.BATCH,
+            batch_formats=(
+                AudioInputFormat.WAV_PCM16,
+                AudioInputFormat.MP3,
+                AudioInputFormat.M4A_AAC,
+            ),
+            direct_passthrough_formats=(
+                AudioInputFormat.WAV_PCM16,
+                AudioInputFormat.MP3,
+                AudioInputFormat.M4A_AAC,
+            ),
+            batch_generic_containers=(AudioContainer.MP4, AudioContainer.WEBM),
+            preferred_lossy_format=AudioInputFormat.MP3,
+            preferred_lossless_format=AudioInputFormat.WAV_PCM16,
+            evidence_reference="https://platform.openai.com/docs/guides/speech-to-text",
+            verified_at=date(2026, 11, 20),
+        )
+        for model_family in ("gpt-transcribe", "gpt-4o-mini-transcribe-2025-12-15")
     ),
-    _capability(
-        "openai",
-        "realtime_transcription",
-        "gpt-realtime-whisper",
-        ProviderAudioRouteKind.REALTIME,
-        realtime_formats=(
-            AudioInputFormat.RAW_PCM16,
-            AudioInputFormat.MULAW,
-            AudioInputFormat.ALAW,
-        ),
-        preferred_lossless_format=AudioInputFormat.RAW_PCM16,
-        evidence_reference="https://platform.openai.com/docs/api-reference/realtime",
+    *(
+        _capability(
+            "openai",
+            "realtime_transcription",
+            model_family,
+            ProviderAudioRouteKind.REALTIME,
+            realtime_formats=(
+                AudioInputFormat.RAW_PCM16,
+                AudioInputFormat.MULAW,
+                AudioInputFormat.ALAW,
+            ),
+            preferred_lossless_format=AudioInputFormat.RAW_PCM16,
+            evidence_reference="https://platform.openai.com/docs/api-reference/realtime",
+            verified_at=date(2026, 11, 20),
+        )
+        for model_family in ("gpt-live-transcribe", "gpt-realtime-whisper")
     ),
     _capability(
         "groq",
@@ -781,6 +797,17 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
     ),
     _capability(
         "elevenlabs",
+        "scribe_v3_live",
+        "scribe_v3_live",
+        ProviderAudioRouteKind.REALTIME,
+        realtime_formats=(AudioInputFormat.RAW_PCM16,),
+        preferred_lossless_format=AudioInputFormat.RAW_PCM16,
+        evidence_kind=CapabilityEvidenceKind.OFFICIAL_ENDPOINT_DOCS,
+        evidence_reference="https://elevenlabs.io/docs/overview/capabilities/speech-to-text",
+        verified_at=date(2026, 11, 20),
+    ),
+    _capability(
+        "elevenlabs",
         "scribe_v2_realtime",
         "scribe_v2_realtime",
         ProviderAudioRouteKind.REALTIME,
@@ -873,7 +900,7 @@ _REALTIME_ROUTE_BY_PROVIDER = {
     "speechmatics": "agent_v2",
     "modulate": "velma_2_streaming",
     "meta_stt": "asr_realtime",
-    "elevenlabs": "scribe_v2_realtime",
+    "elevenlabs": "scribe_v3_live",
     "gemini_realtime": "live_transcription",
 }
 

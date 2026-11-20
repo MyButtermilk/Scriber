@@ -991,7 +991,7 @@ class SonioxAsyncProcessor(FrameProcessor):
         self,
         api_key: str,
         custom_vocab: str = "",
-        model: str = "stt-async-v5",
+        model: str = "stt-async-v6",
         session: aiohttp.ClientSession = None,
         on_progress: Callable[[str], None] | None = None,
         enable_speaker_diarization: bool = False,
@@ -1575,14 +1575,66 @@ def _filter_supported_kwargs(callable_obj: Any, kwargs: dict[str, Any]) -> dict[
 def _mistral_segmented_live_model() -> str:
     model = (Config.MISTRAL_RT_MODEL or "").strip()
     if "realtime" in model.lower():
-        fallback = (Config.MISTRAL_ASYNC_MODEL or "voxtral-mini-2602").strip()
+        fallback = (Config.MISTRAL_ASYNC_MODEL or Config.DEFAULT_MISTRAL_ASYNC_MODEL).strip()
         logger.info(
             "Mistral segmented live path cannot use realtime-only model '{}'; using '{}' instead",
             model,
             fallback,
         )
         return fallback
-    return model or (Config.MISTRAL_ASYNC_MODEL or "voxtral-mini-2602")
+    return model or (Config.MISTRAL_ASYNC_MODEL or Config.DEFAULT_MISTRAL_ASYNC_MODEL)
+
+
+def _is_assemblyai_37_streaming_model(model: object) -> bool:
+    return isinstance(model, str) and model.strip().lower().startswith("assemblyai-stt-3-7")
+
+
+_ASSEMBLYAI_37_COMPAT_SERVICE_CLASSES: dict[type, type] = {}
+
+
+def _assemblyai_37_compatible_service_class(base: type) -> type:
+    """Adapt Pipecat 1.14's AssemblyAISTTService for AssemblyAI-STT-3.7 streaming.
+
+    Pipecat 1.14 gates U3-Pro turn detection and ``language_codes`` on a fixed
+    prefix tuple that predates ``assemblyai-stt-3-7-realtime(-agent)``.
+    Without this shim, Pipecat would emit legacy ``end_of_turn_confidence_threshold``
+    and omit ``language_codes`` on 3.7 WebSocket handshakes.
+    """
+    if not (hasattr(base, "_configure_pipecat_turn_mode") and hasattr(base, "_build_ws_url")):
+        return base
+    cached = _ASSEMBLYAI_37_COMPAT_SERVICE_CLASSES.get(base)
+    if cached is not None:
+        return cached
+
+    import json
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    class ScriberAssemblyAISTTService(base):
+        def _configure_pipecat_turn_mode(self, settings, is_u3_pro: bool):
+            effective_u3_pro = bool(is_u3_pro or _is_assemblyai_37_streaming_model(getattr(settings, "model", None)))
+            return super()._configure_pipecat_turn_mode(settings, effective_u3_pro)
+
+        def _build_ws_url(self) -> str:
+            ws_url = super()._build_ws_url()
+            model_name = getattr(getattr(self, "_settings", None), "model", None)
+            if not _is_assemblyai_37_streaming_model(model_name):
+                return ws_url
+            parts = urlsplit(ws_url)
+            query = parse_qsl(parts.query, keep_blank_values=True)
+            has_language_codes = any(key == "language_codes" for key, _ in query)
+            rewritten: list[tuple[str, str]] = []
+            for key, value in query:
+                if key == "language_code" and value and not has_language_codes:
+                    rewritten.append(("language_codes", json.dumps([value])))
+                    has_language_codes = True
+                elif key == "end_of_turn_confidence_threshold":
+                    continue
+                else:
+                    rewritten.append((key, value))
+            return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(rewritten), parts.fragment))
+
+    _ASSEMBLYAI_37_COMPAT_SERVICE_CLASSES[base] = ScriberAssemblyAISTTService
+    return ScriberAssemblyAISTTService
 
 
 def _create_assemblyai_realtime_service(
@@ -1636,7 +1688,8 @@ def _create_assemblyai_realtime_service(
         and service_kwargs.get("language") != _pipecat_language(language)
     ):
         raise RuntimeError("AssemblyAI Pipecat service cannot bind the frozen language.")
-    return service_cls(**service_kwargs)
+    effective_cls = _assemblyai_37_compatible_service_class(service_cls)
+    return effective_cls(**service_kwargs)
 
 
 def _load_soniox_realtime_classes():
@@ -2337,8 +2390,8 @@ class ScriberPipeline:
                 raise ValueError("Soniox replay final-message digest is invalid")
             if not callable(self.on_soniox_last_final_token_received):
                 raise ValueError("Soniox replay receive callback is required")
-            if self.soniox_replay_model != "stt-rt-v5":
-                raise ValueError("Soniox replay model must be stt-rt-v5")
+            if self.soniox_replay_model != Config.DEFAULT_SONIOX_RT_MODEL:
+                raise ValueError(f"Soniox replay model must be {Config.DEFAULT_SONIOX_RT_MODEL}")
         # File/YouTube/meeting jobs pass a persisted immutable route here.  Live
         # dictation intentionally keeps ``None`` and continues to read current
         # settings at session start.
@@ -3625,7 +3678,7 @@ class ScriberPipeline:
         elif self.service_name == "assemblyai_realtime":
             if not _get_api_key("assemblyai"):
                 raise ValueError("AssemblyAI API Key is missing.")
-            logger.info("Using AssemblyAI Universal-3.5-Pro realtime transcription mode")
+            logger.info("Using AssemblyAI realtime transcription mode")
             bound_model = self._require_realtime_pcm_request_contract(
                 provider="assemblyai_realtime",
                 default_model=Config.ASSEMBLYAI_RT_MODEL,
@@ -3739,7 +3792,7 @@ class ScriberPipeline:
                 raise RuntimeError("ElevenLabs Live requires Pipecat 1.14.0 settings support.")
             bound_model = self._require_realtime_pcm_request_contract(
                 provider="elevenlabs",
-                default_model="scribe_v2_realtime",
+                default_model=Config.DEFAULT_ELEVENLABS_RT_MODEL,
             )
             language = self._execution_pipecat_language()
             elevenlabs_keyterms = build_keyterms_from_vocab(self._execution_custom_vocab())[:100]
@@ -5180,7 +5233,9 @@ class ScriberPipeline:
                         payload = await transcribe_with_mistral(
                             session=session,
                             api_key=api_key,
-                            model=self._execution_model(Config.MISTRAL_ASYNC_MODEL or "voxtral-mini-2602"),
+                            model=self._execution_model(
+                                Config.MISTRAL_ASYNC_MODEL or Config.DEFAULT_MISTRAL_ASYNC_MODEL
+                            ),
                             file_content=f,
                             filename=path.name,
                             content_type=content_type,

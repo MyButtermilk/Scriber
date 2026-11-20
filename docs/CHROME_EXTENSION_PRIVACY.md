@@ -1,6 +1,6 @@
 # Scriber for YouTube - Privacy Policy
 
-Effective date: 2026-10-04 (extension 0.2.1)
+Effective date: 2026-11-20 (extension 0.2.2)
 
 ## Scope and single purpose
 
@@ -29,13 +29,17 @@ action. The operating system passes that link to the Scriber desktop
 application on the same computer.
 
 With the optional permission, a separate one-use local HTTP handoff transfers
-the YouTube session to Scriber on 127.0.0.1:8765. The app must accept the matching
-video request before cookies can be uploaded. Only the official Store extension
-origin is accepted. Anonymous visitor cookies cannot replace a sign-in, and a
-late transfer cannot override a newer session change. Cookies and handoff capabilities
-are never placed in the protocol link or URLs. The general Scriber API is not
-opened to the extension. Scriber uses the session only to retrieve the selected
-YouTube video's captions or audio from YouTube.
+the YouTube session to Scriber on 127.0.0.1:8765. Either the user triggers a
+video handoff from YouTube or initiates a browser connection directly inside
+Scriber (which opens YouTube with a temporary one-use correlation fragment that
+contains no cookies or credentials and is stripped immediately). In both cases,
+the authenticated local Scriber app must have an active matching request before
+cookies can be uploaded. Only the official Store extension origin is accepted.
+Anonymous visitor cookies cannot replace a sign-in, and a late transfer cannot
+override a newer session change. Cookies and handoff capabilities are never
+placed in protocol links or URLs. The general Scriber API is not opened to the
+extension. Scriber uses the session only to retrieve the selected YouTube
+video's captions or audio from YouTube.
 
 The extension does not send data to the developer, analytics services,
 advertising services, or any other remote server. After the local handoff,

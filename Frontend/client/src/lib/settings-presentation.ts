@@ -1,6 +1,7 @@
 import type { AppLocale } from "@/i18n/types";
 
-export const USD_TO_EUR_FOR_ESTIMATES = 0.877;
+// ECB reference rate on 2026-11-20: 1 EUR = 1.0990 USD (~0.910 EUR per USD).
+export const USD_TO_EUR_FOR_ESTIMATES = 0.91;
 
 export const SETTINGS_SECTION_KEYS = [
   "transcription",

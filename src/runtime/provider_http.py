@@ -98,6 +98,12 @@ class _ProviderHttpSessionView:
     def options(self, url: Any, **kwargs: Any) -> Any:
         return self._session.options(url, **self._kwargs(kwargs))
 
+    def clear_dns_cache(self, host: str | None = None, port: int | None = None) -> None:
+        connector = getattr(self._session, "connector", None)
+        clear = getattr(connector, "clear_dns_cache", None)
+        if callable(clear):
+            clear(host, port)
+
     def __getattr__(self, name: str) -> Any:
         # WebSocket transports and uncommon ClientSession attributes retain
         # native behavior. Batch HTTP verbs above are the traced boundary.
@@ -160,6 +166,16 @@ class ProviderHttpTransport:
     @property
     def is_open(self) -> bool:
         return self._session is not None and not self._session.closed
+
+    def clear_dns_cache(self, host: str | None = None, port: int | None = None) -> None:
+        """Invalidate cached DNS entries on the owned TCP connector."""
+        session = self._session
+        if session is None or session.closed:
+            return
+        connector = getattr(session, "connector", None)
+        clear = getattr(connector, "clear_dns_cache", None)
+        if callable(clear):
+            clear(host, port)
 
     @staticmethod
     def trace_request_context(

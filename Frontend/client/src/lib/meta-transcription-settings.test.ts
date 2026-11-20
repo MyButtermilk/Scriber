@@ -20,7 +20,11 @@ test("Meta offers separate realtime and async routes for one published model", (
     assert.equal(metaFrontendModelForService(option.service), option.value);
     assert.deepEqual(metaSettingsPatchForModel(option.value), { defaultSttService: option.service });
     assert.ok(settingsTranslations[option.routeNote]);
-    assert.equal("wordErrorRatePercent" in option, false);
+    if (option.value === "meta-realtime") {
+      assert.equal("wordErrorRatePercent" in option && option.wordErrorRatePercent, 3.06);
+    } else {
+      assert.equal("wordErrorRatePercent" in option, false);
+    }
   }
   assert.equal(metaSettingsPatchForModel("meta-unknown"), null);
   assert.equal(metaFrontendModelForService("meta"), null);

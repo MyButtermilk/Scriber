@@ -74,7 +74,7 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
         # The active direct-upload request asks for provider segments. Do not
         # advertise word precision until that request and parser use words.
         supports_word_timestamps=False,
-        meeting_max_duration_seconds=10_800,
+        meeting_max_duration_seconds=1_800,
     ),
     "mistral_async": ProviderCapabilities(
         supports_live_streaming=False,
@@ -82,7 +82,7 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
         injects_immediately_in_live_mode=False,
         supports_batch_diarization=True,
         supports_word_timestamps=False,
-        meeting_max_duration_seconds=10_800,
+        meeting_max_duration_seconds=1_800,
     ),
     "smallest": ProviderCapabilities(
         supports_live_streaming=True,
@@ -285,8 +285,10 @@ def meeting_max_duration_seconds(provider: str, model: str | None = None) -> int
     """Hard duration ceiling for the active Meeting finalization route, if known."""
     key = (provider or "").strip().lower()
     if key in {"mistral", "mistral_async"}:
-        selected_model = str(model or os.getenv("SCRIBER_MISTRAL_ASYNC_MODEL", "voxtral-mini-2602")).strip().lower()
-        # Voxtral Mini Transcribe 2 (2602) supports three hours. Preserve the
-        # older 2507/unknown override conservatively at its 30-minute bound.
+        selected_model = (
+            str(model or os.getenv("SCRIBER_MISTRAL_ASYNC_MODEL", "voxtral-small-transcribe-3-0")).strip().lower()
+        )
+        # Voxtral Mini Transcribe 2 (2602) supports three hours. Voxtral 3
+        # (32k context) and older/unknown overrides stay at a conservative 30-minute bound.
         return 10_800 if "2602" in selected_model else 1_800
     return get_capabilities(key).meeting_max_duration_seconds

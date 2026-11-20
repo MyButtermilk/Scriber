@@ -1290,7 +1290,7 @@ class LocalSonioxReplayServer:
                 raise RuntimeError("provider replay Soniox configuration is invalid")
             if "api_key" in config:
                 raise RuntimeError("provider replay Soniox legacy authentication is forbidden")
-            if config.get("model") != "stt-rt-v5":
+            if config.get("model") != "stt-rt-v6":
                 raise RuntimeError("provider replay Soniox model mismatch")
             if config.get("audio_format") != "pcm_s16le":
                 raise RuntimeError("provider replay Soniox audio format mismatch")

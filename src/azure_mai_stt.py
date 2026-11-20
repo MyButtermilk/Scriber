@@ -9,9 +9,11 @@ import io
 import json
 import os
 import tempfile
+import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, cast
+from urllib.parse import urlparse
 
 import aiohttp
 from loguru import logger
@@ -62,8 +64,99 @@ _AZURE_MAI_CONTENT_TYPES = {
     ".mp3": "audio/mpeg",
     ".flac": "audio/flac",
 }
+_AZURE_MAI_PRE_CONNECT_RETRY_DELAYS = (0.25, 0.75)
 
 AzureMaiRawTransport = Callable[..., Awaitable[tuple[int, str]]]
+
+
+class _NonClosingBinaryReader(io.RawIOBase):
+    """Borrow a seekable binary stream without letting aiohttp close it on retry."""
+
+    def __init__(self, source: BinaryIO) -> None:
+        self._source = source
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._source.read() if size is None or size < 0 else self._source.read(size)
+        return bytes(data) if data else b""
+
+    def readinto(self, b: Any) -> int:
+        chunk = self.read(len(b))
+        count = len(chunk)
+        b[:count] = chunk
+        return count
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        return int(self._source.seek(offset, whence))
+
+    def tell(self) -> int:
+        return int(self._source.tell())
+
+    def close(self) -> None:
+        # The outer caller owns the underlying stream lifecycle.
+        return None
+
+
+def _is_retryable_pre_connect_error(exc: BaseException) -> bool:
+    """Return True only when TCP/DNS/TLS connection setup failed before any HTTP bytes were sent."""
+    return isinstance(exc, aiohttp.ClientConnectorError) and not isinstance(
+        exc,
+        aiohttp.ClientConnectorCertificateError,
+    )
+
+
+def _exception_socket_codes(exc: BaseException) -> tuple[int | None, int | None]:
+    """Extract privacy-safe numeric errno/winerror codes without hostnames or bodies."""
+    os_err = getattr(exc, "os_error", None)
+    target = os_err if isinstance(os_err, BaseException) else exc
+    errno_val = getattr(target, "errno", None)
+    winerror_val = getattr(target, "winerror", None)
+    safe_errno = errno_val if isinstance(errno_val, int) and not isinstance(errno_val, bool) else None
+    safe_winerror = winerror_val if isinstance(winerror_val, int) and not isinstance(winerror_val, bool) else None
+    return safe_errno, safe_winerror
+
+
+def _clear_session_dns_cache(session: Any, url: str) -> None:
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not host:
+        return
+    clear = getattr(session, "clear_dns_cache", None)
+    if callable(clear):
+        with contextlib.suppress(Exception):
+            clear(host, port)
+        return
+    connector = getattr(session, "connector", None)
+    connector_clear = getattr(connector, "clear_dns_cache", None)
+    if callable(connector_clear):
+        with contextlib.suppress(Exception):
+            connector_clear(host, port)
+
+
+def _seekable_initial_position(audio_source: bytes | BinaryIO) -> int | None:
+    if isinstance(audio_source, (bytes, bytearray, memoryview)):
+        return 0
+    seekable = getattr(audio_source, "seekable", None)
+    tell = getattr(audio_source, "tell", None)
+    seek = getattr(audio_source, "seek", None)
+    if not (callable(tell) and callable(seek)):
+        return None
+    if callable(seekable):
+        try:
+            if not seekable():
+                return None
+        except Exception:
+            return None
+    try:
+        return int(tell())
+    except Exception:
+        return None
 
 
 async def transcribe_azure_mai_file(
@@ -582,18 +675,59 @@ async def transcribe_with_azure_mai(
     transport_options = (
         {"on_success_response": receive_success} if raw_transport is None and on_success is not None else {}
     )
-    status, raw = await transport(
-        session=session,
-        url=url,
-        audio_source=audio_source,
-        filename=filename,
-        content_type=content_type,
-        definition=definition,
-        speech_key=speech_key,
-        timeout_secs=timeout_secs,
-        audio_preparation_implementation=audio_preparation_implementation,
-        **transport_options,
-    )
+    initial_position = _seekable_initial_position(audio_source)
+    can_retry_pre_connect = initial_position is not None
+    deadline = time.monotonic() + max(0.0, float(timeout_secs))
+    max_attempts = 1 + len(_AZURE_MAI_PRE_CONNECT_RETRY_DELAYS) if can_retry_pre_connect else 1
+
+    status = 0
+    raw = ""
+    for attempt in range(max_attempts):
+        if attempt > 0 and not isinstance(audio_source, (bytes, bytearray, memoryview)):
+            assert initial_position is not None
+            audio_source.seek(initial_position)
+        attempt_audio: bytes | BinaryIO = (
+            cast(BinaryIO, _NonClosingBinaryReader(audio_source))
+            if (
+                raw_transport is None
+                and can_retry_pre_connect
+                and not isinstance(audio_source, (bytes, bytearray, memoryview))
+            )
+            else audio_source
+        )
+        remaining_timeout = max(1.0, deadline - time.monotonic()) if attempt > 0 else timeout_secs
+        try:
+            status, raw = await transport(
+                session=session,
+                url=url,
+                audio_source=attempt_audio,
+                filename=filename,
+                content_type=content_type,
+                definition=definition,
+                speech_key=speech_key,
+                timeout_secs=remaining_timeout,
+                audio_preparation_implementation=audio_preparation_implementation,
+                **transport_options,
+            )
+            break
+        except Exception as exc:
+            if not (_is_retryable_pre_connect_error(exc) and attempt + 1 < max_attempts):
+                raise
+            delay = _AZURE_MAI_PRE_CONNECT_RETRY_DELAYS[attempt]
+            if time.monotonic() + delay >= deadline:
+                raise
+            os_errno, winerror = _exception_socket_codes(exc)
+            logger.warning(
+                "Azure MAI pre-connect failed (error_type={}, os_errno={}, winerror={}); "
+                "clearing DNS cache and retrying ({}/{})",
+                type(exc).__name__,
+                os_errno if os_errno is not None else "none",
+                winerror if winerror is not None else "none",
+                attempt + 2,
+                max_attempts,
+            )
+            _clear_session_dns_cache(session, url)
+            await asyncio.sleep(delay)
     # This boundary is intentionally before status handling and JSON parsing:
     # installed performance evidence measures controllable local tail latency
     # from the instant the complete raw provider response is available.
@@ -898,10 +1032,13 @@ class AzureMaiTranscribeSTTService(STTService):
             await self._flush_transcription(direction)
         except Exception as exc:
             info = provider_user_error("azure_mai", exc)
+            os_errno, winerror = _exception_socket_codes(exc)
             logger.error(
-                "Azure MAI transcription failed (error_type={}, code={})",
+                "Azure MAI transcription failed (error_type={}, code={}, os_errno={}, winerror={})",
                 type(exc).__name__,
                 info.code or "unknown",
+                os_errno if os_errno is not None else "none",
+                winerror if winerror is not None else "none",
             )
             await self.push_frame(
                 ErrorFrame(error=f"azure mai error: {info.message}"),

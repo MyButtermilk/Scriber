@@ -65,11 +65,13 @@ function harness(permission = true, cookieName = "SID") {
     get openedPopup() {
       return openedPopup;
     },
-    call: (senderOverride = sender, type = "youtube-session") =>
+    call: (
+      senderOverride = sender,
+      type = "youtube-session",
+      payload = { videoId: "BFKcC0VyuZA" },
+    ) =>
       new Promise((resolve) => {
-        if (
-          !listener({ type, videoId: "BFKcC0VyuZA" }, senderOverride, resolve)
-        )
+        if (!listener({ type, ...payload }, senderOverride, resolve))
           resolve(false);
       }),
   };
@@ -128,4 +130,45 @@ test("an in-page click without permission never forces the permission popup", as
   assert.equal(h.openedPopup, false);
   assert.equal(h.cookieReads.length, 0);
   assert.equal(h.requests.length, 0);
+});
+
+test("app-initiated youtube-session-connect transfers cookies for a matching connectId", async () => {
+  const h = harness(true, "SID");
+  const connectId = "a1b2c3d4".repeat(4);
+  const res = await h.call(
+    { ...h.sender, url: "https://www.youtube.com/watch?v=BFKcC0VyuZA" },
+    "youtube-session-connect",
+    { connectId },
+  );
+  assert.equal(res.connected, true);
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.requests[0].payload.connectId, connectId);
+  assert.equal(h.requests[0].payload.videoId, undefined);
+  assert.equal(h.requests[0].payload.cookies, undefined);
+  assert.ok(h.requests[1].payload.cookies.includes("private-session"));
+});
+
+test("app-initiated youtube-session-connect reports missing permission and rejects foreign senders", async () => {
+  const denied = harness(false, "SID");
+  const connectId = "b".repeat(32);
+  const res = await denied.call(
+    { ...denied.sender, url: "https://www.youtube.com/" },
+    "youtube-session-connect",
+    { connectId },
+  );
+  assert.equal(res.connected, false);
+  assert.equal(res.reason, "permission_required");
+  assert.equal(denied.cookieReads.length, 0);
+  assert.equal(denied.requests.length, 0);
+
+  const allowed = harness(true, "SID");
+  assert.equal(
+    await allowed.call(
+      { ...allowed.sender, url: "https://evil.test/" },
+      "youtube-session-connect",
+      { connectId },
+    ),
+    false,
+  );
+  assert.equal(allowed.cookieReads.length, 0);
 });

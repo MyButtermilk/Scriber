@@ -1,4 +1,4 @@
-"""AssemblyAI Universal-3.5-Pro async transcription helpers and processor."""
+"""AssemblyAI pre-recorded async transcription helpers and processor."""
 
 from __future__ import annotations
 
@@ -32,27 +32,44 @@ from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pc
 from src.runtime.http_response import read_response_text_limited
 
 _ASSEMBLYAI_BASE_URL = "https://api.assemblyai.com/v2"
-DEFAULT_ASSEMBLYAI_UNIVERSAL_35_PRO_MODEL = "universal-3-5-pro"
-_ASSEMBLYAI_U35_SUPPORTED_LANGUAGES = {
+DEFAULT_ASSEMBLYAI_MODEL = "assemblyai-stt-3-7"
+DEFAULT_ASSEMBLYAI_UNIVERSAL_35_PRO_MODEL = DEFAULT_ASSEMBLYAI_MODEL
+# Official 32-language set supported by AssemblyAI-STT-3.7 (batch & streaming).
+_ASSEMBLYAI_SUPPORTED_LANGUAGES = {
+    "af",
     "ar",
+    "ca",
     "da",
     "de",
     "en",
     "es",
+    "et",
+    "fa",
     "fi",
     "fr",
+    "gl",
     "he",
     "hi",
     "it",
     "ja",
+    "ko",
+    "mr",
     "nl",
+    "nn",
     "no",
     "pt",
+    "ro",
+    "ru",
     "sv",
     "tr",
+    "ur",
     "vi",
+    "xh",
+    "yue",
     "zh",
+    "zu",
 }
+_ASSEMBLYAI_U35_SUPPORTED_LANGUAGES = _ASSEMBLYAI_SUPPORTED_LANGUAGES
 _VOCAB_SPLIT_RE = re.compile(r"[,\n;]+")
 _MULTISPACE_RE = re.compile(r"\s+")
 _MAX_KEYTERMS = 1000
