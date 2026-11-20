@@ -114,23 +114,24 @@ scripts\project-python.cmd -m pip install ruff==0.15.22
 scripts\project-python.cmd -m pytest -n 4 --dist loadfile -ra
 scripts\project-python.cmd -m ruff check src tests scripts
 scripts\project-python.cmd -m ruff format --check src tests scripts
+# Focused directory check. For the full CI scope, see the python-typecheck job.
 scripts\project-python.cmd -m mypy src\api src\core src\runtime src\data
 ```
 
 Install the CI test tools from `requirements-test.txt` and resolve the complete
 Windows CPython 3.14.9 graph through `requirements-test-constraints.txt`. The
 constraints file closes all direct and transitive versions used by the full
-suite without changing the broader application dependency policy. `mypy` runs
-in that complete Windows environment after pytest. The reusable Windows job
-creates its own `venv`, restores and validates the locked Profile B FFmpeg
+suite without changing the broader application dependency policy. Pytest, real-browser
+integration and mypy run in separate Windows jobs with their own validated environments.
+The pytest job restores and validates the locked Profile B FFmpeg
 release artifact, and replaces every inherited provider credential with an
 inert test sentinel before application modules load. The full suite therefore
 does not depend on a developer `.env`, local media tools, or real API keys.
 Ruff remains an independent, lightweight Ubuntu gate that installs only
 `ruff==0.15.22` and intentionally stays out of `requirements-test.txt`. Lint
 and formatting are enforced without a debt baseline across all maintained
-Python in `src`, `tests`, and `scripts`; mypy currently covers `src/api`,
-`src/core`, `src/runtime`, and `src/data` and expands only in reviewed tranches. CI
+Python in `src`, `tests`, and `scripts`. The [Python typecheck job](../.github/workflows/python-full-suite.yml)
+adds individual modules to the four directories above and defines the full scope. CI
 also pins the pip resolver version and validates the complete test environment
 with `pip check`.
 
@@ -503,9 +504,9 @@ extracts the original vector paths from the canonical favicon and renders every
 ICO size independently; the second adds the tray state badges:
 
 ```powershell
-venv\Scripts\python.exe scripts\generate_windows_app_icon.py
-venv\Scripts\python.exe scripts\generate_tray_state_icons.py
-venv\Scripts\python.exe scripts\generate_windows_app_icon.py --check
+scripts\project-python.cmd scripts\generate_windows_app_icon.py
+scripts\project-python.cmd scripts\generate_tray_state_icons.py
+scripts\project-python.cmd scripts\generate_windows_app_icon.py --check
 ```
 
 After installing a build, verify the icon Windows receives from the live main
@@ -2272,7 +2273,7 @@ Use the top-level release-readiness runner for final external evidence:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 -PlanOnly
 ```
 
-For extended Rust/WASAPI release hardening, use the aggregate gate first:
+For a historical promotion build with Python capture, inspect the aggregate gate with:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_readiness.ps1 `
@@ -2281,7 +2282,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
 ```
 
 `-RequireRustAudioPromotionReadiness` turns on the full Rust-audio evidence
-bundle without starting long hardware tests by itself. It requires the Rust
+bundle, including the historical Python-versus-Rust comparison, without starting
+long hardware tests by itself. It requires the Rust
 WASAPI sidecar smoke, app-level Always-On-Mic prewarm smoke, installed
 live-recording smoke, provider-backed hot-path evidence,
 Rust/WASAPI endpoint inventory in the physical microphone matrix, and native

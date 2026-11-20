@@ -1519,9 +1519,6 @@ Architecture and maintainability:
   component coverage to Settings and the full Meetings workspace.
 - Continue expanding mypy through reviewed `src` tranches. Do not weaken the
   repository-wide Ruff/format gate to accommodate new debt.
-- The editing contracts in `AGENTS.md` remain intentionally authoritative but
-  large. A future documentation-only change may move detailed contracts under
-  `docs/contracts/` while keeping `AGENTS.md` as the indexed entry point.
 
 ### Historical Praxist / 350M candidate feasibility (2026-08-30; superseded)
 
