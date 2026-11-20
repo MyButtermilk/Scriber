@@ -1784,6 +1784,7 @@ async def test_service_caches_cover_on_disk_and_route_reports_missing_artwork(tm
             identifier = (await created.json())["id"]
             library = await (await client.get("/api/podcasts")).json()
             assert library["subscriptions"][0]["hasArtwork"] is True
+            assert len(library["subscriptions"][0]["artworkVersion"]) == 12
             assert "artworkUrl" not in library["subscriptions"][0]
             assert cover not in json.dumps(library)
             for _ in range(2):

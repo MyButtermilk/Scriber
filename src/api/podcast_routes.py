@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
+from hashlib import sha256
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -102,8 +103,10 @@ def _subscription(row: dict[str, Any]) -> dict[str, Any]:
         "unreadCount": row["unread_count"],
         "attentionCount": row["attention_count"],
         # The remote cover URL stays in the backend; the UI loads the cached
-        # copy from /api/podcasts/artwork/{id}.
+        # copy from /api/podcasts/artwork/{id}?v={artworkVersion}. The version
+        # changes with the cover URL, so a new cover gets a new image URL.
         "hasArtwork": bool(row.get("artwork_url")),
+        "artworkVersion": artwork_version(row.get("artwork_url") or ""),
     }
 
 
@@ -291,6 +294,14 @@ async def podcast_audio(request: web.Request) -> web.StreamResponse:
         upstream.close()
 
 
+_ARTWORK_VERSION = re.compile(r"^[0-9a-f]{12}$")
+
+
+def artwork_version(url: str) -> str:
+    """Opaque, URL-derived cache-busting token; never reveals the remote URL."""
+    return sha256(url.encode()).hexdigest()[:12] if url else ""
+
+
 async def podcast_artwork(request: web.Request) -> web.Response:
     # Covers arrive through the authenticated local backend because the
     # desktop CSP only admits same-origin and loopback images.
@@ -298,10 +309,15 @@ async def podcast_artwork(request: web.Request) -> web.Response:
     if found is None:
         raise web.HTTPNotFound()
     payload, content_type = found
+    # Only a versioned URL may be cached: the subscription route is stable while
+    # a feed refresh can change its cover. Unversioned requests (search results)
+    # revalidate, which is cheap because the backend serves its disk cache.
+    versioned = bool(_ARTWORK_VERSION.match(request.query.get("v", "")))
+    cache_control = "private, max-age=31536000, immutable" if versioned else "private, no-cache"
     return web.Response(
         body=payload,
         content_type=content_type,
-        headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"},
+        headers={"Cache-Control": cache_control, "X-Content-Type-Options": "nosniff"},
     )
 
 

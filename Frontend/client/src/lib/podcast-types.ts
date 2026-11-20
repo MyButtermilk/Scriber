@@ -24,6 +24,8 @@ export interface PodcastSubscription {
   attentionCount: number;
   /** A cover is known; load it from /api/podcasts/artwork/{id}. Absent on older backends. */
   hasArtwork?: boolean;
+  /** Opaque token that changes with the cover; appended as ?v= so a new cover gets a new image URL. */
+  artworkVersion?: string;
 }
 
 export interface PodcastLibrary {

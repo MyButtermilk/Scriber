@@ -745,7 +745,12 @@ export default function Podcasts() {
                       : "border-transparent hover:bg-muted/50",
                   )}
                 >
-                  <PodcastCover id={item.id} hasArtwork={item.hasArtwork ?? true} size="rail" />
+                  <PodcastCover
+                    id={item.id}
+                    hasArtwork={item.hasArtwork ?? true}
+                    version={item.artworkVersion}
+                    size="rail"
+                  />
                   <span className="min-w-0 flex-1">
                     <span
                       className={cn("block truncate text-sm", item.attentionCount ? "font-semibold" : "font-medium")}
@@ -800,6 +805,7 @@ export default function Podcasts() {
                     key={selected.id}
                     id={selected.id}
                     hasArtwork={selected.hasArtwork ?? true}
+                    version={selected.artworkVersion}
                     size="header"
                   />
                   <div className="min-w-0">

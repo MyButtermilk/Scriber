@@ -10,6 +10,8 @@ interface PodcastCoverProps {
   id?: string;
   /** False when the backend knows there is no cover, so no request is made. */
   hasArtwork?: boolean;
+  /** Cover version from the backend; versioned URLs may be cached by the browser. */
+  version?: string;
   size?: PodcastCoverSize;
   className?: string;
 }
@@ -19,8 +21,9 @@ interface PodcastCoverProps {
  * fallback while loading, when no cover is known, or when it fails to load.
  * Decorative: the podcast title is always rendered next to it.
  */
-export function PodcastCover({ id, hasArtwork = true, size = "rail", className }: PodcastCoverProps) {
-  const src = id && hasArtwork ? apiUrl(`/api/podcasts/artwork/${id}`) : "";
+export function PodcastCover({ id, hasArtwork = true, version, size = "rail", className }: PodcastCoverProps) {
+  const query = version ? `?v=${encodeURIComponent(version)}` : "";
+  const src = id && hasArtwork ? apiUrl(`/api/podcasts/artwork/${id}${query}`) : "";
   const [failedSrc, setFailedSrc] = useState("");
   const [loadedSrc, setLoadedSrc] = useState("");
   const showImage = Boolean(src) && failedSrc !== src;

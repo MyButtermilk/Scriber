@@ -456,13 +456,14 @@ describe("Podcasts", () => {
   });
 
   it("loads covers through the local backend and falls back to the podcast mark", async () => {
-    const withCover = subscription();
+    const withCover = subscription({ artworkVersion: "0123456789ab" });
     const withoutCover = subscription({ id: "e".repeat(32), title: "No cover show", hasArtwork: false });
     const { container } = mount([withCover, withoutCover]);
     const row = await screen.findByRole("button", { name: /Thoughtful conversations/ });
     const cover = row.querySelector(".podcast-cover")!;
     const image = cover.querySelector("img")!;
-    expect(image).toHaveAttribute("src", `/api/podcasts/artwork/${withCover.id}`);
+    // Versioned so a refreshed cover gets a new URL instead of a stale browser cache hit.
+    expect(image).toHaveAttribute("src", `/api/podcasts/artwork/${withCover.id}?v=0123456789ab`);
     expect(image).toHaveAttribute("alt", "");
     expect(image).toHaveAttribute("loading", "lazy");
     expect(cover).toHaveAttribute("aria-hidden", "true");
@@ -474,7 +475,9 @@ describe("Podcasts", () => {
     expect(plain.querySelector("img")).toBeNull();
     expect(plain).toHaveAttribute("data-cover-state", "fallback");
     // The detail header shows the selected podcast's cover too.
-    expect(container.querySelector(`header img[src="/api/podcasts/artwork/${withCover.id}"]`)).not.toBeNull();
+    expect(
+      container.querySelector(`header img[src="/api/podcasts/artwork/${withCover.id}?v=0123456789ab"]`),
+    ).not.toBeNull();
   });
 
   it("uses the shared rail heading and calm transcript counts", async () => {

@@ -202,7 +202,9 @@
   the same public-address and redirect checks, HTTPS on every hop, a 2 MB limit,
   and a JPEG/PNG/WebP content-type and magic-byte allowlist. The disk cache under
   the podcasts root holds at most 300 files and is pruned on unsubscribe; logs
-  never contain artwork URLs.
+  never contain artwork URLs. The stable route revalidates (`no-cache`); only
+  URLs carrying the projection's opaque `artworkVersion` (`?v=`) may be cached,
+  so a refreshed cover is never hidden behind a stale browser cache entry.
   Commit completion before deleting audio after successful transcription and
   summary. Startup and pre-download cleanup verify both saved results before
   reclaiming legacy completed audio, including files whose byte-count commit was
