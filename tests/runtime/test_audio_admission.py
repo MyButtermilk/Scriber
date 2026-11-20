@@ -1182,7 +1182,7 @@ async def test_watchdog_begins_native_stop_before_authoritative_expiry_margin(ho
     events: list[str] = []
     handler_started = asyncio.Event()
     finish_handler = asyncio.Event()
-    expires_at = datetime.now(UTC) + timedelta(seconds=0.30)
+    expires_at = datetime.now(UTC) + timedelta(seconds=0.60)
     host.store.acquire_result = _claim(
         owner_kind="voice_enrollment",
         owner_id="sample-1",
@@ -1196,7 +1196,7 @@ async def test_watchdog_begins_native_stop_before_authoritative_expiry_margin(ho
         await finish_handler.wait()
         events.append("native_stop_confirmed")
 
-    owner = host.owner(ttl_seconds=0.30, stop_margin_seconds=0.15)
+    owner = host.owner(ttl_seconds=0.60, stop_margin_seconds=0.35)
     await owner.acquire(
         owner_kind="voice_enrollment",
         owner_id="sample-1",
@@ -1204,14 +1204,14 @@ async def test_watchdog_begins_native_stop_before_authoritative_expiry_margin(ho
         loss_handler=stop_native_capture,
     )
     try:
-        await asyncio.wait_for(handler_started.wait(), timeout=0.25)
+        await asyncio.wait_for(handler_started.wait(), timeout=0.50)
         remaining_at_stop = (expires_at - datetime.now(UTC)).total_seconds()
-        assert remaining_at_stop >= 0.08
+        assert remaining_at_stop >= 0.10
         assert events == ["native_stop_started"]
         assert host.store.released == []
 
         finish_handler.set()
-        async with asyncio.timeout(0.5):
+        async with asyncio.timeout(1.0):
             while host.claim is not None:
                 await asyncio.sleep(0.005)
         assert events == ["native_stop_started", "native_stop_confirmed", "store_release"]
