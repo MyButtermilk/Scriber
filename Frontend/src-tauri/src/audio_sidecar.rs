@@ -5774,7 +5774,7 @@ fn bounded_string(payload: &Value, key: &str, default: &str, max_chars: usize) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{MutexGuard, OnceLock};
+    use std::sync::{MutexGuard, OnceLock, PoisonError};
 
     static AUDIO_ENV_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -5795,10 +5795,14 @@ mod tests {
     }
 
     fn audio_env_test_lock() -> MutexGuard<'static, ()> {
+        // A panicking test already restored its environment through the
+        // EnvVarGuard drops during unwinding, so the guarded state is clean.
+        // Recover the lock instead of failing every later env test with
+        // "poisoned", which would hide the single real failure.
         AUDIO_ENV_TEST_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("audio env test lock poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn set_audio_test_env(key: &'static str, value: &str) -> EnvVarGuard {

@@ -1285,7 +1285,10 @@ async def test_failed_transcript_retry_uses_new_identity_and_retained_download(t
     assert await service.episode_for_transcript(old_id) is None
     service.start()
     try:
-        async with asyncio.timeout(10):
+        # Locally this settles in about a second; a loaded Windows CI runner
+        # stalled it past 10 s, so allow scheduler headroom without changing
+        # what is asserted.
+        async with asyncio.timeout(30):
             while (await service.library())["activeCount"]:
                 await asyncio.sleep(0.01)
         retried = (await service.episodes(subscription))["items"][0]
