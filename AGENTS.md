@@ -34,6 +34,9 @@ This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
 conflict, then update the docs in the same task.
 
+For a broken Windows Rust toolchain or a denied test executable launch, follow
+[Endpoint-Security-Safe Automation](#endpoint-security-safe-automation).
+
 ## Active Documentation
 
 The repository intentionally keeps only a small documentation set:
@@ -3027,7 +3030,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_hybrid_release_r
   trees on GitHub-hosted runners unless the user explicitly requests a local
   build. Locally, run the smallest focused gate once and avoid repeatedly
   replaying an EDR-sensitive command while debugging.
-- Never recommend disabling CrowdStrike or excluding `powershell.exe`, a user,
+- Run focused Rust tests locally by default. If the standard Windows MSVC
+  toolchain cannot build the tests (for example, the SDK lacks `kernel32.lib`),
+  use the Windows Rust job in `.github/workflows/hybrid-pr-checks.yml` for the
+  same revision instead of switching local toolchains.
+- If Windows denies a test executable launch or Falcon blocks or quarantines
+  the executable, stop local attempts for that target, including rebuilds and
+  direct launches. Record the target and error, check available endpoint
+  alerts, and use the same Windows CI job for the full Rust suite. Report the
+  suite as pending until CI verifies the revision under test.
+- Never recommend disabling CrowdStrike or excluding T3 Code, `powershell.exe`, a user,
   the whole repository, or all child processes. After removing the suspicious
   technique, any still-reproducible benign alert must be reviewed by the
   administrator and, if necessary, receive only a narrow, time-bounded IOA or
