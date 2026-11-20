@@ -57,6 +57,17 @@ function isVisiblyProcessing(item: TranscriptHistoryItem): boolean {
   return item.summaryStatus === "pending" || (item.status === "processing" && !isCompletedStep(item.step));
 }
 
+const UNKNOWN_CHANNEL_LABELS = new Set(["unknown", "unbekannt", "unknown channel", "unbekannter kanal", "-", "—"]);
+
+/** The channel name worth printing, or "" for empty and placeholder values. */
+function youtubeChannelLabel(...values: Array<string | null | undefined>): string {
+  for (const value of values) {
+    const label = String(value || "").trim();
+    if (label && !UNKNOWN_CHANNEL_LABELS.has(label.toLowerCase())) return label;
+  }
+  return "";
+}
+
 type YoutubeHistoryStatus = "processing" | "failed" | "summary_failed" | "stopped" | "ready";
 
 function youtubeHistoryStatus(item: TranscriptHistoryItem): YoutubeHistoryStatus {
@@ -139,12 +150,17 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
   onNavigate,
   onHover,
 }: YoutubeVideoCardProps) {
-  const { formatDate, formatLegacyDate, formatNumber, t } = useI18n();
+  const { formatFullDateTime, formatLegacyDate, formatNumber, formatRelativeDate, t } = useI18n();
   const deletingClasses = isDeleting ? "pointer-events-none opacity-[0.55] scale-[0.985]" : "opacity-100 scale-100";
   const historyStatus = youtubeHistoryStatus(item);
-  const dateLabel = item.createdAt
-    ? formatDate(item.createdAt, { dateStyle: "medium", timeStyle: "short" })
-    : formatLegacyDate(item.date);
+  const channelLabel = youtubeChannelLabel(item.channel, item.channelTitle);
+  const dateLabel = (item.createdAt && formatRelativeDate(item.createdAt)) || formatLegacyDate(item.date);
+  const dateTitle = (item.createdAt && formatFullDateTime(item.createdAt)) || dateLabel;
+  const dateElement = (
+    <time dateTime={item.createdAt} title={dateTitle} className="tabular-nums">
+      {dateLabel}
+    </time>
+  );
 
   return (
     <div className="w-full">
@@ -235,7 +251,8 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                 ) : null}
               </div>
               <p className="mt-1 truncate text-[12px] text-muted-foreground">
-                {item.channel || item.channelTitle || t("Unknown channel")} • {dateLabel}
+                {channelLabel ? `${channelLabel} • ` : null}
+                {dateElement}
               </p>
             </div>
 
@@ -334,11 +351,9 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                   {item.title}
                 </button>
               </h3>
-              <p className="text-xs text-muted-foreground mt-1 truncate">
-                {item.channel || item.channelTitle || t("Unknown")}
-              </p>
+              {channelLabel ? <p className="text-xs text-muted-foreground mt-1 truncate">{channelLabel}</p> : null}
               <div className="flex items-center justify-between mt-2">
-                <span className="text-xs text-muted-foreground">{dateLabel}</span>
+                <span className="text-xs text-muted-foreground">{dateElement}</span>
                 <div className="flex items-center gap-1">
                   <CopyActionButton
                     onClick={(e) => onCopy(e, item.id)}
@@ -371,7 +386,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
 export default function Youtube() {
   const [location, setLocation] = useLocation();
   const { toast } = useToast();
-  const { formatDate, formatNumber, t } = useI18n();
+  const { formatFullDateTime, formatNumber, formatRelativeDate, t } = useI18n();
   const [query, setQuery] = useUrlQueryState("search", "", {
     parse: (raw) => raw ?? "",
     serialize: (value) => {
@@ -809,13 +824,16 @@ export default function Youtube() {
   );
 
   return (
-    <div className="app-page-shell transcription-page youtube-page px-4 py-5 md:px-6 md:py-6" data-page-shell="youtube">
+    <div
+      className="app-page-shell transcription-page youtube-page px-4 py-5 md:px-6 md:py-6"
+      data-page-accent="youtube"
+      data-page-shell="youtube"
+    >
       <PageIntro
         eyebrow={t("Media capture")}
         title={t("YouTube transcription")}
-        description={t("Paste a link or search YouTube, then turn the video into a searchable transcript.")}
-        accentClassName="bg-red-500/70"
-        sticky={false}
+        description={t("Search YouTube or paste a YouTube link to create a transcript and a structured summary.")}
+        accent="youtube"
       />
 
       {/* Media discovery command bar */}
@@ -829,7 +847,7 @@ export default function Youtube() {
             }}
             aria-label={t("Find a YouTube video")}
           >
-            <div className="youtube-search-mark flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] text-red-500">
+            <div className="youtube-search-mark flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px]">
               <YoutubeIcon className="h-5 w-5 stroke-[1.65px]" aria-hidden="true" />
             </div>
             <div className="relative min-w-0 flex-1">
@@ -857,7 +875,7 @@ export default function Youtube() {
             </div>
             <Button
               size="sm"
-              className="h-10 w-10 shrink-0 rounded-lg px-0 text-[12px] font-semibold active:scale-[0.98] sm:w-auto sm:min-w-[112px] sm:px-4"
+              className="ui-cta--sheen h-10 w-10 shrink-0 px-0 text-[12.5px] tracking-[-0.005em] sm:w-auto sm:min-w-[124px] sm:px-4"
               disabled={!query.trim() || isSearching}
               type="submit"
               aria-label={isSearching ? t("Searching YouTube") : t("Find video")}
@@ -886,7 +904,7 @@ export default function Youtube() {
               <div className="flex flex-wrap items-center gap-2.5">
                 <h2 className="font-heading text-[20px] font-semibold tracking-[-0.02em]">{t("Search results")}</h2>
                 {!isSearching && searchResults.length > 0 ? (
-                  <span className="transcription-history-count inline-flex h-6 min-w-6 items-center justify-center rounded-[8px] px-2 font-mono text-ui-micro font-semibold tabular-nums text-muted-foreground">
+                  <span className="section-count-badge inline-flex h-6 min-w-6 items-center justify-center rounded-full px-2 text-[11px] font-semibold tabular-nums text-muted-foreground">
                     {formatNumber(searchResults.length)}
                   </span>
                 ) : null}
@@ -961,7 +979,9 @@ export default function Youtube() {
           {sortedResults.length > 0 && (
             <div className="grid gap-4 xl:grid-cols-2">
               {sortedResults.map((item) => {
-                const published = item.publishedAt ? formatDate(item.publishedAt, { dateStyle: "medium" }) : "";
+                const published = item.publishedAt ? formatRelativeDate(item.publishedAt, { time: false }) : "";
+                const publishedTitle = item.publishedAt ? formatFullDateTime(item.publishedAt) : "";
+                const channelTitle = youtubeChannelLabel(item.channelTitle);
                 const isStarting = startingVideoId === (item.videoId || item.url);
                 return (
                   <Card
@@ -1010,10 +1030,17 @@ export default function Youtube() {
                             {isStarting ? t("Starting…") : t("Transcribe")}
                           </Badge>
                         </div>
-                        <p className="text-sm text-muted-foreground mt-1">
-                          {item.channelTitle || t("Unknown channel")}
-                          {published ? ` · ${published}` : ""}
-                        </p>
+                        {channelTitle || published ? (
+                          <p className="text-sm text-muted-foreground mt-1">
+                            {channelTitle}
+                            {channelTitle && published ? " · " : null}
+                            {published ? (
+                              <time dateTime={item.publishedAt} title={publishedTitle}>
+                                {published}
+                              </time>
+                            ) : null}
+                          </p>
+                        ) : null}
 
                         <div className="mt-3 flex items-center gap-4 text-xs text-muted-foreground">
                           <span className="flex items-center gap-1">

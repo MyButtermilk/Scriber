@@ -1377,21 +1377,314 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
   --workspace-soft: rgba(255, 255, 255, 0.045);
 }
 
-.transcription-intro {
+/* ============================================
+   CTA — the one primary action style
+   Empty/disabled: a calm neutral chip that reads "not yet", never a washed-out
+   colour. Ready: charges with the section accent, a lit top edge, a tinted
+   glow and a single sheen sweep. Hover lifts; press sinks.
+   ============================================ */
+.ui-cta {
+  --cta-accent: var(--page-accent, var(--primary));
+  --cta-fill: hsl(var(--cta-accent));
+  --cta-fill-top: color-mix(in srgb, hsl(var(--cta-accent)) 82%, white);
+  --cta-ink: #fff;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-radius: 12px;
+  color: var(--cta-ink);
+  background: linear-gradient(180deg, var(--cta-fill-top), var(--cta-fill));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.12),
+    0 0 0 1px color-mix(in srgb, var(--cta-fill) 70%, black),
+    0 10px 22px -12px hsl(var(--cta-accent) / 0.75),
+    0 2px 4px -2px hsl(var(--cta-accent) / 0.5);
+  transition:
+    color 260ms var(--ease-smooth-out),
+    background 260ms var(--ease-smooth-out),
+    box-shadow 260ms var(--ease-smooth-out),
+    transform 160ms var(--ease-smooth-out),
+    filter 160ms var(--ease-smooth-out);
+}
+.dark .ui-cta {
+  --cta-fill: color-mix(in srgb, hsl(var(--cta-accent)) 72%, black);
+  --cta-fill-top: color-mix(in srgb, hsl(var(--cta-accent)) 92%, black);
+}
+.ui-cta > svg {
+  transition: transform 260ms var(--ease-smooth-out);
+}
+/* One-shot sheen when the button becomes available. */
+.ui-cta::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(105deg, transparent 30%, rgba(255, 255, 255, 0.34) 48%, transparent 66%);
+  transform: translateX(-120%);
+  pointer-events: none;
+}
+.ui-cta--sheen:not(:disabled):not([aria-disabled="true"])::after {
+  animation: ctaSheen 900ms 60ms var(--ease-smooth-out) both;
+}
+@media (hover: hover) {
+  .ui-cta:not(:disabled):not([aria-disabled="true"]):hover {
+    transform: translateY(-1px);
+    filter: brightness(1.06) saturate(1.05);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.32),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.12),
+      0 0 0 1px color-mix(in srgb, var(--cta-fill) 70%, black),
+      0 16px 28px -14px hsl(var(--cta-accent) / 0.85),
+      0 3px 6px -3px hsl(var(--cta-accent) / 0.55);
+  }
+  .ui-cta:not(:disabled):not([aria-disabled="true"]):hover > svg {
+    transform: translateX(1px) scale(1.06);
+  }
+}
+.ui-cta:not(:disabled):not([aria-disabled="true"]):active {
+  transform: translateY(0) scale(0.98);
+  filter: brightness(0.97);
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.18),
+    0 0 0 1px color-mix(in srgb, var(--cta-fill) 70%, black),
+    0 4px 10px -8px hsl(var(--cta-accent) / 0.7);
+}
+.ui-cta:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 0 0 2px hsl(var(--background)),
+    0 0 0 4px hsl(var(--cta-accent) / 0.55);
+}
+.ui-cta:disabled,
+.ui-cta[aria-disabled="true"] {
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--foreground) / 0.045);
+  box-shadow:
+    inset 0 0 0 1px hsl(var(--foreground) / 0.08),
+    inset 0 1px 0 hsl(var(--background) / 0.7);
+  filter: none;
+  transform: none;
+}
+.ui-cta[aria-busy="true"] {
+  color: var(--cta-ink);
+  background: linear-gradient(180deg, var(--cta-fill-top), var(--cta-fill));
+}
+.ui-cta[aria-busy="true"]::after {
+  animation: ctaSheen 1.4s linear infinite;
+}
+@keyframes ctaSheen {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(120%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-cta,
+  .ui-cta > svg {
+    transition-duration: 0.01ms;
+  }
+  .ui-cta::after,
+  .ui-cta[aria-busy="true"]::after {
+    animation: none;
+  }
+}
+
+/* ============================================
+   PAGE INTRO — section accent + condensing sticky header
+   ============================================ */
+
+/* One accent hue per app section. Values are HSL channels so they compose
+   with alpha: hsl(var(--page-accent) / 0.2). */
+[data-page-accent] {
+  --page-accent: 221 83% 53%;
+}
+[data-page-accent="meetings"] {
+  --page-accent: 258 72% 60%;
+}
+[data-page-accent="youtube"] {
+  --page-accent: 0 74% 54%;
+}
+[data-page-accent="file"] {
+  --page-accent: 172 66% 36%;
+}
+[data-page-accent="podcasts"] {
+  --page-accent: 24 92% 52%;
+}
+[data-page-accent="settings"] {
+  --page-accent: 215 18% 46%;
+}
+.dark [data-page-accent] {
+  --page-accent: 217 91% 66%;
+}
+.dark [data-page-accent="meetings"] {
+  --page-accent: 258 88% 74%;
+}
+.dark [data-page-accent="youtube"] {
+  --page-accent: 0 86% 66%;
+}
+.dark [data-page-accent="file"] {
+  --page-accent: 170 62% 52%;
+}
+.dark [data-page-accent="podcasts"] {
+  --page-accent: 28 94% 62%;
+}
+.dark [data-page-accent="settings"] {
+  --page-accent: 215 20% 66%;
+}
+
+.page-intro {
+  --page-intro-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --page-intro-duration: 320ms;
+  position: relative;
+  margin-bottom: calc(1.5rem + var(--page-intro-compensation, 0px));
+  padding: 0.25rem 0.25rem 1.25rem;
+  border-bottom: 1px solid hsl(var(--border) / 0.65);
   background: transparent;
-  box-shadow: none;
+}
+@media (min-width: 768px) {
+  .page-intro {
+    padding-bottom: 1.5rem;
+  }
+}
+.page-intro.page-intro--with-bottom {
+  padding-bottom: 0;
+}
+
+.page-intro__eyebrow {
+  margin-bottom: 0.75rem;
+  padding-top: 0.25rem;
+  transition:
+    margin var(--page-intro-duration) var(--page-intro-ease),
+    padding var(--page-intro-duration) var(--page-intro-ease);
+}
+.page-intro__rule {
+  background: hsl(var(--page-accent, 221 83% 53%) / 0.75);
+  transform-origin: left center;
+  transition:
+    width var(--page-intro-duration) var(--page-intro-ease),
+    background-color var(--page-intro-duration) var(--page-intro-ease);
+}
+
+.page-intro__title {
+  font-size: 36px;
+  line-height: 0.96;
+  letter-spacing: -0.045em;
+  transition:
+    font-size var(--page-intro-duration) var(--page-intro-ease),
+    letter-spacing var(--page-intro-duration) var(--page-intro-ease);
+}
+@media (min-width: 768px) {
+  .page-intro__title {
+    font-size: 42px;
+  }
+}
+
+.page-intro__description {
+  display: grid;
+  grid-template-rows: 1fr;
+  margin-top: 0.75rem;
+  opacity: 1;
+  transform: translateY(0);
+  filter: blur(0);
+  transition:
+    grid-template-rows var(--page-intro-duration) var(--page-intro-ease),
+    margin var(--page-intro-duration) var(--page-intro-ease),
+    opacity 180ms ease-out,
+    transform var(--page-intro-duration) var(--page-intro-ease),
+    filter 180ms ease-out;
+}
+
+.page-intro__bottom {
+  margin-top: 1.25rem;
+  padding-block: 0.625rem;
+  border-top: 1px solid hsl(var(--border) / 0.55);
+  transition:
+    margin var(--page-intro-duration) var(--page-intro-ease),
+    padding var(--page-intro-duration) var(--page-intro-ease);
+}
+
+/* Sticky variant: bleeds to the page gutters so content scrolls under a
+   frosted bar, then condenses (42 → 32px title, description folds away). */
+.page-intro--sticky {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  margin-inline: -1rem;
+  padding-inline: 1.25rem;
+  transition:
+    padding var(--page-intro-duration) var(--page-intro-ease),
+    background-color var(--page-intro-duration) var(--page-intro-ease),
+    box-shadow var(--page-intro-duration) var(--page-intro-ease),
+    border-color var(--page-intro-duration) var(--page-intro-ease);
+}
+@media (min-width: 768px) {
+  .page-intro--sticky {
+    margin-inline: -1.5rem;
+    padding-inline: 1.75rem;
+  }
+}
+.page-intro--sticky[data-condensed="true"] {
+  padding-top: 0.875rem;
+  padding-bottom: 0.875rem;
+  border-bottom-color: hsl(var(--border) / 0.5);
+  background: hsl(var(--background) / 0.78);
+  -webkit-backdrop-filter: saturate(1.6) blur(20px);
+  backdrop-filter: saturate(1.6) blur(20px);
+  box-shadow:
+    0 1px 0 hsl(var(--background) / 0.6) inset,
+    0 22px 36px -30px hsl(var(--foreground) / 0.28);
+}
+.page-intro--sticky.page-intro--with-bottom[data-condensed="true"] {
+  padding-bottom: 0;
+}
+.page-intro--sticky[data-condensed="true"] .page-intro__eyebrow {
+  margin-bottom: 0.4rem;
+  padding-top: 0;
+}
+.page-intro--sticky[data-condensed="true"] .page-intro__rule {
+  width: 1rem;
+  background: hsl(var(--page-accent, 221 83% 53%));
+}
+.page-intro--sticky[data-condensed="true"] .page-intro__title {
+  font-size: 28px;
+  letter-spacing: -0.035em;
+}
+@media (min-width: 768px) {
+  .page-intro--sticky[data-condensed="true"] .page-intro__title {
+    font-size: 32px;
+  }
+}
+.page-intro--sticky[data-condensed="true"] .page-intro__description {
+  grid-template-rows: 0fr;
+  margin-top: 0;
+  opacity: 0;
+  transform: translateY(-6px);
+  filter: blur(3px);
+  pointer-events: none;
+}
+.page-intro--sticky[data-condensed="true"] .page-intro__actions {
+  align-self: center;
+}
+.page-intro--sticky[data-condensed="true"] .page-intro__bottom {
+  margin-top: 0.75rem;
+  padding-block: 0.375rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-intro,
+  .page-intro *,
+  .page-intro--sticky {
+    transition-duration: 0.01ms !important;
+  }
 }
 
 .transcript-detail-header-shell {
   background: transparent;
   box-shadow: none;
-}
-
-.transcription-intro.sticky {
-  background: hsl(var(--background) / 0.94);
-  box-shadow:
-    0 -16px 0 hsl(var(--background)),
-    0 18px 34px -32px hsl(var(--foreground) / 0.32);
 }
 
 .transcript-detail-header-sticky {
@@ -1541,16 +1834,18 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
 }
 
 .live-mic-search,
-.live-mic-view-toggle,
-.transcription-search,
-.transcription-view-toggle {
+.transcription-search {
   background: linear-gradient(145deg, var(--live-shell-top), var(--live-shell-bottom));
   box-shadow:
     inset 0 1px 0 var(--live-highlight),
     0 12px 26px -22px var(--live-shadow);
 }
 
-.transcription-history-count,
+.section-count-badge {
+  background: hsl(var(--foreground) / 0.05);
+  box-shadow: inset 0 0 0 1px hsl(var(--foreground) / 0.06);
+}
+
 .transcription-neutral-state,
 .file-upload-error {
   background: var(--workspace-soft);
@@ -1611,14 +1906,9 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
   .live-recording-actions--grid {
     position: absolute;
     z-index: 1;
-    top: 12px;
-    right: 12px;
-    padding: 4px;
-    border-radius: 12px;
-    background: color-mix(in srgb, var(--live-card-hover) 94%, transparent);
-    box-shadow:
-      0 12px 24px -18px var(--live-card-shadow),
-      inset 0 0 0 1px var(--live-hairline);
+    top: 16px;
+    right: 16px;
+    /* Pills sit directly on the card surface; no extra tray container. */
     opacity: 0;
     pointer-events: none;
     transform: translateY(-2px);
@@ -1766,22 +2056,6 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
   background: radial-gradient(circle at 50% 42%, hsl(var(--primary) / 0.07), transparent 34%), var(--live-core);
 }
 
-.file-upload-cta {
-  background: hsl(var(--primary) / 0.09);
-  box-shadow:
-    inset 0 0 0 1px hsl(var(--primary) / 0.14),
-    inset 0 1px 0 var(--live-highlight);
-  transition:
-    background-color var(--duration-quick) var(--ease-smooth-out),
-    transform var(--duration-quick) var(--ease-smooth-out);
-}
-
-.file-upload-shell:focus-visible .file-upload-cta,
-.file-upload-shell.is-drag-active .file-upload-cta {
-  background: hsl(var(--primary) / 0.14);
-  transform: translateY(-1px);
-}
-
 .file-upload-formats {
   padding-top: 12px;
   box-shadow: inset 0 1px 0 var(--live-hairline);
@@ -1829,11 +2103,6 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
       0 40px 72px -50px var(--live-shadow),
       inset 0 1px 0 var(--live-highlight),
       inset 0 -1px 0 var(--live-hairline);
-  }
-
-  .file-upload-shell:hover .file-upload-cta {
-    background: hsl(var(--primary) / 0.14);
-    transform: translateY(-1px);
   }
 
   .group:hover .transcription-thumbnail {
@@ -6580,15 +6849,18 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
 }
 
 /* Scriber layout adapters for the portable transitions.dev hooks. */
+/* Flat segmented control: the sliding pill is the only surface, so the
+   toggle never reads as a box inside a box. */
 .transcription-view-toggle.t-tabs {
   --tabs-bar-bg: transparent;
-  --tabs-text-muted: hsl(var(--muted-foreground));
+  --tabs-text-muted: hsl(var(--muted-foreground) / 0.8);
   --tabs-text-active: hsl(var(--foreground));
-  --tabs-pill-bg: hsl(var(--background) / 0.82);
-  gap: 4px;
-  padding: 4px;
-  border-radius: 12px;
-  background: linear-gradient(145deg, var(--live-shell-top), var(--live-shell-bottom));
+  --tabs-pill-bg: hsl(var(--foreground) / 0.07);
+  gap: 2px;
+  padding: 0;
+  border-radius: 10px;
+  background: transparent;
+  box-shadow: none;
 }
 
 .transcription-view-toggle.t-tabs .t-tab {
@@ -6606,12 +6878,10 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
 }
 
 .transcription-view-toggle.t-tabs .t-tabs-pill {
-  top: 4px;
+  top: 0;
   height: 40px;
-  border-radius: 9px;
-  box-shadow:
-    inset 0 1px 0 hsl(var(--foreground) / 0.04),
-    0 3px 10px hsl(var(--foreground) / 0.08);
+  border-radius: 10px;
+  box-shadow: none;
 }
 
 .transcript-history-reveal {

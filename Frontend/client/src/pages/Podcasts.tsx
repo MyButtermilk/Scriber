@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "wouter";
 import {
+  AlertCircle,
   ArrowDownToLine,
   ArrowRight,
   Check,
@@ -18,6 +19,7 @@ import {
   RefreshCw,
   Rss,
   Search,
+  Settings2,
   Trash2,
   X,
 } from "lucide-react";
@@ -48,6 +50,10 @@ import { apiRequest } from "@/lib/queryClient";
 import { ApiRequestError } from "@/lib/request-errors";
 import { apiUrl } from "@/lib/backend";
 import { cn } from "@/lib/utils";
+import { PageIntro } from "@/components/page-intro";
+import { SectionHeading } from "@/components/ui/section-heading";
+import { PodcastCover } from "@/components/podcasts/PodcastCover";
+import { podcastFailureKind, podcastFailureLabels } from "@/components/podcasts/episode-failure";
 import {
   PODCAST_EPISODES_KEY,
   PODCAST_LIBRARY_KEY,
@@ -86,19 +92,6 @@ function withProgress(episode: PodcastEpisode, body: EpisodeProgress): PodcastEp
   return { ...episode, readAt, playedAt, isUnread: episode.status === "completed" && !readAt && !playedAt };
 }
 
-function PodcastMark({ small = false }: { small?: boolean }) {
-  return (
-    <div
-      className={cn(
-        "flex shrink-0 items-center justify-center rounded-2xl border border-border/70 bg-muted/50 text-foreground",
-        small ? "h-11 w-11" : "h-16 w-16",
-      )}
-    >
-      <Radio className={cn("stroke-[1.4]", small ? "h-5 w-5" : "h-8 w-8")} aria-hidden="true" />
-    </div>
-  );
-}
-
 function PodcastInfo() {
   const { t } = useI18n();
   return (
@@ -128,7 +121,7 @@ function PodcastInfo() {
 }
 
 export default function Podcasts() {
-  const { t, formatNumber, formatDate } = useI18n();
+  const { t, formatNumber, formatRelativeDate, formatFullDateTime } = useI18n();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState("");
@@ -296,10 +289,19 @@ export default function Podcasts() {
     episodeSectionRef.current?.focus({ preventScroll: true });
   };
 
+  // Two tiles only when something is waiting; otherwise one quiet line.
+  const overview =
+    !library.data || library.error || !subscriptions.length
+      ? null
+      : library.data.newCount > 0 || library.data.unreadCount > 0
+        ? "counts"
+        : "caught-up";
+
   const renderEpisode = (episode: PodcastEpisode, index: number) => {
     const busy = podcastEpisodeIsBusy(episode.status);
     const isNew = episode.isNew || newThisVisit.has(episode.id);
     const canMarkRead = episode.status === "completed" || Boolean(episode.readAt || episode.playedAt);
+    const failure = podcastFailureKind(episode);
     return (
       <article
         key={episode.id}
@@ -324,17 +326,24 @@ export default function Podcasts() {
                   {t("New")}
                 </span>
               )}
-              {episode.publishedAt && (
-                <time dateTime={episode.publishedAt}>
-                  {formatDate(episode.publishedAt, { day: "numeric", month: "short", year: "numeric" })}
+              {episode.publishedAt && formatRelativeDate(episode.publishedAt, { time: false }) && (
+                <time dateTime={episode.publishedAt} title={formatFullDateTime(episode.publishedAt)}>
+                  {formatRelativeDate(episode.publishedAt, { time: false })}
                 </time>
               )}
               {episode.durationSeconds != null && (
                 <span>{t("{{minutes}} min", { minutes: formatNumber(Math.ceil(episode.durationSeconds / 60)) })}</span>
               )}
-              <span className="rounded-full border border-border/70 px-2 py-0.5">
-                {t(podcastStatusLabels[episode.status])}
-              </span>
+              {failure ? (
+                <span className="podcast-failure-badge" data-failure-kind={failure}>
+                  <AlertCircle className="h-3 w-3" aria-hidden="true" />
+                  {t(podcastFailureLabels[failure])}
+                </span>
+              ) : (
+                <span className="rounded-full border border-border/70 px-2 py-0.5">
+                  {t(podcastStatusLabels[episode.status])}
+                </span>
+              )}
               {episode.isUnread ? (
                 <span className="flex items-center gap-1.5 font-medium text-primary">
                   <span className="h-1.5 w-1.5 rounded-full bg-primary" aria-hidden="true" />
@@ -368,12 +377,9 @@ export default function Podcasts() {
               </p>
             )}
             {episode.error && (
-              <p
-                role="status"
-                className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs leading-relaxed text-foreground"
-              >
+              <p role="status" className="podcast-episode-error max-w-3xl text-xs leading-relaxed text-foreground/80">
                 {t(episode.error)}
-                <span className="mt-1 block font-mono text-muted-foreground">
+                <span className="mt-0.5 block font-mono text-ui-micro text-muted-foreground">
                   {t("Reference: {{id}}", { id: episode.transcriptId || episode.id })}
                 </span>
               </p>
@@ -403,6 +409,14 @@ export default function Podcasts() {
                     <ArrowDownToLine className="h-3.5 w-3.5" />
                   )}
                   {t(episode.status === "failed" ? "Retry episode" : "Download & transcribe")}
+                </Button>
+              )}
+              {failure === "provider_missing" && (
+                <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs" asChild>
+                  <Link href="/settings">
+                    <Settings2 className="h-3.5 w-3.5" />
+                    {t("Open Settings")}
+                  </Link>
                 </Button>
               )}
               <Button
@@ -478,37 +492,47 @@ export default function Podcasts() {
   };
 
   return (
-    <div className="app-page-shell space-y-7 py-7" data-page-shell="podcasts">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="mb-2 text-ui-micro font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-            {t("A listening library that reads itself")}
-          </p>
-          <h1 className="text-3xl font-semibold tracking-tight">{t("Podcasts")}</h1>
-          <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">
-            {t(
-              "Follow the conversations you care about. New episodes become searchable transcripts and concise summaries.",
-            )}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <PodcastInfo />
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-2"
-            disabled={mutation.isPending || library.data?.refreshing || !subscriptions.length}
-            onClick={() => mutation.mutate({ method: "POST", path: "/api/podcasts/refresh" })}
-          >
-            <RefreshCw className={cn("h-3.5 w-3.5", library.data?.refreshing && "motion-safe:animate-spin")} />
-            {t("Check for episodes")}
-          </Button>
-        </div>
-      </header>
+    <div
+      className="app-page-shell podcasts-page space-y-7 px-4 py-5 md:px-6 md:py-6"
+      data-page-accent="podcasts"
+      data-page-shell="podcasts"
+    >
+      <PageIntro
+        eyebrow={t("A listening library that reads itself")}
+        title={t("Podcasts")}
+        description={t(
+          "Follow the conversations you care about. New episodes become searchable transcripts and concise summaries.",
+        )}
+        accent="podcasts"
+        actions={
+          <>
+            <PodcastInfo />
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              disabled={mutation.isPending || library.data?.refreshing || !subscriptions.length}
+              onClick={() => mutation.mutate({ method: "POST", path: "/api/podcasts/refresh" })}
+            >
+              <RefreshCw className={cn("h-3.5 w-3.5", library.data?.refreshing && "motion-safe:animate-spin")} />
+              {t("Check for episodes")}
+            </Button>
+          </>
+        }
+      />
 
-      {library.data && subscriptions.length > 0 && !library.error && (
+      {overview === "caught-up" && (
+        <section aria-label={t("Episode overview")}>
+          <p className="podcast-overview-quiet flex items-center gap-2 px-1 text-xs text-muted-foreground">
+            <CheckCheck className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            {t("All caught up — new episodes appear here automatically.")}
+          </p>
+        </section>
+      )}
+
+      {overview === "counts" && library.data && (
         <section aria-label={t("Episode overview")} className="space-y-2">
-          <div className="grid divide-y divide-border/70 overflow-hidden rounded-2xl border border-border/70 bg-card sm:grid-cols-2 sm:divide-x sm:divide-y-0">
+          <div className="podcast-overview grid divide-y divide-border/70 overflow-hidden border border-border/70 bg-card sm:grid-cols-2 sm:divide-x sm:divide-y-0">
             {(["new", "unread"] as const).map((kind) => {
               const count = kind === "new" ? library.data.newCount : library.data.unreadCount;
               const Icon = kind === "new" ? Radio : Headphones;
@@ -523,10 +547,12 @@ export default function Podcasts() {
                   })}
                   className="flex items-center gap-3 px-4 py-4 text-left outline-none hover:enabled:bg-muted/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-5"
                 >
-                  <Icon
-                    className={cn("h-5 w-5 shrink-0", count ? "text-primary" : "text-muted-foreground")}
+                  <span
+                    className={cn("podcast-overview__icon", count > 0 && "podcast-overview__icon--active")}
                     aria-hidden="true"
-                  />
+                  >
+                    <Icon className="h-4 w-4" />
+                  </span>
                   <span className="min-w-0 flex-1">
                     <span className="block text-xs text-muted-foreground">
                       {t(kind === "new" ? "New episodes" : "Still open")}
@@ -544,7 +570,7 @@ export default function Podcasts() {
         </section>
       )}
 
-      <section className="rounded-2xl border border-border/70 bg-card p-4 sm:p-5" aria-label={t("Find a podcast")}>
+      <section className="podcast-card border border-border/70 bg-card p-4 sm:p-5" aria-label={t("Find a podcast")}>
         <form onSubmit={searchSubmit} className="flex flex-wrap gap-2">
           <div className="relative min-w-52 flex-1">
             <Search
@@ -564,7 +590,7 @@ export default function Podcasts() {
           <Button
             type="submit"
             disabled={searchText.trim().length < 2 || search.isFetching}
-            className="h-10 gap-2 rounded-xl px-5"
+            className="ui-cta--sheen h-10 gap-2 px-5"
           >
             {search.isFetching && <Loader2 className="h-4 w-4 motion-safe:animate-spin" />}
             {t("Search")}
@@ -640,9 +666,9 @@ export default function Podcasts() {
                   return (
                     <div
                       key={result.id}
-                      className="flex min-w-0 items-center gap-3 rounded-xl border border-border/60 p-3"
+                      className="podcast-search-result flex min-w-0 items-center gap-3 rounded-2xl p-2.5"
                     >
-                      <PodcastMark small />
+                      <PodcastCover id={result.id} size="result" />
                       <div className="min-w-0 flex-1">
                         <h2 className="truncate text-sm font-medium">{result.title}</h2>
                         <p className="mt-0.5 truncate text-xs text-muted-foreground">{result.author}</p>
@@ -679,8 +705,8 @@ export default function Podcasts() {
           {t("Loading podcasts…")}
         </div>
       ) : !selected ? (
-        <section className="flex min-h-72 flex-col items-center justify-center rounded-2xl border border-dashed border-border/80 px-6 py-12 text-center">
-          <PodcastMark />
+        <section className="podcast-card flex min-h-72 flex-col items-center justify-center border border-dashed border-border/80 px-6 py-12 text-center">
+          <PodcastCover size="hero" hasArtwork={false} />
           <h2 className="mt-5 text-lg font-medium">{t("Your next good listen starts here")}</h2>
           <p className="mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
             {t(
@@ -695,34 +721,50 @@ export default function Podcasts() {
       ) : (
         <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
           <aside className="min-w-0 space-y-3" aria-label={t("Your subscriptions")}>
-            <div className="flex items-center justify-between px-1">
-              <h2 className="text-xs font-medium text-muted-foreground">{t("Your subscriptions")}</h2>
-              <span className="text-xs tabular-nums text-muted-foreground">{formatNumber(subscriptions.length)}</span>
-            </div>
-            <div className="flex gap-2 overflow-x-auto lg:flex-col lg:overflow-visible">
+            <SectionHeading
+              size="rail"
+              className="px-1"
+              title={t("Your subscriptions")}
+              count={formatNumber(subscriptions.length)}
+              countLabel={
+                subscriptions.length === 1
+                  ? t("1 subscription")
+                  : t("{{count}} subscriptions", { count: formatNumber(subscriptions.length) })
+              }
+            />
+            <div className="flex gap-2 overflow-x-auto lg:flex-col lg:gap-1 lg:overflow-visible">
               {subscriptions.map((item) => (
                 <button
                   key={item.id}
                   onClick={() => selectedChange(item.id)}
                   aria-current={selected.id === item.id ? "true" : undefined}
                   className={cn(
-                    "flex min-w-56 items-center gap-3 rounded-xl border p-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring lg:min-w-0",
+                    "podcast-subscription flex min-w-56 items-center gap-3 rounded-2xl border p-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring lg:min-w-0",
                     selected.id === item.id
-                      ? "border-border bg-card shadow-sm"
+                      ? "border-border/70 bg-card shadow-sm"
                       : "border-transparent hover:bg-muted/50",
                   )}
                 >
-                  <PodcastMark small />
+                  <PodcastCover
+                    id={item.id}
+                    hasArtwork={item.hasArtwork ?? true}
+                    version={item.artworkVersion}
+                    size="rail"
+                  />
                   <span className="min-w-0 flex-1">
                     <span
                       className={cn("block truncate text-sm", item.attentionCount ? "font-semibold" : "font-medium")}
                     >
                       {item.title}
                     </span>
-                    <span className="mt-1 block text-ui-micro text-muted-foreground">
+                    <span className="mt-1 block truncate text-ui-micro text-muted-foreground">
                       {item.unreadCount
                         ? t("{{count}} still open", { count: formatNumber(item.unreadCount) })
-                        : t("{{count}} ready", { count: formatNumber(item.completedCount) })}
+                        : item.completedCount === 1
+                          ? t("1 transcript")
+                          : item.completedCount > 1
+                            ? t("{{count}} transcripts", { count: formatNumber(item.completedCount) })
+                            : t("No transcripts yet")}
                       {!item.autoProcess && ` · ${t("Paused")}`}
                     </span>
                   </span>
@@ -753,14 +795,23 @@ export default function Podcasts() {
           <section
             ref={episodeSectionRef}
             tabIndex={-1}
-            className="min-w-0 rounded-2xl border border-border/70 bg-card px-4 sm:px-6"
+            className="podcast-card min-w-0 border border-border/70 bg-card px-4 sm:px-6"
             aria-label={selected.title}
           >
             <header className="border-b border-border/70 py-5">
               <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-ui-micro text-muted-foreground">{selected.author}</p>
-                  <h2 className="mt-1 text-xl font-semibold tracking-tight">{selected.title}</h2>
+                <div className="flex min-w-0 items-center gap-4">
+                  <PodcastCover
+                    key={selected.id}
+                    id={selected.id}
+                    hasArtwork={selected.hasArtwork ?? true}
+                    version={selected.artworkVersion}
+                    size="header"
+                  />
+                  <div className="min-w-0">
+                    <p className="truncate text-ui-micro text-muted-foreground">{selected.author}</p>
+                    <h2 className="mt-1 text-xl font-semibold tracking-tight">{selected.title}</h2>
+                  </div>
                 </div>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>

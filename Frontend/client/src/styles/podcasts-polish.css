@@ -1,0 +1,204 @@
+/* Page polish: podcasts. Loaded after index.css (unlayered, so it wins over Tailwind utilities). */
+
+/* ── Surfaces ──────────────────────────────────────────────────────────
+   Same card radius as the other pages; inner rows stay borderless. */
+
+.podcasts-page .podcast-card {
+  border-radius: 24px;
+}
+
+.podcasts-page .podcast-overview {
+  border-radius: 22px;
+}
+
+.podcasts-page .podcast-search-result {
+  transition: background-color 160ms ease;
+}
+
+.podcasts-page .podcast-search-result:hover {
+  background: hsl(var(--muted) / 0.5);
+}
+
+/* ── Section accent on identity elements only ──────────────────────────
+   Cover tiles, the selected subscription and the automatic-processing
+   switch carry the podcasts accent. Errors never do. */
+
+.podcasts-page .podcast-overview__icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--foreground) / 0.04);
+}
+
+.podcasts-page .podcast-overview__icon--active {
+  color: hsl(var(--page-accent));
+  background: hsl(var(--page-accent) / 0.1);
+  box-shadow: inset 0 0 0 1px hsl(var(--page-accent) / 0.14);
+}
+
+.podcasts-page .compact-impact-switch {
+  --impact-switch-track-on: hsl(var(--page-accent));
+  --impact-switch-check: hsl(var(--page-accent));
+}
+
+/* ── Cover artwork ─────────────────────────────────────────────────────
+   The radio mark sits underneath and shows while loading, when no cover is
+   known, or when the image fails. */
+
+.podcast-cover {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  color: hsl(var(--page-accent, var(--primary)));
+  background: hsl(var(--page-accent, var(--primary)) / 0.09);
+  box-shadow: inset 0 0 0 1px hsl(var(--page-accent, var(--primary)) / 0.12);
+}
+
+.podcast-cover--rail {
+  width: 46px;
+  height: 46px;
+}
+
+.podcast-cover--header {
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+}
+
+.podcast-cover--hero {
+  width: 64px;
+  height: 64px;
+  border-radius: 18px;
+}
+
+.podcast-cover__mark {
+  width: 20px;
+  height: 20px;
+  stroke-width: 1.5;
+}
+
+.podcast-cover--header .podcast-cover__mark,
+.podcast-cover--hero .podcast-cover__mark {
+  width: 28px;
+  height: 28px;
+  stroke-width: 1.4;
+}
+
+.podcast-cover__image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 220ms ease;
+}
+
+.podcast-cover[data-cover-state="image"] {
+  background: hsl(var(--muted));
+  box-shadow: none;
+}
+
+.podcast-cover[data-cover-state="image"] .podcast-cover__image {
+  opacity: 1;
+}
+
+.podcast-cover[data-cover-state="image"] .podcast-cover__mark {
+  visibility: hidden;
+}
+
+/* A hairline keeps light and dark covers from bleeding into the surface. */
+.podcast-cover[data-cover-state="image"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px hsl(var(--foreground) / 0.08);
+  pointer-events: none;
+}
+
+/* ── Subscription rail ─────────────────────────────────────────────── */
+
+.podcasts-page .podcast-subscription {
+  position: relative;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease;
+}
+
+.podcasts-page .podcast-subscription[aria-current="true"]::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 14px;
+  bottom: 14px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: hsl(var(--page-accent));
+}
+
+/* ── Episode failures: concrete, calm and never in the section accent ── */
+
+.podcasts-page .podcast-failure-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 9999px;
+  padding: 2px 8px;
+  font-weight: 500;
+  color: rgb(185 28 28);
+  background: rgb(239 68 68 / 0.07);
+  box-shadow: inset 0 0 0 1px rgb(239 68 68 / 0.16);
+}
+
+.podcasts-page .podcast-failure-badge[data-failure-kind="storage_full"],
+.podcasts-page .podcast-failure-badge[data-failure-kind="provider_missing"] {
+  color: rgb(161 98 7);
+  background: rgb(234 179 8 / 0.09);
+  box-shadow: inset 0 0 0 1px rgb(234 179 8 / 0.2);
+}
+
+.podcasts-page .podcast-episode-error {
+  border-left: 2px solid rgb(239 68 68 / 0.3);
+  padding-left: 10px;
+}
+
+.dark .podcasts-page .podcast-failure-badge {
+  color: rgb(252 165 165);
+  background: rgb(127 29 29 / 0.24);
+  box-shadow: inset 0 0 0 1px rgb(248 113 113 / 0.2);
+}
+
+.dark .podcasts-page .podcast-failure-badge[data-failure-kind="storage_full"],
+.dark .podcasts-page .podcast-failure-badge[data-failure-kind="provider_missing"] {
+  color: rgb(253 224 71);
+  background: rgb(113 63 18 / 0.26);
+  box-shadow: inset 0 0 0 1px rgb(250 204 21 / 0.18);
+}
+
+.dark .podcasts-page .podcast-episode-error {
+  border-left-color: rgb(248 113 113 / 0.35);
+}
+
+.dark .podcast-cover[data-cover-state="image"]::after {
+  box-shadow: inset 0 0 0 1px hsl(0 0% 100% / 0.08);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .podcast-cover__image,
+  .podcasts-page .podcast-subscription,
+  .podcasts-page .podcast-search-result {
+    transition: none;
+  }
+}

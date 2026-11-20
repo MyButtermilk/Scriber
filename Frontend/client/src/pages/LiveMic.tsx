@@ -40,6 +40,9 @@ import {
 } from "@/lib/live-mic-control";
 import { useBackendActions } from "@/hooks/use-backend-status";
 import { createLiveMicSnapshotFence } from "@/lib/runtime-message-state";
+import { useRecordingHotkey } from "@/hooks/use-recording-hotkey";
+import { HotkeySentence } from "@/components/hotkey-keycaps";
+import { hotkeyKeyLabels } from "@/lib/hotkey-labels";
 
 const MIC_VISUAL_NOISE_FLOOR = 0.00003;
 const MIC_VISUAL_DISPLAY_SCALE = 90;
@@ -135,13 +138,10 @@ const TranscriptCard = memo(function TranscriptCard({
   onNavigate,
   onHover,
 }: TranscriptCardProps) {
-  const { formatDate, formatLegacyDate, t } = useI18n();
+  const { formatFullDateTime, formatLegacyDate, formatRelativeDate, t } = useI18n();
   const deletingClasses = isDeleting ? "pointer-events-none opacity-[0.55] scale-[0.985]" : "opacity-100 scale-100";
-  const timeLabel = item.createdAt
-    ? formatDate(item.createdAt, { dateStyle: "medium", timeStyle: "short" })
-    : formatLegacyDate(item.date);
-  const dateLabel = item.createdAt ? formatDate(item.createdAt, { dateStyle: "medium" }) : timeLabel;
-  const clockLabel = item.createdAt ? formatDate(item.createdAt, { timeStyle: "short" }) : "";
+  const dateLabel = (item.createdAt && formatRelativeDate(item.createdAt)) || formatLegacyDate(item.date);
+  const dateTitle = (item.createdAt && formatFullDateTime(item.createdAt)) || dateLabel;
   const languageLabel = localizedTranscriptLanguage(item.language, t);
   const failed = item.status === "failed";
   const failedBadge = failed ? (
@@ -168,8 +168,8 @@ const TranscriptCard = memo(function TranscriptCard({
           // List View
           <div className="flex min-h-[72px] flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
             <div className="flex min-w-0 flex-1 items-center gap-3.5">
-              <div className="live-recording-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-[11px] text-primary">
-                <Mic className="h-[18px] w-[18px] stroke-[1.65px]" />
+              <div className="live-recording-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-[11px]">
+                <Mic className="h-[18px] w-[18px] stroke-[1.65px]" aria-hidden="true" />
               </div>
               <div className="min-w-0 flex-1">
                 <h3>
@@ -185,8 +185,8 @@ const TranscriptCard = memo(function TranscriptCard({
                   </button>
                 </h3>
                 <p className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
-                  <time dateTime={item.createdAt} className="font-medium" title={timeLabel}>
-                    {timeLabel}
+                  <time dateTime={item.createdAt} className="font-medium" title={dateTitle}>
+                    {dateLabel}
                   </time>
                   <span aria-hidden="true" className="text-foreground/20">
                     •
@@ -229,23 +229,15 @@ const TranscriptCard = memo(function TranscriptCard({
           // Grid View
           <div className="flex min-h-[178px] h-full flex-col">
             <div className="flex min-w-0 items-center gap-3">
-              <div className="live-recording-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-[11px] text-primary">
-                <Mic className="h-[18px] w-[18px] stroke-[1.65px]" />
+              <div className="live-recording-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-[11px]">
+                <Mic className="h-[18px] w-[18px] stroke-[1.65px]" aria-hidden="true" />
               </div>
               <time
                 dateTime={item.createdAt}
-                aria-label={timeLabel}
-                title={timeLabel}
-                className="live-recording-date min-w-0 transition-opacity duration-[var(--duration-quick)] motion-reduce:transition-none"
+                title={dateTitle}
+                className="live-recording-date block min-w-0 truncate text-[12px] font-semibold leading-4 tracking-[-0.005em] tabular-nums text-foreground/75 transition-opacity duration-[var(--duration-quick)] motion-reduce:transition-none"
               >
-                <span className="block truncate text-[11.5px] font-semibold leading-4 tracking-[-0.005em] text-foreground/75">
-                  {dateLabel}
-                </span>
-                {clockLabel ? (
-                  <span className="mt-0.5 block font-mono text-ui-micro font-medium leading-4 tabular-nums text-muted-foreground">
-                    {clockLabel}
-                  </span>
-                ) : null}
+                {dateLabel}
               </time>
             </div>
             <h3 className="mt-[18px] flex-1">
@@ -580,6 +572,8 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
   const { toast } = useToast();
   const { t } = useI18n();
   const { checkNow: checkBackendStatus } = useBackendActions();
+  const queryClient = useQueryClient();
+  const recordingHotkey = useRecordingHotkey();
   const [isRecording, setIsRecording] = useState(false);
   const [recordingState, setRecordingState] = useState<LiveRecordingState>("idle");
   const [micStartPending, setMicStartPending] = useState(false);
@@ -872,12 +866,14 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
           break;
         case "settings_updated":
           void refreshVisualizerBarCount();
+          // The hotkey hint reads the shared settings cache.
+          void queryClient.invalidateQueries({ queryKey: ["/api/settings"], exact: true });
           break;
         default:
           break;
       }
     },
-    [applyBackendStateSnapshot, applyInputWarning, onSessionFinished, refreshVisualizerBarCount, toast],
+    [applyBackendStateSnapshot, applyInputWarning, onSessionFinished, queryClient, refreshVisualizerBarCount, toast],
   );
 
   // PERFORMANCE: Uses singleton WebSocket connection (shared across all pages)
@@ -1036,6 +1032,31 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
                     ? t("Use the microphone button to start")
                     : t("Reconnecting to Scriber");
 
+  const isReadyToStart =
+    toggleAction === null &&
+    !nativeCleanupPending &&
+    !micStartPending &&
+    !isRecording &&
+    !isPreparing &&
+    !isTranscribing &&
+    isConnected;
+  const hotkeyKeys = hotkeyKeyLabels(recordingHotkey?.hotkey, t);
+  const stageHint =
+    isReadyToStart && hotkeyKeys.length > 0 ? (
+      <span data-testid="live-mic-hotkey-hint">
+        <HotkeySentence
+          template={
+            recordingHotkey?.mode === "push_to_talk"
+              ? t("Hold {{hotkey}} or use the microphone button")
+              : t("Start with {{hotkey}} or the microphone button")
+          }
+          keys={hotkeyKeys}
+        />
+      </span>
+    ) : (
+      stageStatusHint
+    );
+
   return (
     <section className="live-mic-stage-shell">
       <div className="live-mic-stage-core">
@@ -1080,7 +1101,7 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
             />
 
             <div className="flex min-h-11 flex-col items-center justify-center gap-0.5">
-              <p className="text-[12px] font-medium text-foreground/85">{stageStatusHint}</p>
+              <p className="live-mic-stage-hint text-center text-[12px] font-medium text-foreground/85">{stageHint}</p>
               <p
                 className={`font-mono text-[13px] font-semibold tabular-nums transition-colors duration-200 ${isMicCaptureActive ? "text-red-500" : "text-muted-foreground"}`}
               >
@@ -1110,8 +1131,8 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
             )}
           </div>
 
-          {/* Live Text Output - Debossed status well for unified design */}
-          <div className="live-mic-transcript-well flex min-h-[140px] flex-1 items-center p-5 text-left md:min-h-[168px] md:p-6">
+          {/* Live text sits directly on the transcript column; no inset well. */}
+          <div className="live-mic-transcript-surface flex min-h-[140px] flex-1 text-left md:min-h-[168px]">
             <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
               {micStartPending
                 ? t("Next recording queued. Starts as soon as the microphone is ready.")
@@ -1126,7 +1147,7 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
             <div
               ref={transcriptScrollRef}
               data-testid="live-mic-transcript-output"
-              className="relative z-10 max-h-[228px] w-full overflow-y-auto overscroll-contain pr-1"
+              className="relative max-h-[228px] w-full overflow-y-auto overscroll-contain pr-1"
               aria-label={!hasActiveSession && finalText ? t("Last saved transcript") : t("Live transcript")}
             >
               {isRecording || finalText || interimText ? (
@@ -1152,14 +1173,9 @@ const LiveMicStage = memo(function LiveMicStage({ onSessionFinished }: LiveMicSt
                   {localizedLiveStatus(status, isTranscribing ? "Transcribing..." : "Preparing microphone...", t)}
                 </p>
               ) : (
-                <div>
-                  <p className="text-[15px] font-medium text-foreground/80">
-                    {t("Your live transcript will appear here.")}
-                  </p>
-                  <p className="mt-1.5 text-[12px] leading-5 text-muted-foreground">
-                    {t("Start recording with the microphone button or your global hotkey.")}
-                  </p>
-                </div>
+                <p className="live-mic-transcript-placeholder text-[17px] font-medium leading-relaxed md:text-[19px]">
+                  {t("No speech captured yet.")}
+                </p>
               )}
             </div>
           </div>
@@ -1365,12 +1381,16 @@ export default function LiveMic() {
   );
 
   return (
-    <div className="app-page-shell live-mic-page px-4 py-5 md:px-6 md:py-6" data-page-shell="live-mic">
+    <div
+      className="app-page-shell live-mic-page px-4 py-5 md:px-6 md:py-6"
+      data-page-accent="voice"
+      data-page-shell="live-mic"
+    >
       <PageIntro
         eyebrow={t("Voice capture")}
         title={t("Live transcription")}
         description={t("Capture thoughts or longer dictation and watch the transcript appear as you speak.")}
-        sticky={false}
+        accent="voice"
       />
 
       <div className="space-y-7">

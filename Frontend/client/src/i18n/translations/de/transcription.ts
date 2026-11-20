@@ -31,8 +31,14 @@ export const transcriptionTranslations = {
   "Preparing audio…": "Audio wird vorbereitet…",
   "Video: only the extracted audio counts towards the transcription limit.":
     "Video: Für das Transkriptionslimit zählt nur die extrahierte Audiodatei.",
-  "{{audioHint}} · video: the limit applies after audio extraction · files over {{threshold}} are optimized automatically":
-    "{{audioHint}} · bei Videos gilt das Limit nach der Audioextraktion · Dateien über {{threshold}} werden automatisch optimiert",
+  "Up to {{limit}} · large files are optimized automatically":
+    "Bis {{limit}} · große Dateien werden automatisch optimiert",
+  "Large files are optimized automatically": "Große Dateien werden automatisch optimiert",
+  "Files over {{threshold}} are optimized automatically before transcription.":
+    "Dateien über {{threshold}} werden vor der Transkription automatisch optimiert.",
+  "Upload limits": "Upload-Limits",
+  "Audio file": "Audiodatei",
+  "Video file": "Videodatei",
   "Audio file exceeds the raw import limit.": "Die Audiodatei überschreitet das Importlimit vor der Optimierung.",
   "Not enough disk space to prepare this file.": "Nicht genügend Speicherplatz, um diese Datei vorzubereiten.",
   "Capture thoughts or longer dictation and watch the transcript appear as you speak.":
@@ -88,8 +94,9 @@ export const transcriptionTranslations = {
   "Search, copy, or reopen your latest dictations.": "Durchsuche, kopiere oder öffne deine letzten Diktate erneut.",
   "Speech appears here while you record.": "Gesprochener Text erscheint hier während der Aufnahme.",
   "Start recording": "Aufnahme starten",
-  "Start recording with the microphone button or your global hotkey.":
-    "Starte die Aufnahme mit der Mikrofontaste oder deinem globalen Tastenkürzel.",
+  "Start with {{hotkey}} or the microphone button": "Starte mit {{hotkey}} oder der Mikrofontaste",
+  "Hold {{hotkey}} or use the microphone button": "Halte {{hotkey}} gedrückt oder nutze die Mikrofontaste",
+  Space: "Leertaste",
   Starting: "Wird gestartet",
   "Starting recording": "Aufnahme wird gestartet",
   "Stop recording": "Aufnahme stoppen",
@@ -114,7 +121,7 @@ export const transcriptionTranslations = {
   "Unknown language": "Unbekannte Sprache",
   "Unsupported settings URI scheme": "Nicht unterstütztes Einstellungsschema",
   "Voice capture": "Sprachaufnahme",
-  "Your live transcript will appear here.": "Dein Live-Transkript erscheint hier.",
+  "No speech captured yet.": "Noch kein Text erfasst.",
   Yesterday: "Gestern",
   "{{audioHint}} · video up to {{videoLimit}} · files over {{threshold}} are optimized automatically":
     "{{audioHint}} · Video bis {{videoLimit}} · Dateien über {{threshold}} werden automatisch optimiert",
@@ -134,8 +141,8 @@ export const transcriptionTranslations = {
   "Choose audio or video": "Audio oder Video auswählen",
   "Compressing {{file}}…": "{{file}} wird komprimiert …",
   "Could not load file transcripts": "Dateitranskripte konnten nicht geladen werden",
-  "Drop in audio or video; Scriber prepares, transcribes, and organizes it.":
-    "Füge Audio oder Video hinzu; Scriber bereitet die Datei vor, transkribiert und organisiert sie.",
+  "Drop in audio or video; Scriber prepares, transcribes, and summarizes it in a structured way.":
+    "Füge Audio oder Video hinzu; Scriber bereitet die Datei vor, transkribiert und fasst sie strukturiert zusammen.",
   "Extracting audio from {{file}}…": "Audio wird aus {{file}} extrahiert …",
   "Failed to save transcript": "Transkript konnte nicht gespeichert werden",
   Failed: "Fehlgeschlagen",
@@ -207,8 +214,8 @@ export const transcriptionTranslations = {
   "No source URL is available for this video.": "Für dieses Video ist keine Quell-URL verfügbar.",
   "No videos found": "Keine Videos gefunden",
   "No videos match “{{query}}”": "Keine Videos entsprechen „{{query}}“",
-  "Paste a link or search YouTube, then turn the video into a searchable transcript.":
-    "Füge einen Link ein oder durchsuche YouTube und erstelle daraus ein durchsuchbares Transkript.",
+  "Search YouTube or paste a YouTube link to create a transcript and a structured summary.":
+    "Durchsuche YouTube oder füge einen YouTube-Link ein, um ein Transkript und eine strukturierte Zusammenfassung zu erstellen.",
   "Paste a YouTube link or search videos…": "YouTube-Link einfügen oder Videos suchen …",
   "Paste one link, or search by title and channel": "Füge einen Link ein oder suche nach Titel und Kanal",
   "Please retry loading your YouTube transcript history.":

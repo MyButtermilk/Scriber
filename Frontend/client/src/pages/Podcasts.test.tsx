@@ -10,6 +10,7 @@ import {
 } from "@/lib/podcast-types";
 import { germanTranslations } from "@/i18n/translations/de";
 import { ApiRequestError } from "@/lib/request-errors";
+import { podcastFailureLabels } from "@/components/podcasts/episode-failure";
 import Podcasts from "./Podcasts";
 
 const { request, toast } = vi.hoisted(() => {
@@ -439,17 +440,110 @@ describe("Podcasts", () => {
     );
   });
 
-  it("disables overview shortcuts when no new or open episodes exist", async () => {
+  it("replaces the overview tiles with one quiet line when nothing is new or open", async () => {
     mount([subscription()]);
     const overview = await screen.findByRole("region", { name: "Episode overview" });
-    const newEpisodes = within(overview).getByRole("button", { name: "Show 0 new episodes" });
-    const openEpisodes = within(overview).getByRole("button", { name: "Show 0 open episodes" });
-    expect(newEpisodes).toBeDisabled();
-    expect(openEpisodes).toBeDisabled();
-    fireEvent.click(newEpisodes);
-    fireEvent.click(openEpisodes);
+    expect(within(overview).getByText("All caught up — new episodes appear here automatically.")).toBeVisible();
+    expect(within(overview).queryByRole("button")).toBeNull();
     expect(screen.getByRole("button", { name: "All episodes" })).toHaveAttribute("aria-pressed", "true");
     expect(request.mock.calls.some(([method]) => method !== "GET")).toBe(false);
+  });
+
+  it("shows no overview at all without subscriptions", async () => {
+    mount();
+    await screen.findByText("Your next good listen starts here");
+    expect(screen.queryByRole("region", { name: "Episode overview" })).toBeNull();
+  });
+
+  it("loads covers through the local backend and falls back to the podcast mark", async () => {
+    const withCover = subscription({ artworkVersion: "0123456789ab" });
+    const withoutCover = subscription({ id: "e".repeat(32), title: "No cover show", hasArtwork: false });
+    const { container } = mount([withCover, withoutCover]);
+    const row = await screen.findByRole("button", { name: /Thoughtful conversations/ });
+    const cover = row.querySelector(".podcast-cover")!;
+    const image = cover.querySelector("img")!;
+    // Versioned so a refreshed cover gets a new URL instead of a stale browser cache hit.
+    expect(image).toHaveAttribute("src", `/api/podcasts/artwork/${withCover.id}?v=0123456789ab`);
+    expect(image).toHaveAttribute("alt", "");
+    expect(image).toHaveAttribute("loading", "lazy");
+    expect(cover).toHaveAttribute("aria-hidden", "true");
+    fireEvent.error(image);
+    expect(cover.querySelector("img")).toBeNull();
+    expect(cover).toHaveAttribute("data-cover-state", "fallback");
+    expect(cover.querySelector("svg")).not.toBeNull();
+    const plain = screen.getByRole("button", { name: /No cover show/ }).querySelector(".podcast-cover")!;
+    expect(plain.querySelector("img")).toBeNull();
+    expect(plain).toHaveAttribute("data-cover-state", "fallback");
+    // The detail header shows the selected podcast's cover too.
+    expect(
+      container.querySelector(`header img[src="/api/podcasts/artwork/${withCover.id}?v=0123456789ab"]`),
+    ).not.toBeNull();
+  });
+
+  it("uses the shared rail heading and calm transcript counts", async () => {
+    mount([
+      subscription({ completedCount: 0 }),
+      subscription({ id: "e".repeat(32), title: "One", completedCount: 1 }),
+      subscription({ id: "f".repeat(32), title: "Many", completedCount: 3, autoProcess: false }),
+    ]);
+    expect(await screen.findByRole("heading", { name: "Your subscriptions" })).toBeVisible();
+    expect(screen.getByLabelText("3 subscriptions")).toHaveTextContent("3");
+    expect(screen.getByText("No transcripts yet")).toBeVisible();
+    expect(screen.getByText("1 transcript")).toBeVisible();
+    expect(screen.getByText("3 transcripts · Paused")).toBeVisible();
+    expect(screen.queryByText(/0 ready|ready$/)).toBeNull();
+  });
+
+  it.each([
+    ["download", "Download failed"],
+    ["too_large", "Too large to process"],
+    ["transcription", "Transcription failed"],
+    ["summary", "Summary failed"],
+    ["storage_full", "Storage full"],
+    [undefined, "Processing failed"],
+  ] as const)("labels a %s failure concretely and offers a retry", async (failureKind, label) => {
+    const failed = episode({ status: "failed", error: "Something specific happened.", failureKind });
+    request.mockImplementation(async (_method: string, path: string) => ({
+      json: async () => (path.includes("/episodes?") ? { items: [failed], total: 1 } : { ok: true }),
+    }));
+    mount([subscription()]);
+    const row = (await screen.findByText("Understanding tomorrow")).closest("article")!;
+    expect(within(row).getByText(label)).toBeVisible();
+    expect(within(row).queryByText("Needs attention")).toBeNull();
+    expect(within(row).getByRole("button", { name: "Retry episode" })).toBeVisible();
+    expect(within(row).queryByRole("link", { name: "Open Settings" })).toBeNull();
+  });
+
+  it("links a missing transcription provider to Settings", async () => {
+    const failed = episode({ status: "failed", error: "Configure a provider.", failureKind: "provider_missing" });
+    request.mockImplementation(async (_method: string, path: string) => ({
+      json: async () => (path.includes("/episodes?") ? { items: [failed], total: 1 } : { ok: true }),
+    }));
+    mount([subscription()]);
+    const row = (await screen.findByText("Understanding tomorrow")).closest("article")!;
+    expect(within(row).getByText("Transcription provider missing")).toBeVisible();
+    expect(within(row).getByRole("link", { name: "Open Settings" })).toHaveAttribute("href", "/settings");
+  });
+
+  it("shows relative episode dates with the full date as a tooltip", async () => {
+    const today = new Date();
+    today.setHours(9, 30, 0, 0);
+    request.mockImplementation(async (_method: string, path: string) => ({
+      json: async () =>
+        path.includes("/episodes?") ? { items: [episode({ publishedAt: today.toISOString() })], total: 1 } : {},
+    }));
+    const { container } = mount([subscription()]);
+    await screen.findByText("Understanding tomorrow");
+    const time = container.querySelector("article time")!;
+    expect(time).toHaveTextContent(/^Today$/);
+    expect(time.getAttribute("title")).toMatch(/2026|\d{4}/);
+    expect(time).toHaveAttribute("dateTime", today.toISOString());
+  });
+
+  it("provides German text for every episode failure label", () => {
+    for (const label of Object.values(podcastFailureLabels)) {
+      expect(germanTranslations[label]).toBeTruthy();
+    }
   });
 
   it("keeps both read and listened markers visible for an episode consumed in both ways", async () => {

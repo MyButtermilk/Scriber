@@ -1173,7 +1173,10 @@ the actual connector DNS results and every redirect must resolve to public
 addresses. A client-local `truststore` TLS context validates certificate chains
 and hostnames using the system policy, including Windows-managed trust. It does
 not replace global SSL behavior or disable certificate checks. `store.py` owns
-subscription/episode state in a separate WAL database.
+subscription/episode state in a separate WAL database, including each
+subscription's cover URL. Covers reach the webview only through the
+authenticated, size- and type-limited local artwork route backed by a bounded
+disk cache, never as remote image URLs.
 `service.py` supervises three concurrent processors and an independent 30-minute
 feed checker, starting after the initial desktop startup window. The first
 subscription queues only its latest episode; subsequent genuinely new episodes

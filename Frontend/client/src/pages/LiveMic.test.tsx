@@ -1,15 +1,19 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LANGUAGE_STORAGE_KEY, LocaleProvider } from "@/i18n";
+import { LANGUAGE_STORAGE_KEY, LocaleProvider, formatFullDateTimeLabel, formatRelativeDateLabel } from "@/i18n";
+import { componentTranslations } from "@/i18n/translations/de/components";
+import { transcriptionTranslations } from "@/i18n/translations/de/transcription";
+import { hotkeyKeyLabels } from "@/lib/hotkey-labels";
 import type { ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { TranscriptionHistoryToolbar } from "@/components/transcription-history-toolbar";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { TranscriptHistoryItem } from "@/lib/api-types";
 import { useBackendActions } from "@/hooks/use-backend-status";
+import { TRANSCRIPT_HISTORY_VIEW_MODE_STORAGE_KEY } from "@/lib/storage-keys";
 import LiveMic from "./LiveMic";
 
-const { start, stop, toast, refresh, socket, history, loadMore } = vi.hoisted(() => ({
+const { start, stop, toast, refresh, socket, history, loadMore, recordingHotkey } = vi.hoisted(() => ({
   start: vi.fn(),
   stop: vi.fn(),
   toast: vi.fn(),
@@ -17,7 +21,9 @@ const { start, stop, toast, refresh, socket, history, loadMore } = vi.hoisted(()
   history: [] as TranscriptHistoryItem[],
   loadMore: vi.fn(),
   socket: { listener: null as ((message: ScriberWebSocketMessage) => void) | null },
+  recordingHotkey: { value: null as { hotkey: string; mode: "toggle" | "push_to_talk" } | null },
 }));
+vi.mock("@/hooks/use-recording-hotkey", () => ({ useRecordingHotkey: () => recordingHotkey.value }));
 vi.mock("@/contexts/WebSocketContext", () => ({
   useSharedWebSocket: (listener: (message: ScriberWebSocketMessage) => void) => {
     socket.listener = listener;
@@ -64,6 +70,7 @@ vi.mock("@tanstack/react-virtual", async (importOriginal) => {
 });
 afterEach(() => {
   history.length = 0;
+  recordingHotkey.value = null;
   vi.unstubAllGlobals();
 });
 beforeEach(() => {
@@ -511,4 +518,103 @@ it("marks failed recordings and never copies a legacy failure message as transcr
     ),
   );
   expect(writeText).not.toHaveBeenCalled();
+});
+
+describe("Live Mic start hint", () => {
+  beforeEach(() => {
+    vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => undefined);
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  });
+
+  it("shows the configured global hotkey as one keycap per key", () => {
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, "en");
+    recordingHotkey.value = { hotkey: "Ctrl + Alt + X", mode: "toggle" };
+    mount();
+    const hint = screen.getByTestId("live-mic-hotkey-hint");
+    expect(Array.from(hint.querySelectorAll("kbd.hotkey-keycap"), (key) => key.textContent)).toEqual([
+      "Ctrl",
+      "Alt",
+      "X",
+    ]);
+    expect(hint).toHaveTextContent(/^Start with Ctrl\s*\+\s*Alt\s*\+\s*X or the microphone button$/);
+    // The start instruction appears once: it is not repeated in the transcript area.
+    expect(screen.queryByText(/global hotkey/)).toBeNull();
+    expect(screen.getByTestId("live-mic-transcript-output")).toHaveTextContent("No speech captured yet.");
+  });
+
+  it("localizes keycap labels and uses hold wording for push-to-talk", () => {
+    const germanCatalog: Record<string, string> = { ...componentTranslations, ...transcriptionTranslations };
+    const german = (source: string) => germanCatalog[source] ?? source;
+    expect(hotkeyKeyLabels("ctrl+shift+space", german)).toEqual(["Strg", "Shift", "Leertaste"]);
+    expect(hotkeyKeyLabels("Ctrl + Meta + F9", german)).toEqual(["Strg", "Win", "F9"]);
+    expect(hotkeyKeyLabels("", german)).toEqual([]);
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, "en");
+    recordingHotkey.value = { hotkey: "Ctrl + Space", mode: "push_to_talk" };
+    mount();
+    expect(screen.getByTestId("live-mic-hotkey-hint")).toHaveTextContent(
+      /^Hold Ctrl\s*\+\s*Space or use the microphone button$/,
+    );
+  });
+
+  it("falls back to the microphone button hint while the hotkey is unknown", () => {
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, "en");
+    mount();
+    expect(screen.queryByTestId("live-mic-hotkey-hint")).toBeNull();
+    expect(screen.getByText("Use the microphone button to start")).toBeInTheDocument();
+  });
+
+  it("hides the hotkey hint once a recording runs", () => {
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, "en");
+    recordingHotkey.value = { hotkey: "ctrl+shift+d", mode: "toggle" };
+    mount();
+    expect(screen.getByTestId("live-mic-hotkey-hint")).toHaveTextContent("Start with");
+    state({ sessionId: "s1", listening: true, recordingState: "recording", status: "Listening", transcribing: false });
+    expect(screen.queryByTestId("live-mic-hotkey-hint")).toBeNull();
+    expect(screen.getByText("Use the microphone button to stop")).toBeInTheDocument();
+  });
+});
+
+it("labels grid recording cards with one relative date and a full timestamp tooltip", () => {
+  window.localStorage.setItem(LANGUAGE_STORAGE_KEY, "en");
+  window.localStorage.setItem(TRANSCRIPT_HISTORY_VIEW_MODE_STORAGE_KEY, "grid");
+  for (const name of ["ResizeObserver", "IntersectionObserver"]) {
+    vi.stubGlobal(
+      name,
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+  }
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+    x: 0,
+    y: 0,
+    top: 0,
+    left: 0,
+    bottom: 600,
+    right: 900,
+    width: 900,
+    height: 600,
+    toJSON: () => ({}),
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(600);
+  const createdAt = new Date().toISOString();
+  history.push({
+    id: "today",
+    title: "Morning note",
+    type: "mic",
+    status: "completed",
+    date: "2026-11-20",
+    duration: "0:42",
+    createdAt,
+  });
+  mount();
+  const date = document.querySelector<HTMLTimeElement>("time.live-recording-date");
+  // One line ("Today, 09:32"), not a separate date and clock.
+  expect(date?.textContent).toBe(formatRelativeDateLabel("en", createdAt));
+  expect(date?.textContent).toMatch(/^Today, /);
+  expect(date?.children).toHaveLength(0);
+  expect(date?.title).toBe(formatFullDateTimeLabel("en", createdAt));
 });

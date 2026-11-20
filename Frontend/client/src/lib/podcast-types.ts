@@ -22,6 +22,10 @@ export interface PodcastSubscription {
   unreadCount: number;
   /** Episodes that are new, unread, or both. */
   attentionCount: number;
+  /** A cover is known; load it from /api/podcasts/artwork/{id}. Absent on older backends. */
+  hasArtwork?: boolean;
+  /** Opaque token that changes with the cover; appended as ?v= so a new cover gets a new image URL. */
+  artworkVersion?: string;
 }
 
 export interface PodcastLibrary {
@@ -53,7 +57,12 @@ export interface PodcastEpisode {
   readAt: string;
   playedAt: string;
   isUnread: boolean;
+  /** Why a failed episode failed; empty otherwise. Absent on older backends. */
+  failureKind?: PodcastFailureKind | "";
 }
+
+export type PodcastFailureKind =
+  "too_large" | "provider_missing" | "storage_full" | "download" | "transcription" | "summary" | "processing";
 
 export interface PodcastEpisodePage {
   items: PodcastEpisode[];

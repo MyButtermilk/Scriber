@@ -2,8 +2,8 @@ import type { ReactNode } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { LocaleProvider, LANGUAGE_STORAGE_KEY } from "@/i18n";
-import type { TranscriptHistoryItem } from "@/lib/api-types";
+import { LocaleProvider, LANGUAGE_STORAGE_KEY, formatFullDateTimeLabel, formatRelativeDateLabel } from "@/i18n";
+import type { SettingsResponse, TranscriptHistoryItem } from "@/lib/api-types";
 import FileTranscribe from "./FileTranscribe";
 
 const { history, request, navigate, toast, view, historyInputs } = vi.hoisted(() => ({
@@ -62,7 +62,7 @@ vi.mock("@/components/virtual-transcript-history", () => ({
   },
 }));
 
-function mount(item: Partial<TranscriptHistoryItem>) {
+function mount(item: Partial<TranscriptHistoryItem>, settings: Partial<SettingsResponse> = {}) {
   history.push({
     id: "failed-file",
     title: "A failed uploaded recording.mp4",
@@ -74,7 +74,7 @@ function mount(item: Partial<TranscriptHistoryItem>) {
     ...item,
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(["/api/settings"], {});
+  client.setQueryData(["/api/settings"], settings);
   const content = () => (
     <QueryClientProvider client={client}>
       <LocaleProvider>
@@ -159,6 +159,62 @@ describe("File transcription recovery", () => {
     expect(screen.queryByRole("button", { name: "Retry transcription" })).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it.each(["grid", "list"] as const)("distinguishes audio and video files in the %s view", (mode) => {
+    view.mode = mode;
+    history.push(
+      { id: "talk", title: "Keynote.MOV", type: "file", status: "completed", date: "2026-10-02", duration: "1:00" },
+      { id: "call", title: "Call.m4a", type: "file", status: "completed", date: "2026-10-02", duration: "1:00" },
+    );
+    mount({ status: "completed", title: "Renamed recording" });
+    expect(screen.getByRole("img", { name: "Video file" })).toHaveAttribute("data-media-kind", "video");
+    expect(screen.getByRole("img", { name: "Audio file" })).toHaveAttribute("data-media-kind", "audio");
+    // The ready tile carries the section accent, not a hard-coded primary tint.
+    expect(screen.getByRole("img", { name: "Video file" }).closest(".file-history-icon")).toHaveClass(
+      "file-history-icon--media",
+    );
+  });
+
+  it("dates history cards relatively and keeps the full timestamp in the tooltip", () => {
+    const createdAt = new Date().toISOString();
+    mount({ status: "completed", createdAt });
+    const date = screen.getByText(formatRelativeDateLabel("en", createdAt));
+    expect(date.tagName).toBe("TIME");
+    expect(date).toHaveAttribute("title", formatFullDateTimeLabel("en", createdAt));
+  });
+
+  it("summarizes upload limits inside the card with spaced units and provider details in a tooltip", async () => {
+    mount(
+      { status: "completed" },
+      {
+        fileUploadLimits: {
+          provider: "mai",
+          providerLabel: "Microsoft MAI Transcribe",
+          usesDirectProviderLimit: true,
+          audioMaxBytes: 2 * 1024 * 1024 * 1024,
+          audioMaxLabel: "2GB",
+          rawAudioIngestMaxBytes: 2 * 1024 * 1024 * 1024,
+          rawAudioIngestMaxLabel: "2GB",
+          videoMaxBytes: null,
+          videoMaxLabel: null,
+          compressionThresholdBytes: 50 * 1024 * 1024,
+          compressionThresholdLabel: "50MB",
+        },
+      },
+    );
+    const upload = screen.getByRole("button", { name: "Upload file for transcription" });
+    const summary = screen.getByText("Up to 2 GB · large files are optimized automatically");
+    expect(upload).toContainElement(summary);
+    expect(screen.queryByText(/Microsoft MAI Transcribe/)).toBeNull();
+    const openPicker = vi.spyOn(HTMLInputElement.prototype, "click");
+    const info = screen.getByRole("button", { name: "Upload limits" });
+    fireEvent.click(info);
+    const tooltip = await screen.findByRole("tooltip");
+    // The info button sits inside the dropzone but must not open the file picker.
+    expect(openPicker).not.toHaveBeenCalled();
+    expect(tooltip).toHaveTextContent("Microsoft MAI Transcribe accepts audio up to 2 GB");
+    expect(tooltip).toHaveTextContent("Files over 50 MB are optimized automatically before transcription.");
   });
 
   it("retries only the summary when transcription succeeded", async () => {

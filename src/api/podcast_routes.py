@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
+from hashlib import sha256
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -55,6 +56,8 @@ class PodcastServicePort(Protocol):
 
     async def remove_download(self, identifier: str) -> bool: ...
 
+    async def artwork(self, identifier: str) -> tuple[bytes, str] | None: ...
+
 
 APP_PODCASTS: web.AppKey[PodcastServicePort] = web.AppKey("podcasts", PodcastServicePort)
 _ID = re.compile(r"^[0-9a-f]{32}$")
@@ -99,7 +102,40 @@ def _subscription(row: dict[str, Any]) -> dict[str, Any]:
         "newCount": row["new_count"],
         "unreadCount": row["unread_count"],
         "attentionCount": row["attention_count"],
+        # The remote cover URL stays in the backend; the UI loads the cached
+        # copy from /api/podcasts/artwork/{id}?v={artworkVersion}. The version
+        # changes with the cover URL, so a new cover gets a new image URL.
+        "hasArtwork": bool(row.get("artwork_url")),
+        "artworkVersion": artwork_version(row.get("artwork_url") or ""),
     }
+
+
+# Bounded episode failure messages mapped to a stable category the UI labels.
+_FAILURE_KINDS = {
+    "This podcast episode exceeds the download size limit.": "too_large",
+    "This episode exceeds the selected provider's audio size limit.": "too_large",
+    "Configure a transcription provider in Settings before processing podcast episodes.": "provider_missing",
+    "Podcast download storage is full. Remove an older download and retry.": "storage_full",
+    "There is not enough free disk space for a podcast download.": "storage_full",
+    "Podcast transcription failed. Open the transcript for details or retry the episode.": "transcription",
+    "The linked transcript is unavailable. Retry this episode to create it again.": "transcription",
+    "The transcript is ready, but its summary failed. Check the summary model and retry.": "summary",
+    "The podcast host is currently unavailable. Try again later.": "download",
+    "The podcast host returned an invalid redirect.": "download",
+    "The podcast host redirected too many times.": "download",
+    "The podcast host returned unsupported compressed data.": "download",
+    "The podcast host returned an empty audio file.": "download",
+    "The podcast host does not resolve to a public address.": "download",
+    "Only public HTTP or HTTPS podcast URLs are supported.": "download",
+    "Enter a valid public podcast feed URL.": "download",
+}
+
+
+def episode_failure_kind(row: dict[str, Any]) -> str:
+    """Category of a failed episode; empty unless the episode failed."""
+    if row["status"] != "failed":
+        return ""
+    return _FAILURE_KINDS.get(row["error"], "processing")
 
 
 def _episode(row: dict[str, Any]) -> dict[str, Any]:
@@ -113,6 +149,7 @@ def _episode(row: dict[str, Any]) -> dict[str, Any]:
         "transcriptId": row["transcript_id"],
         "downloadedBytes": row["downloaded_bytes"],
         "error": row["error"],
+        "failureKind": episode_failure_kind(row),
         "isNew": not row["seen_at"],
         "readAt": row["read_at"],
         "playedAt": row["played_at"],
@@ -257,6 +294,33 @@ async def podcast_audio(request: web.Request) -> web.StreamResponse:
         upstream.close()
 
 
+_ARTWORK_VERSION = re.compile(r"^[0-9a-f]{12}$")
+
+
+def artwork_version(url: str) -> str:
+    """Opaque, URL-derived cache-busting token; never reveals the remote URL."""
+    return sha256(url.encode()).hexdigest()[:12] if url else ""
+
+
+async def podcast_artwork(request: web.Request) -> web.Response:
+    # Covers arrive through the authenticated local backend because the
+    # desktop CSP only admits same-origin and loopback images.
+    found = await request.app[APP_PODCASTS].artwork(_id(request))
+    if found is None:
+        raise web.HTTPNotFound()
+    payload, content_type = found
+    # Only a versioned URL may be cached: the subscription route is stable while
+    # a feed refresh can change its cover. Unversioned requests (search results)
+    # revalidate, which is cheap because the backend serves its disk cache.
+    versioned = bool(_ARTWORK_VERSION.match(request.query.get("v", "")))
+    cache_control = "private, max-age=31536000, immutable" if versioned else "private, no-cache"
+    return web.Response(
+        body=payload,
+        content_type=content_type,
+        headers={"Cache-Control": cache_control, "X-Content-Type-Options": "nosniff"},
+    )
+
+
 async def podcast_remove_download(request: web.Request) -> web.Response:
     if not await request.app[APP_PODCASTS].remove_download(_id(request)):
         raise web.HTTPNotFound()
@@ -325,6 +389,7 @@ def register_podcast_routes(app: web.Application, *, factory: Callable[[], Podca
     app.cleanup_ctx.append(lifecycle)
     app.router.add_get("/api/podcasts", guarded(podcast_library))
     app.router.add_get("/api/podcasts/search", guarded(podcast_search))
+    app.router.add_get("/api/podcasts/artwork/{id}", guarded(podcast_artwork))
     app.router.add_post("/api/podcasts/subscriptions", guarded(podcast_subscribe))
     app.router.add_post("/api/podcasts/refresh", guarded(podcast_refresh))
     app.router.add_patch("/api/podcasts/subscriptions/{id}", guarded(podcast_subscription_update))

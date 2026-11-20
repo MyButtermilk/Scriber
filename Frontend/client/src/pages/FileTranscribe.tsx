@@ -1,6 +1,7 @@
 import { useCallback, useState, useEffect, memo, useMemo, useRef, useSyncExternalStore } from "react";
 import { useDropzone } from "react-dropzone";
-import { AlertCircle, UploadCloud, FileAudio, XCircle, Square, ArrowRight } from "lucide-react";
+import { AlertCircle, UploadCloud, FileAudio, FileVideoCamera, XCircle, Square, ArrowRight } from "lucide-react";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 import { Card } from "@/components/ui/card";
 import { FileImportQueue } from "@/components/file-import-queue";
 import { Button } from "@/components/ui/button";
@@ -97,7 +98,89 @@ function localizedProcessingStep(
   return t(source);
 }
 
+const AUDIO_EXTENSIONS = new Set([".mp3", ".m4a", ".wav", ".ogg", ".flac", ".aac", ".opus", ".wma", ".aif", ".aiff"]);
+
+type FileMediaKind = "audio" | "video" | "unknown";
+
+// File records keep the original file name as their title; the source path is
+// never sent to the client, so the extension is the only reliable media hint.
+function fileMediaKind(item: Pick<TranscriptHistoryItem, "title">): FileMediaKind {
+  const ext = getFileExtension(String(item.title || "").trim());
+  if (VIDEO_EXTENSIONS.has(ext)) return "video";
+  if (AUDIO_EXTENSIONS.has(ext)) return "audio";
+  return "unknown";
+}
+
+function FileMediaIcon({ item, className }: { item: Pick<TranscriptHistoryItem, "title">; className: string }) {
+  const { t } = useI18n();
+  const kind = fileMediaKind(item);
+  if (kind === "unknown") {
+    return <FileAudio className={className} aria-hidden="true" />;
+  }
+  const Icon = kind === "video" ? FileVideoCamera : FileAudio;
+  return (
+    <Icon
+      className={className}
+      role="img"
+      aria-label={kind === "video" ? t("Video file") : t("Audio file")}
+      data-media-kind={kind}
+    />
+  );
+}
+
+function formatByteLimit(bytes: number, formatNumber: ReturnType<typeof useI18n>["formatNumber"]): string {
+  const gib = 1024 * 1024 * 1024;
+  if (bytes >= gib) return `${formatNumber(bytes / gib, { maximumFractionDigits: 1 })} GB`;
+  return `${formatNumber(bytes / (1024 * 1024), { maximumFractionDigits: 0 })} MB`;
+}
+
+// File records reuse `channel` for a compact size label such as "12.3MB".
+function formatFileSizeLabel(value: string, formatNumber: ReturnType<typeof useI18n>["formatNumber"]): string {
+  const match = /^(\d+(?:\.\d+)?)\s*(B|KB|MB|GB)$/i.exec(value.trim());
+  if (!match) return value;
+  return `${formatNumber(Number(match[1]), { maximumFractionDigits: 1 })} ${match[2].toUpperCase()}`;
+}
+
 type FileHistoryStatus = "processing" | "failed" | "summary_failed" | "stopped" | "ready";
+
+// Tile tones live in capture-polish.css: ready tiles carry the section accent,
+// status tiles keep their semantic colors.
+const FILE_STATUS_TILE_CLASSES: Record<FileHistoryStatus, string> = {
+  failed: "file-history-icon--danger",
+  summary_failed: "file-history-icon--danger",
+  processing: "file-history-icon--progress",
+  stopped: "file-history-icon--stopped",
+  ready: "file-history-icon--media",
+};
+
+function FileHistoryIcon({
+  item,
+  status,
+  size,
+}: {
+  item: TranscriptHistoryItem;
+  status: FileHistoryStatus;
+  size: "list" | "grid";
+}) {
+  const iconClassName = size === "grid" ? "h-6 w-6" : "h-5 w-5";
+  return (
+    <div
+      className={`file-history-icon flex shrink-0 items-center justify-center ${
+        size === "grid" ? "h-12 w-12 rounded-[13px]" : "h-10 w-10 rounded-[12px]"
+      } ${FILE_STATUS_TILE_CLASSES[status]}`}
+    >
+      {status === "failed" ? (
+        <XCircle className={iconClassName} aria-hidden="true" />
+      ) : status === "summary_failed" ? (
+        <AlertCircle className={iconClassName} aria-hidden="true" />
+      ) : status === "stopped" ? (
+        <Square className={iconClassName} aria-hidden="true" />
+      ) : (
+        <FileMediaIcon item={item} className={`${iconClassName} stroke-[1.65px]`} />
+      )}
+    </div>
+  );
+}
 
 function fileHistoryStatus(item: TranscriptHistoryItem): FileHistoryStatus {
   if (item.status === "failed") return "failed";
@@ -131,12 +214,16 @@ const FileCard = memo(function FileCard({
   onNavigate,
   onHover,
 }: FileCardProps) {
-  const { formatDate, formatLegacyDate, formatNumber, t } = useI18n();
+  const { formatFullDateTime, formatLegacyDate, formatNumber, formatRelativeDate, t } = useI18n();
   const deletingClasses = isDeleting ? "pointer-events-none opacity-[0.55] scale-[0.985]" : "opacity-100 scale-100";
   const historyStatus = fileHistoryStatus(item);
-  const dateLabel = item.createdAt
-    ? formatDate(item.createdAt, { dateStyle: "medium", timeStyle: "short" })
-    : formatLegacyDate(item.date);
+  const dateLabel = (item.createdAt && formatRelativeDate(item.createdAt)) || formatLegacyDate(item.date);
+  const dateTitle = (item.createdAt && formatFullDateTime(item.createdAt)) || dateLabel;
+  const dateElement = (
+    <time dateTime={item.createdAt} title={dateTitle} className="tabular-nums">
+      {dateLabel}
+    </time>
+  );
 
   return (
     <div className="w-full">
@@ -149,29 +236,7 @@ const FileCard = memo(function FileCard({
           // List view
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 flex-1 items-center gap-4">
-              <div
-                className={`file-history-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] ${
-                  historyStatus === "failed" || historyStatus === "summary_failed"
-                    ? "bg-red-50 dark:bg-red-900/20 text-red-600"
-                    : historyStatus === "processing"
-                      ? "bg-blue-50 dark:bg-blue-900/20 text-blue-600"
-                      : historyStatus === "stopped"
-                        ? "bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600"
-                        : "bg-primary/[0.08] text-primary"
-                }`}
-              >
-                {historyStatus === "failed" ? (
-                  <XCircle className="w-5 h-5" />
-                ) : historyStatus === "summary_failed" ? (
-                  <AlertCircle className="w-5 h-5" />
-                ) : historyStatus === "processing" ? (
-                  <FileAudio className="h-5 w-5" aria-hidden="true" />
-                ) : historyStatus === "stopped" ? (
-                  <Square className="w-5 h-5" />
-                ) : (
-                  <FileAudio className="w-5 h-5" />
-                )}
-              </div>
+              <FileHistoryIcon item={item} status={historyStatus} size="list" />
               <div className="min-w-0 flex-1">
                 <h3>
                   <button
@@ -186,11 +251,11 @@ const FileCard = memo(function FileCard({
                   </button>
                 </h3>
                 <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
-                  {item.channel && <span>{item.channel}</span>}
+                  {item.channel && <span>{formatFileSizeLabel(item.channel, formatNumber)}</span>}
                   {item.channel && <span>•</span>}
                   <span>{item.duration}</span>
                   <span>•</span>
-                  <span>{dateLabel}</span>
+                  {dateElement}
                 </div>
                 {(historyStatus === "failed" || historyStatus === "summary_failed") && (
                   <p className="mt-1 select-text break-all font-mono text-xs text-muted-foreground">
@@ -251,29 +316,7 @@ const FileCard = memo(function FileCard({
           // Grid view
           <div className="flex flex-col h-full">
             <div className="flex items-start justify-between gap-3 mb-3">
-              <div
-                className={`file-history-icon flex h-12 w-12 shrink-0 items-center justify-center rounded-[13px] ${
-                  historyStatus === "failed" || historyStatus === "summary_failed"
-                    ? "bg-red-50 dark:bg-red-900/20 text-red-600"
-                    : historyStatus === "processing"
-                      ? "bg-blue-50 dark:bg-blue-900/20 text-blue-600"
-                      : historyStatus === "stopped"
-                        ? "bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600"
-                        : "bg-primary/[0.08] text-primary"
-                }`}
-              >
-                {historyStatus === "failed" ? (
-                  <XCircle className="w-6 h-6" />
-                ) : historyStatus === "summary_failed" ? (
-                  <AlertCircle className="w-6 h-6" />
-                ) : historyStatus === "processing" ? (
-                  <FileAudio className="h-5 w-5" aria-hidden="true" />
-                ) : historyStatus === "stopped" ? (
-                  <Square className="w-6 h-6" />
-                ) : (
-                  <FileAudio className="w-6 h-6" />
-                )}
-              </div>
+              <FileHistoryIcon item={item} status={historyStatus} size="grid" />
               <div className="flex min-w-0 flex-1 items-center justify-end gap-1">
                 {historyStatus === "processing" ? (
                   <Badge
@@ -327,7 +370,7 @@ const FileCard = memo(function FileCard({
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mt-auto">
               <span>{item.duration}</span>
               <span>•</span>
-              <span>{dateLabel}</span>
+              {dateElement}
             </div>
             <div className="flex flex-wrap items-center justify-end mt-2 gap-1">
               {historyStatus === "failed" && <FileTranscriptRetryButton transcriptId={item.id} compact />}
@@ -403,30 +446,32 @@ export default function FileTranscribe() {
   const fileUploadLimits = settingsQuery.data?.fileUploadLimits;
   const compressionThresholdBytes =
     Number(fileUploadLimits?.compressionThresholdBytes) || DEFAULT_COMPRESSION_THRESHOLD_BYTES;
-  const uploadHint = useMemo(() => {
-    if (!fileUploadLimits) {
-      return t("Video: only the extracted audio counts towards the transcription limit.");
+  // A short, provider-neutral summary lives in the upload card; the provider
+  // specifics stay one tap away in its info tooltip.
+  const uploadLimits = useMemo(() => {
+    const thresholdLabel = formatByteLimit(compressionThresholdBytes, formatNumber);
+    const audioMaxBytes = Number(fileUploadLimits?.audioMaxBytes) || 0;
+    const audioLimitLabel = audioMaxBytes > 0 ? formatByteLimit(audioMaxBytes, formatNumber) : "";
+    const summary = audioLimitLabel
+      ? t("Up to {{limit}} · large files are optimized automatically", { limit: audioLimitLabel })
+      : t("Large files are optimized automatically");
+
+    const details: string[] = [];
+    if (fileUploadLimits) {
+      const providerLabel = fileUploadLimits.providerLabel || t("Selected provider");
+      const limit = audioLimitLabel || fileUploadLimits.audioMaxLabel || t("unknown");
+      details.push(
+        fileUploadLimits.usesDirectProviderLimit
+          ? t("{{provider}} accepts audio up to {{limit}}", { provider: providerLabel, limit })
+          : t("{{provider}} processes files in the app up to {{limit}}", { provider: providerLabel, limit }),
+      );
     }
-
-    const providerLabel = fileUploadLimits.providerLabel || t("Selected provider");
-    const compressionThresholdLabel = fileUploadLimits.compressionThresholdLabel || "50MB";
-    const audioLimitLabel = fileUploadLimits.audioMaxLabel || t("unknown");
-
-    const audioHint = fileUploadLimits.usesDirectProviderLimit
-      ? t("{{provider}} accepts audio up to {{limit}}", { provider: providerLabel, limit: audioLimitLabel })
-      : t("{{provider}} processes files in the app up to {{limit}}", {
-          provider: providerLabel,
-          limit: audioLimitLabel,
-        });
-
-    return t(
-      "{{audioHint}} · video: the limit applies after audio extraction · files over {{threshold}} are optimized automatically",
-      {
-        audioHint,
-        threshold: compressionThresholdLabel,
-      },
+    details.push(t("Video: only the extracted audio counts towards the transcription limit."));
+    details.push(
+      t("Files over {{threshold}} are optimized automatically before transcription.", { threshold: thresholdLabel }),
     );
-  }, [fileUploadLimits, t]);
+    return { summary, details };
+  }, [compressionThresholdBytes, fileUploadLimits, formatNumber, t]);
   const rawAudioLimit = fileUploadLimits?.rawAudioIngestMaxBytes || 2 * 1024 * 1024 * 1024;
 
   useEffect(() => {
@@ -692,12 +737,16 @@ export default function FileTranscribe() {
   );
 
   return (
-    <div className="app-page-shell transcription-page file-page px-4 py-5 md:px-6 md:py-6" data-page-shell="file">
+    <div
+      className="app-page-shell transcription-page file-page px-4 py-5 md:px-6 md:py-6"
+      data-page-accent="file"
+      data-page-shell="file"
+    >
       <PageIntro
         eyebrow={t("Media import")}
         title={t("File transcription")}
-        description={t("Drop in audio or video; Scriber prepares, transcribes, and organizes it.")}
-        sticky={false}
+        description={t("Drop in audio or video; Scriber prepares, transcribes, and summarizes it in a structured way.")}
+        accent="file"
       />
 
       {/* The picker remains usable while imports run in the shared queue. */}
@@ -707,13 +756,13 @@ export default function FileTranscribe() {
           "aria-label": t("Upload file for transcription"),
           "aria-describedby": "file-upload-formats file-upload-limits",
         })}
-        className={`file-upload-shell mb-5 cursor-pointer group ${isDragActive ? "is-drag-active" : ""}`}
+        className={`file-upload-shell mb-6 cursor-pointer group ${isDragActive ? "is-drag-active" : ""}`}
       >
         <input {...getInputProps()} />
         <div
           className={`file-upload-core flex items-center gap-5 p-6 md:p-7 ${isUploading ? "file-upload-compact" : "flex-col justify-center text-center"}`}
         >
-          <div className="file-upload-mark flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-primary">
+          <div className="file-upload-mark flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl">
             <UploadCloud className="h-7 w-7 stroke-[1.5px]" aria-hidden="true" />
           </div>
           <div className="min-w-0 space-y-1.5">
@@ -723,7 +772,26 @@ export default function FileTranscribe() {
             <p id="file-upload-formats" className="text-xs leading-5 text-muted-foreground">
               {t("MP3, M4A, WAV, FLAC, MP4, MOV and WebM · multiple files supported")}
             </p>
-            <span className="file-upload-cta mt-2 inline-flex h-10 items-center gap-2 rounded-[11px] px-4 text-xs font-semibold text-primary">
+            <p
+              className={`file-upload-limits flex items-center gap-1 text-[11.5px] leading-5 text-muted-foreground ${isUploading ? "" : "justify-center"}`}
+            >
+              <span id="file-upload-limits">{uploadLimits.summary}</span>
+              {/* The tooltip lives inside the dropzone; keep its clicks from opening the picker. */}
+              <span
+                className="inline-flex"
+                onClick={(event) => event.stopPropagation()}
+                onKeyDown={(event) => event.stopPropagation()}
+              >
+                <InfoTooltip compact label={t("Upload limits")}>
+                  <ul className="file-upload-limits-details">
+                    {uploadLimits.details.map((detail) => (
+                      <li key={detail}>{detail}</li>
+                    ))}
+                  </ul>
+                </InfoTooltip>
+              </span>
+            </p>
+            <span className="file-upload-cta ui-cta mt-2 inline-flex h-10 items-center gap-2 px-4 text-xs font-semibold">
               {t("Browse files")}
               <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
             </span>
@@ -731,9 +799,6 @@ export default function FileTranscribe() {
           </div>
         </div>
       </div>
-      <p id="file-upload-limits" className="mb-6 px-1 text-xs leading-5 text-muted-foreground">
-        {uploadHint}
-      </p>
       {dropError && (
         <ErrorShake active trigger={dropError}>
           <div
@@ -757,7 +822,7 @@ export default function FileTranscribe() {
                 <h2 id="file-processing-heading" className="font-heading text-[17px] font-semibold tracking-[-0.015em]">
                   {t("Processing queue")}
                 </h2>
-                <span className="transcription-history-count inline-flex h-6 min-w-6 items-center justify-center rounded-[8px] px-2 font-mono text-ui-micro font-semibold tabular-nums text-muted-foreground">
+                <span className="section-count-badge inline-flex h-6 min-w-6 items-center justify-center rounded-full px-2 text-[11px] font-semibold tabular-nums text-muted-foreground">
                   {formatNumber(processingItems.length)}
                 </span>
               </div>
@@ -769,13 +834,13 @@ export default function FileTranscribe() {
           {processingItems.map((item) => (
             <Card key={item.id} className="file-processing-card perf-scroll-item rounded-[20px] p-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
-                <div className="file-history-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] text-primary">
-                  <FileAudio className="h-5 w-5" aria-hidden="true" />
+                <div className="file-history-icon file-history-icon--media flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px]">
+                  <FileMediaIcon item={item} className="h-5 w-5 stroke-[1.65px]" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <span className="block truncate font-heading text-[14px] font-medium">{item.title}</span>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {item.channel ? t(item.channel) : t("Preparing your transcript")}
+                    {item.channel ? formatFileSizeLabel(t(item.channel), formatNumber) : t("Preparing your transcript")}
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 self-stretch sm:flex-nowrap sm:self-auto">

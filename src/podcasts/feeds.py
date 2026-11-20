@@ -34,6 +34,14 @@ MAX_FEED_EPISODES = 200
 SHARED_CONNECTIONS = 3
 # Long-lived listening streams use their own pool so they cannot starve it.
 PLAYBACK_CONNECTIONS = 4
+# Cover artwork bursts (a whole library or search page) use their own small,
+# cookie-less pool so they never delay feed refreshes or episode downloads.
+ARTWORK_CONNECTIONS = 2
+MAX_ARTWORK_BYTES = 2 * 1024 * 1024
+MAX_SEARCH_ARTWORK = 1000
+# Artwork is served from the local backend, so the type is checked twice: the
+# declared header must be allowlisted and the bytes must carry its signature.
+ARTWORK_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 _ITUNES = "{http://www.itunes.com/dtds/podcast-1.0.dtd}"
 _AUDIO_TYPES = {
     "audio/mpeg": ".mp3",
@@ -114,6 +122,37 @@ class PodcastFeed:
     description: str
     website_url: str
     episodes: tuple[FeedEpisode, ...]
+    # Optional public HTTPS cover image; empty when the feed declares none.
+    artwork_url: str = ""
+
+
+def artwork_url(value: object) -> str:
+    """Return a public HTTPS image URL, or "" for anything else."""
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    try:
+        candidate = public_url(value.strip())
+    except PodcastError:
+        return ""
+    return candidate if urlsplit(candidate).scheme == "https" else ""
+
+
+def artwork_type(payload: bytes) -> str:
+    """Identify an allowlisted image by its signature, or return ""."""
+    if payload.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if len(payload) >= 12 and payload[:4] == b"RIFF" and payload[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def _feed_artwork(channel: ET.Element) -> str:
+    image = channel.find(f"{_ITUNES}image")
+    if image is not None and (found := artwork_url(image.get("href", ""))):
+        return found
+    return artwork_url(channel.findtext("image/url", ""))
 
 
 def _plain(value: str, limit: int = 1600) -> str:
@@ -196,6 +235,7 @@ def parse_feed(payload: bytes) -> PodcastFeed:
         _plain(channel.findtext("description", "")),
         website,
         tuple(episodes[:MAX_FEED_EPISODES]),
+        _feed_artwork(channel),
     )
 
 
@@ -210,12 +250,16 @@ class PodcastHttp:
     def __init__(self) -> None:
         self._session: aiohttp.ClientSession | None = None
         self._stream_session: aiohttp.ClientSession | None = None
+        self._artwork_session: aiohttp.ClientSession | None = None
+        # Directory artwork of recent search results, keyed by result ID (which
+        # equals the future subscription ID). The URL never reaches the UI.
+        self._search_artwork: dict[str, str] = {}
         self._search_lock = asyncio.Lock()
         self._last_search = 0.0
         self._cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
 
     @staticmethod
-    def _new_session(*, limit: int) -> aiohttp.ClientSession:
+    def _new_session(*, limit: int, cookies: bool = True) -> aiohttp.ClientSession:
         # Use the OS certificate policy, including managed Windows trust,
         # without changing TLS settings for unrelated provider clients.
         tls = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -225,6 +269,8 @@ class PodcastHttp:
             headers={"User-Agent": "Scriber-Podcasts/1.0", "Accept-Encoding": "identity"},
             trust_env=False,
             auto_decompress=False,
+            # None keeps aiohttp's default jar for the existing pools.
+            cookie_jar=None if cookies else aiohttp.DummyCookieJar(),
         )
 
     def _client(self) -> aiohttp.ClientSession:
@@ -237,19 +283,35 @@ class PodcastHttp:
             self._stream_session = self._new_session(limit=PLAYBACK_CONNECTIONS)
         return self._stream_session
 
+    def _artwork_client(self) -> aiohttp.ClientSession:
+        if self._artwork_session is None:
+            self._artwork_session = self._new_session(limit=ARTWORK_CONNECTIONS, cookies=False)
+        return self._artwork_session
+
     async def _response(
-        self, url: str, *, media: bool = False, streaming: bool = False, range_header: str | None = None
+        self,
+        url: str,
+        *,
+        media: bool = False,
+        streaming: bool = False,
+        range_header: str | None = None,
+        artwork: bool = False,
     ) -> aiohttp.ClientResponse:
         current = public_url(url)
-        client = self._stream_client() if streaming else self._client()
+        if artwork and urlsplit(current).scheme != "https":
+            raise PodcastError("Podcast artwork must use HTTPS.")
+        client = self._stream_client() if streaming else self._artwork_client() if artwork else self._client()
+        timeout = (
+            aiohttp.ClientTimeout(total=20, connect=10, sock_read=10)
+            if artwork
+            else aiohttp.ClientTimeout(total=None if streaming else (900 if media else 45), connect=15, sock_read=30)
+        )
         for _ in range(6):
             response = await client.get(
                 current,
                 allow_redirects=False,
                 headers={"Range": range_header} if range_header else {},
-                timeout=aiohttp.ClientTimeout(
-                    total=None if streaming else (900 if media else 45), connect=15, sock_read=30
-                ),
+                timeout=timeout,
             )
             if response.status in {301, 302, 303, 307, 308}:
                 target = response.headers.get("Location", "")
@@ -257,6 +319,8 @@ class PodcastHttp:
                 if not target:
                     raise PodcastError("The podcast host returned an invalid redirect.")
                 current = public_url(urljoin(current, target))
+                if artwork and urlsplit(current).scheme != "https":
+                    raise PodcastError("Podcast artwork must use HTTPS.")
                 continue
             if response.status not in ({200, 206, 416} if streaming else {200}):
                 response.release()
@@ -285,6 +349,34 @@ class PodcastHttp:
                 if len(content) > MAX_FEED_BYTES:
                     raise PodcastError("The podcast feed is too large.")
             return bytes(content)
+        finally:
+            response.release()
+
+    def search_artwork(self, identifier: str) -> str:
+        """Artwork that a recent directory search reported for this result ID."""
+        return self._search_artwork.get(identifier, "")
+
+    async def artwork(self, url: str) -> tuple[bytes, str]:
+        """Fetch one bounded cover image over HTTPS without cookies.
+
+        Returns the bytes and their verified content type. Only JPEG, PNG and
+        WebP are accepted, and the declared type must match the signature.
+        """
+        response = await self._response(url, artwork=True)
+        try:
+            declared = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if declared not in ARTWORK_TYPES:
+                raise PodcastError("The podcast artwork is not a supported image.")
+            if response.content_length is not None and response.content_length > MAX_ARTWORK_BYTES:
+                raise PodcastError("The podcast artwork is too large.")
+            content = bytearray()
+            async for chunk in response.content.iter_chunked(64 * 1024):
+                content.extend(chunk)
+                if len(content) > MAX_ARTWORK_BYTES:
+                    raise PodcastError("The podcast artwork is too large.")
+            if artwork_type(bytes(content)) != declared:
+                raise PodcastError("The podcast artwork is not a supported image.")
+            return bytes(content), declared
         finally:
             response.release()
 
@@ -321,9 +413,16 @@ class PodcastHttp:
                     feed_url = public_url(item.get("feedUrl", ""))
                 except PodcastError:
                     continue
+                identifier = sha256(feed_url.encode()).hexdigest()[:32]
+                cover = artwork_url(item.get("artworkUrl600")) or artwork_url(item.get("artworkUrl100"))
+                if cover:
+                    self._search_artwork.pop(identifier, None)
+                    while len(self._search_artwork) >= MAX_SEARCH_ARTWORK:
+                        self._search_artwork.pop(next(iter(self._search_artwork)))
+                    self._search_artwork[identifier] = cover
                 results.append(
                     {
-                        "id": sha256(feed_url.encode()).hexdigest()[:32],
+                        "id": identifier,
                         "title": _plain(str(item.get("collectionName", "")), 240),
                         "author": _plain(str(item.get("artistName", "")), 240),
                         "feedUrl": feed_url,
@@ -358,11 +457,15 @@ class PodcastHttp:
             partial.unlink(missing_ok=True)
 
     async def close(self) -> None:
-        session, stream_session = self._session, self._stream_session
-        self._session = self._stream_session = None
+        session, stream_session, artwork_session = self._session, self._stream_session, self._artwork_session
+        self._session = self._stream_session = self._artwork_session = None
         try:
             if stream_session is not None:
                 await stream_session.close()
         finally:
-            if session is not None:
-                await session.close()
+            try:
+                if artwork_session is not None:
+                    await artwork_session.close()
+            finally:
+                if session is not None:
+                    await session.close()

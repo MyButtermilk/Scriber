@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { LayoutGrid, LayoutList } from "lucide-react";
 
 import { TranscriptHistorySearch } from "@/components/transcript-history-search";
+import { SectionHeading } from "@/components/ui/section-heading";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
@@ -88,18 +89,12 @@ export function TranscriptionHistoryToolbar({
         className,
       )}
     >
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2.5">
-          <h2 className="font-heading text-[20px] font-semibold tracking-[-0.02em] text-foreground">{title}</h2>
-          <span
-            className="transcription-history-count inline-flex h-6 min-w-6 items-center justify-center rounded-[8px] px-2 font-mono text-ui-micro font-semibold tabular-nums text-muted-foreground"
-            aria-label={`${formattedTotal} ${itemLabel}`}
-          >
-            {formattedTotal}
-          </span>
-        </div>
-        <p className="mt-1 max-w-[58ch] text-pretty text-[12px] leading-4 text-muted-foreground">{description}</p>
-      </div>
+      <SectionHeading
+        title={title}
+        count={formattedTotal}
+        countLabel={`${formattedTotal} ${itemLabel}`}
+        description={description}
+      />
 
       <div className="transcription-history-controls flex w-full min-w-0 items-center gap-2 lg:w-auto">
         <TranscriptHistorySearch

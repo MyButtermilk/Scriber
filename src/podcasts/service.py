@@ -8,6 +8,8 @@ import shutil
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from dataclasses import replace
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -17,15 +19,29 @@ from loguru import logger
 
 from src.core.logging_setup import emit_event
 from src.core.ws_contracts import podcast_episode_ready_event, podcast_episodes_discovered_event
-from src.podcasts.feeds import MAX_AUDIO_BYTES, PodcastError, PodcastHttp, public_url
+from src.podcasts.feeds import (
+    ARTWORK_TYPES,
+    MAX_ARTWORK_BYTES,
+    MAX_AUDIO_BYTES,
+    PodcastError,
+    PodcastHttp,
+    artwork_type,
+    public_url,
+)
 from src.podcasts.processor import PodcastProcessor
-from src.podcasts.store import PodcastStore
+from src.podcasts.store import PodcastStore, subscription_identifier
 from src.runtime.cancellation import to_thread_cancellation_barrier
 from src.runtime.task_supervisor import AsyncTaskSupervisor
 
 REFRESH_SECONDS = 30 * 60
 MAX_CACHE_BYTES = 2 * 1024 * 1024 * 1024
 PROCESSING_WORKERS = 3
+# Cached cover images (subscriptions plus recent search results). The oldest
+# files beyond this count are removed after each new download.
+MAX_ARTWORK_FILES = 300
+# A cover that could not be fetched is not retried on every page render.
+ARTWORK_RETRY_SECONDS = 30 * 60
+_ARTWORK_EXTENSIONS = {extension: content_type for content_type, extension in ARTWORK_TYPES.items()}
 
 
 class PodcastService:
@@ -42,6 +58,9 @@ class PodcastService:
         self._root = root
         self._notify = notify
         self._audio = root / "audio"
+        self._artwork = root / "artwork"
+        self._artwork_locks: dict[str, asyncio.Lock] = {}
+        self._artwork_failures: dict[str, float] = {}
         self._store = PodcastStore(root / "subscriptions.db")
         self._processor = processor
         self._http = transport or PodcastHttp()
@@ -109,6 +128,10 @@ class PodcastService:
         feed = await self._http.feed(feed_url)
         if not feed.episodes:
             raise PodcastError("This feed does not contain supported audio episodes.")
+        if not feed.artwork_url:
+            # A feed without its own cover keeps the directory's, when the
+            # subscription came from a recent search result.
+            feed = replace(feed, artwork_url=self._http.search_artwork(subscription_identifier(feed_url)))
         async with self._subscription_lock:
             identifier = await to_thread_cancellation_barrier(
                 self._store.add, feed_url, feed, auto_process=auto_process
@@ -142,6 +165,9 @@ class PodcastService:
                     )
 
             def remove_subscription() -> bool:
+                subscription = self._store.subscription(identifier)
+                if subscription and subscription.get("artwork_url"):
+                    self._discard_artwork(subscription["artwork_url"])
                 self._store.set_subscription(identifier, auto_process=False)
                 audio_root = self._audio.resolve()
                 for episode_id, extension in self._store.downloads(identifier):
@@ -228,6 +254,106 @@ class PodcastService:
         if episode is None:
             return None
         return await self._http.stream(episode["media_url"], range_header=range_header)
+
+    @staticmethod
+    def _artwork_key(url: str) -> str:
+        # Keyed by the remote URL, so a changed cover is fetched afresh.
+        return sha256(url.encode()).hexdigest()[:32]
+
+    def _cached_artwork(self, key: str) -> tuple[bytes, str] | None:
+        for extension, content_type in _ARTWORK_EXTENSIONS.items():
+            target = self._artwork / f"{key}{extension}"
+            try:
+                if target.is_symlink():
+                    continue
+                payload = target.read_bytes()
+            except OSError:
+                continue
+            if len(payload) <= MAX_ARTWORK_BYTES and artwork_type(payload) == content_type:
+                return payload, content_type
+        return None
+
+    def _store_artwork(self, key: str, payload: bytes, content_type: str) -> None:
+        self._artwork.mkdir(parents=True, exist_ok=True)
+        target = self._artwork / f"{key}{ARTWORK_TYPES[content_type]}"
+        partial = self._artwork / f"{key}.{uuid4().hex}.part"
+        try:
+            partial.write_bytes(payload)
+            partial.replace(target)
+        finally:
+            partial.unlink(missing_ok=True)
+        # Bound the cache by count; only finished images are candidates, never
+        # another request's partial write.
+        files: list[tuple[float, str]] = []
+        with os.scandir(self._artwork) as entries:
+            for entry in entries:
+                try:
+                    if Path(entry.name).suffix in _ARTWORK_EXTENSIONS and entry.is_file(follow_symlinks=False):
+                        files.append((entry.stat(follow_symlinks=False).st_mtime, entry.path))
+                except FileNotFoundError:
+                    continue
+        files.sort()
+        for _, stale in files[: max(0, len(files) - MAX_ARTWORK_FILES)]:
+            with suppress(FileNotFoundError):
+                os.unlink(stale)
+
+    def _discard_artwork(self, url: str) -> None:
+        key = self._artwork_key(url)
+        for extension in _ARTWORK_EXTENSIONS:
+            target = self._artwork / f"{key}{extension}"
+            if not target.is_symlink():
+                target.unlink(missing_ok=True)
+
+    async def artwork(self, identifier: str) -> tuple[bytes, str] | None:
+        """Cover image of a subscription or recent search result, cached on disk.
+
+        Returns ``None`` when no cover is known or it cannot be fetched; the UI
+        then shows its fallback. Failures are remembered for a while so a page
+        render never repeats remote fetches for a broken cover.
+        """
+        await self._ensure_ready()
+        subscription = await asyncio.to_thread(self._store.subscription, identifier)
+        url = (subscription or {}).get("artwork_url") or self._http.search_artwork(identifier)
+        if not url:
+            return None
+        key = self._artwork_key(url)
+        lock = self._artwork_locks.setdefault(key, asyncio.Lock())
+        try:
+            async with lock:
+                cached = await asyncio.to_thread(self._cached_artwork, key)
+                if cached is not None:
+                    return cached
+                failed_at = self._artwork_failures.get(key)
+                if failed_at is not None and time.monotonic() - failed_at < ARTWORK_RETRY_SECONDS:
+                    return None
+                started = time.monotonic()
+                try:
+                    payload, content_type = await self._http.artwork(url)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._artwork_failures.pop(key, None)
+                    while len(self._artwork_failures) >= MAX_ARTWORK_FILES:
+                        self._artwork_failures.pop(next(iter(self._artwork_failures)))
+                    self._artwork_failures[key] = time.monotonic()
+                    self._event(
+                        "artwork_fetch",
+                        outcome="failed",
+                        subscription_id=identifier if subscription else None,
+                        duration_ms=(time.monotonic() - started) * 1000,
+                        error=exc,
+                    )
+                    return None
+                self._artwork_failures.pop(key, None)
+                try:
+                    await to_thread_cancellation_barrier(self._store_artwork, key, payload, content_type)
+                except OSError as exc:
+                    # The image is still served; it is fetched again next time.
+                    self._event("artwork_cache", outcome="failed", error=exc)
+                return payload, content_type
+        finally:
+            if not lock.locked():
+                self._artwork_locks.pop(key, None)
 
     def _discard_completed_audio(self, episode: dict[str, Any]) -> None:
         # Runs without the subscription lock. Recheck the durable status so a

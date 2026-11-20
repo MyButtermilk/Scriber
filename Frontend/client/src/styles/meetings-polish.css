@@ -1,0 +1,85 @@
+/* Page polish: meetings. Loaded after index.css (unlayered, so it wins over Tailwind utilities). */
+
+/* --- Identity accent ------------------------------------------------------
+   The Meetings shell sets --page-accent (violet). It marks identity only:
+   the selected history row, the new-meeting eyebrow and the source icons.
+   Error, warning and success colours stay semantic and never use it. */
+.meetings-page .meetings-accent-text {
+  color: hsl(var(--page-accent));
+}
+
+.meetings-page .meetings-accent-icon {
+  background: hsl(var(--page-accent) / 0.1);
+  color: hsl(var(--page-accent));
+  box-shadow: inset 0 0 0 1px hsl(var(--page-accent) / 0.12);
+}
+
+.meetings-page .meetings-accent-glyph {
+  color: hsl(var(--page-accent) / 0.7);
+}
+
+.dark .meetings-page .meetings-accent-icon {
+  background: hsl(var(--page-accent) / 0.14);
+  box-shadow: inset 0 0 0 1px hsl(var(--page-accent) / 0.16);
+}
+
+/* --- History rail ---------------------------------------------------------- */
+.meetings-page .meetings-rail-heading {
+  min-height: 2.25rem;
+}
+
+/* Selected row: the shared raised surface plus a faint accent wash and a
+   short accent bar on the leading edge. */
+.meetings-page .meetings-history-item.neu-nav-active {
+  background-image: linear-gradient(hsl(var(--page-accent) / 0.07), hsl(var(--page-accent) / 0.07));
+}
+
+.meetings-page .meetings-history-item.neu-nav-active::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 3px;
+  height: 1.5rem;
+  border-radius: 0 3px 3px 0;
+  background: hsl(var(--page-accent));
+  transform: translateY(-50%);
+  pointer-events: none;
+  animation: meetings-row-indicator-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.dark .meetings-page .meetings-history-item.neu-nav-active {
+  background-image: linear-gradient(hsl(var(--page-accent) / 0.1), hsl(var(--page-accent) / 0.1));
+}
+
+@keyframes meetings-row-indicator-in {
+  from {
+    transform: translateY(-50%) scaleY(0.3);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(-50%) scaleY(1);
+    opacity: 1;
+  }
+}
+
+/* --- New-meeting readiness aside ------------------------------------------
+   The aside sticks below the condensed sticky PageIntro (~80-90px). Its
+   ancestors are content-sized, so their overflow only clips corners; making
+   them non-scrolling lets the sticky position resolve against the app scroll
+   viewport instead of a scroll container that never scrolls. */
+@media (min-width: 1380px) {
+  .meetings-page .meetings-workspace-panel:has(> .meetings-new-meeting-scroll) {
+    overflow: clip;
+  }
+
+  .meetings-page .meetings-new-meeting-scroll {
+    overflow: visible;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .meetings-page .meetings-history-item.neu-nav-active::after {
+    animation: none;
+  }
+}

@@ -578,6 +578,7 @@ export const meetingsTranslations = {
   Unassigned: "Nicht zugewiesen",
   "Undo latest": "Letzte Änderung rückgängig machen",
   "Untitled Outlook meeting": "Outlook-Meeting ohne Titel",
+  "Untitled meeting": "Unbenanntes Meeting",
   "Up to 60 min": "Bis zu 60 Min.",
   "Up to {{duration}}": "Bis zu {{duration}}",
   Update: "Aktualisieren",

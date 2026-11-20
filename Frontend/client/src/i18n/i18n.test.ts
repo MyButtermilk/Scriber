@@ -8,6 +8,8 @@ import {
   getLocaleTag,
   initializeLocaleCatalog,
   localeFromLanguages,
+  formatFullDateTimeLabel,
+  formatRelativeDateLabel,
   localizeLegacyDateLabel,
   translate,
 } from "@/i18n";
@@ -111,6 +113,19 @@ test("localizes legacy relative date labels", () => {
   assert.equal(localizeLegacyDateLabel("de", "2026-07-16"), "16.07.2026");
   assert.equal(localizeLegacyDateLabel("en", "2026-07-16"), "Jul 16, 2026");
   assert.equal(localizeLegacyDateLabel("de", "2026-02-30"), "2026-02-30");
+});
+
+test("formats list dates relative to today with one shared shape", () => {
+  const now = new Date(2026, 10, 20, 12, 0);
+  assert.equal(formatRelativeDateLabel("de", new Date(2026, 10, 20, 9, 32), { now }), "Heute, 09:32");
+  assert.equal(formatRelativeDateLabel("de", new Date(2026, 10, 19, 18, 4), { now }), "Gestern, 18:04");
+  assert.equal(formatRelativeDateLabel("de", new Date(2026, 10, 21, 11, 14), { now }), "Morgen, 11:14");
+  assert.equal(formatRelativeDateLabel("de", new Date(2026, 10, 17, 14, 44), { now }), "17. Nov., 14:44");
+  assert.equal(formatRelativeDateLabel("de", new Date(2026, 10, 17, 14, 44), { now, time: false }), "17. Nov.");
+  assert.equal(formatRelativeDateLabel("de", new Date(2025, 10, 17, 14, 44), { now }), "17. Nov. 2025");
+  assert.equal(formatRelativeDateLabel("en", new Date(2026, 10, 20, 9, 32), { now }), "Today, 09:32 AM");
+  assert.equal(formatRelativeDateLabel("de", "not a date", { now }), "");
+  assert.match(formatFullDateTimeLabel("de", new Date(2026, 10, 20, 9, 32)), /Freitag, 20\. November 2026/);
 });
 
 test("dynamic interface labels have complete German translations", () => {
