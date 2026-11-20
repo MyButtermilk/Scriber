@@ -783,7 +783,11 @@ async def test_completion_cleanup_never_waits_behind_another_workers_download(tm
         completed_target, blocked_target = targets
         completed_id, blocked_id = completed_target.stem, blocked_target.stem
         async with asyncio.timeout(5):
-            while completed_target.exists() or service._store.episode(completed_id)["status"] != "completed":
+            while (
+                completed_target.exists()
+                or completed_id in service._active_episodes
+                or service._store.episode(completed_id)["status"] != "completed"
+            ):
                 await asyncio.sleep(0.01)
         # Worker A's audio was reclaimed while Worker B still downloads.
         assert not release_download.is_set()
