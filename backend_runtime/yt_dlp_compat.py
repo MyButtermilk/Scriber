@@ -93,8 +93,6 @@ def _make_native_ssl_context(
 
 def apply_compatibility_fixes() -> None:
     global _ORIGINAL_MAKE_SSL_CONTEXT
-    from yt_dlp.extractor.youtube._base import INNERTUBE_CLIENTS
-    from yt_dlp.extractor.youtube._video import YoutubeIE
     from yt_dlp.extractor.youtube.jsc._builtin.quickjs import QuickJSJCP
     from yt_dlp.networking import _helper as net_helper
     from yt_dlp.networking import common as net_common
@@ -103,28 +101,21 @@ def apply_compatibility_fixes() -> None:
     if __version__ != "2026.08.19":
         raise RuntimeError("Review YouTube compatibility fixes when updating the pinned yt-dlp version")
 
-    # Upstream yt-dlp/yt-dlp#17723: an incomplete TV identity receives
-    # UNPLAYABLE even with a valid authenticated session. Keep default client
-    # selection; only correct the existing tv_downgraded client identity.
-    INNERTUBE_CLIENTS["tv_downgraded"]["INNERTUBE_CONTEXT"]["client"].update(
-        deviceMake="Samsung",
-        deviceModel="SmartTV",
-        userAgent="Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/2.4.0 TV Safari/538.1",
-        osName="Tizen",
-        osVersion="2.4.0",
-    )
-    # Upstream yt-dlp/yt-dlp#18124 (fixes #18123): YouTube's November 2026
-    # `main` player variants trigger a preprocessing TypeError in EJS 0.8.0
-    # (`a.addOnDisposeCallback is not a function`), leaving zero playable
-    # formats. Defaulting `player_js_variant` to `tv` restores n-challenge
-    # solving without changing the pinned runtime or QuickJS wrapper bounds.
-    YoutubeIE._DEFAULT_PLAYER_JS_VARIANT = "tv"
-    # Upstream yt-dlp/yt-dlp#18051: prioritize the TV client ahead of
-    # `web_embedded` for authenticated sessions.
-    YoutubeIE._DEFAULT_AUTHED_CLIENTS = ("tv_downgraded", "web_embedded", "web")
     QuickJSJCP._construct_stdin = _bounded_ejs_input
 
     if _ORIGINAL_MAKE_SSL_CONTEXT is None:
         _ORIGINAL_MAKE_SSL_CONTEXT = net_helper.make_ssl_context
     net_helper.make_ssl_context = _make_native_ssl_context
     net_common.make_ssl_context = _make_native_ssl_context
+
+    # Frequently changing YouTube player/client choices live in the checksummed
+    # application layer (`src.yt_dlp_client_compat`). During early PyInstaller
+    # bootstrap before `backend/app` is mounted on `sys.path`, the launcher
+    # applies them immediately upon activating the validated application layer.
+    try:
+        from src.yt_dlp_client_compat import apply_youtube_client_compat_overrides
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"src", "src.yt_dlp_client_compat"}:
+            raise
+    else:
+        apply_youtube_client_compat_overrides()

@@ -103,6 +103,7 @@ def test_rust_quality_cache_binds_build_environment_and_excludes_release_or_cred
     for path in (
         ".node-version",
         "Frontend/src-tauri/Cargo.toml",
+        "Frontend/src-tauri/crates/scriber-shell-core/Cargo.toml",
         "Frontend/src-tauri/Cargo.lock",
         "Frontend/src-tauri/build.rs",
         "Frontend/src-tauri/tauri.conf.json",

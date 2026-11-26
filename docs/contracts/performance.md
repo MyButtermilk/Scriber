@@ -232,14 +232,36 @@ Already implemented and should not be regressed:
   full commit SHA. Keep the Rust version and compiled-cache identity aligned.
   When changing toolchains, rebuild the cache and verify a warm run.
 - `Frontend\src-tauri\Cargo.toml` keeps the shell library crate type to
-  `["rlib"]` for Windows desktop releases and compiles the shell crate itself at
-  `opt-level = 2` via `[profile.release.package.scriber-desktop]` so external
-  dependencies retain Cargo's default release `-O3` and build scripts /
-  proc-macros stay at Cargo's default `-O0`; audio DSP and diarization live in
-  standalone crates with their own `Cargo.toml`.
+  `["rlib"]` for Windows desktop releases and splits context-independent desktop
+  shell logic into the workspace member crate
+  `Frontend\src-tauri\crates\scriber-shell-core` (pointing at
+  `Frontend\src-tauri\src\lib.rs`), leaving only the thin `desktop_entry.rs`
+  (`tauri::generate_context!()`), `main.rs`, `minisign_verify.rs`, and PE
+  resource `build.rs` inside `scriber-desktop`. Both `scriber-desktop` and
+  `scriber-shell-core` compile at `opt-level = 2` via package profile overrides
+  so external dependencies retain Cargo's default release `-O3` and build
+  scripts / proc-macros stay at `-O0`, while UI/version-only changes reuse the
+  compiled `scriber-shell-core` artifact from the Rust dependency cache without
+  recompiling the full shell. Audio DSP and diarization remain in standalone
+  crates with their own `Cargo.toml`.
   Do not restore Tauri mobile `staticlib`/`cdylib` outputs unless mobile targets
   are introduced; they create extra release library artifacts that do not help
   the NSIS updater build.
+- Frequently changing YouTube player/client compatibility choices
+  (`INNERTUBE_CLIENTS["tv_downgraded"]`, `_DEFAULT_PLAYER_JS_VARIANT`,
+  `_DEFAULT_AUTHED_CLIENTS`) live in the checksummed application-layer module
+  `src/yt_dlp_client_compat.py` (activated immediately after `backend/app`
+  layer verification in `backend_runtime/launcher.py` and in
+  `src/youtube_download.py`), while plugin disabling, the 20-class YouTube
+  extractor allowlist, QuickJS wrapper bounds (`_bounded_ejs_input`), and
+  Windows native `truststore` TLS stay frozen inside `backend_runtime/`.
+- Official tag releases overlap installed-installer smoke verification with
+  draft release sync/upload via the checked-in helpers
+  `scripts/ci/start_installer_smoke_background.ps1` and
+  `scripts/ci/join_installer_smoke_background.ps1`, and
+  `scripts/ci/validate_installer_smoke_report.py` binds the smoked installer's
+  recorded pre/post-verified `installerSha256` cryptographically to the
+  downloaded GitHub draft candidate before publication.
 - Cold Windows release producers and stdlib planners avoid redundant toolchain
   installs: `release-plan`, `prepare-tauri-cold`, and `release-qualification.yml`
   use the runner's preinstalled Python `3.14` minor series for stdlib helper

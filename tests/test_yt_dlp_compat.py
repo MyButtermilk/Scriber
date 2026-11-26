@@ -55,3 +55,21 @@ def test_yt_dlp_ssl_context_uses_windows_native_truststore():
         assert ctx.check_hostname is True
     unverified = net_common.make_ssl_context(verify=False)
     assert unverified.check_hostname is False
+
+
+def test_app_layer_youtube_client_compat_is_decoupled_from_frozen_runtime():
+    from pathlib import Path
+
+    from yt_dlp.extractor.youtube._video import YoutubeIE
+
+    from src.yt_dlp_client_compat import apply_youtube_client_compat_overrides
+
+    repo_root = Path(__file__).resolve().parents[1]
+    frozen_compat = (repo_root / "backend_runtime" / "yt_dlp_compat.py").read_text(encoding="utf-8")
+    assert "_DEFAULT_PLAYER_JS_VARIANT" not in frozen_compat
+    assert "_DEFAULT_AUTHED_CLIENTS" not in frozen_compat
+
+    YoutubeIE._DEFAULT_PLAYER_JS_VARIANT = "main"
+    apply_youtube_client_compat_overrides()
+    assert YoutubeIE._DEFAULT_PLAYER_JS_VARIANT == "tv"
+    assert YoutubeIE._DEFAULT_AUTHED_CLIENTS == ("tv_downgraded", "web_embedded", "web")

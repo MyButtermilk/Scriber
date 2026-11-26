@@ -264,6 +264,7 @@ Add-ContentEntry -Entries $frontendEntries -Path "Frontend/package-lock.json" -C
 Write-KeyFile -Name "frontend-dependencies.txt" -Entries $frontendEntries
 
 $cargoToml = Get-Content -LiteralPath (Join-Path $repoRoot "Frontend/src-tauri/Cargo.toml") -Raw
+$shellCoreCargoToml = Get-Content -LiteralPath (Join-Path $repoRoot "Frontend/src-tauri/crates/scriber-shell-core/Cargo.toml") -Raw
 $cargoLock = Get-Content -LiteralPath (Join-Path $repoRoot "Frontend/src-tauri/Cargo.lock") -Raw
 $audioCargoToml = Get-Content -LiteralPath (Join-Path $repoRoot "native/scriber-audio-sidecar/Cargo.toml") -Raw
 $audioCargoLock = Get-Content -LiteralPath (Join-Path $repoRoot "native/scriber-audio-sidecar/Cargo.lock") -Raw
@@ -279,6 +280,7 @@ $localVqeInputs = @(
 
 $rustDependencyEntries = New-EntryList
 Add-ContentEntry -Entries $rustDependencyEntries -Path "Frontend/src-tauri/Cargo.toml" -Content (Normalize-CargoToml -Text $cargoToml)
+Add-ContentEntry -Entries $rustDependencyEntries -Path "Frontend/src-tauri/crates/scriber-shell-core/Cargo.toml" -Content (Normalize-CargoToml -Text $shellCoreCargoToml)
 Add-ContentEntry -Entries $rustDependencyEntries -Path "Frontend/src-tauri/Cargo.lock" -Content (Normalize-CargoLock -Text $cargoLock)
 Add-ContentEntry -Entries $rustDependencyEntries -Path "native/scriber-audio-sidecar/Cargo.toml" -Content (Normalize-CargoToml -Text $audioCargoToml)
 Add-ContentEntry -Entries $rustDependencyEntries -Path "native/scriber-audio-sidecar/Cargo.lock" -Content (Normalize-CargoLock -Text $audioCargoLock -PackageName "scriber-audio-sidecar")
@@ -290,6 +292,7 @@ Write-KeyFile -Name "rust-dependencies.txt" -Entries $rustDependencyEntries
 $rustEntries = New-EntryList
 $rustEntries.Add("constant`ttoolchain`trust-1.97.0")
 Add-ContentEntry -Entries $rustEntries -Path "Frontend/src-tauri/Cargo.toml" -Content (Normalize-CargoToml -Text $cargoToml)
+Add-ContentEntry -Entries $rustEntries -Path "Frontend/src-tauri/crates/scriber-shell-core/Cargo.toml" -Content (Normalize-CargoToml -Text $shellCoreCargoToml)
 Add-ContentEntry -Entries $rustEntries -Path "Frontend/src-tauri/Cargo.lock" -Content (Normalize-CargoLock -Text $cargoLock)
 Add-ContentEntry -Entries $rustEntries -Path "native/scriber-audio-sidecar/Cargo.toml" -Content (Normalize-CargoToml -Text $audioCargoToml)
 Add-ContentEntry -Entries $rustEntries -Path "native/scriber-audio-sidecar/Cargo.lock" -Content (Normalize-CargoLock -Text $audioCargoLock -PackageName "scriber-audio-sidecar")
@@ -314,6 +317,7 @@ foreach ($path in @(
     "Frontend/tsconfig.json",
     "Frontend/vite.config.ts",
     "Frontend/src-tauri/Cargo.toml",
+    "Frontend/src-tauri/crates/scriber-shell-core/Cargo.toml",
     "Frontend/src-tauri/Cargo.lock",
     "Frontend/src-tauri/build.rs",
     "Frontend/src-tauri/tauri.conf.json",

@@ -338,3 +338,32 @@ def test_cli_exits_nonzero_unless_complete_existing_evidence_passes(smoke, tmp_p
     )
     assert result.returncode == (0 if mode == "valid" else 1), result.stderr
     assert installer.read_bytes() == b"existing downloaded installer fixture"
+
+
+def test_sha256_binding_accepts_identical_downloaded_copy_and_rejects_mismatch(smoke, tmp_path) -> None:
+    import hashlib
+
+    report, built_installer = smoke
+    downloaded_installer = tmp_path / "downloaded" / built_installer.name
+    downloaded_installer.parent.mkdir(parents=True)
+    downloaded_installer.write_bytes(built_installer.read_bytes())
+
+    digest = hashlib.sha256(built_installer.read_bytes()).hexdigest()
+    report["installerSha256"] = digest
+    validate_report(report, installer=downloaded_installer)
+
+    # Corrupting the downloaded installer must fail closed even when the built file matches.
+    downloaded_installer.write_bytes(b"corrupted downloaded bytes")
+    with pytest.raises(ReportValidationError, match="installerSha256 does not match"):
+        validate_report(report, installer=downloaded_installer)
+
+    # Restoring the downloaded bytes while mutating the smoked file must also fail closed.
+    downloaded_installer.write_bytes(built_installer.read_bytes())
+    built_installer.write_bytes(b"mutated after smoke")
+    with pytest.raises(ReportValidationError, match="no longer match"):
+        validate_report(report, installer=downloaded_installer)
+
+    # Invalid SHA-256 format is rejected.
+    report["installerSha256"] = "not-a-sha256"
+    with pytest.raises(ReportValidationError, match="installerSha256"):
+        validate_report(report, installer=downloaded_installer)

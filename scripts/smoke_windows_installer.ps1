@@ -822,6 +822,9 @@ if (-not (Test-Path $InstallerPath)) {
     throw "Missing installer: $InstallerPath"
 }
 $InstallerPath = (Resolve-Path $InstallerPath).Path
+$installerSha256Before = (Get-FileHash -LiteralPath $InstallerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$totalSmokeStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+$phaseTimingsMs = [ordered]@{}
 if ($LegacyDataDir) {
     if (-not (Test-Path -LiteralPath $LegacyDataDir -PathType Container)) {
         throw "Missing LegacyDataDir: $LegacyDataDir"
@@ -860,6 +863,7 @@ $meetingResources = $null
 $localPolishingRuntime = $null
 $cleanupCompleted = $false
 try {
+    $cleanPhaseWatch = [System.Diagnostics.Stopwatch]::StartNew()
     Invoke-ProcessChecked -FilePath $InstallerPath -ArgumentList @("/S", "/D=$InstallDir") -Label "Silent installer"
     $appExe = Resolve-InstalledAppExe -Root $InstallDir
     $audioSidecarExe = Resolve-InstalledAudioSidecarExe -Root $InstallDir
@@ -872,8 +876,11 @@ try {
     $cleanInstall = $smoke
     Assert-InstalledDesktopSmokeSucceeded -Smoke $smoke -Stage "clean-install" `
         -CleanInstall $cleanInstall -Installer $InstallerPath -ReportPath $OutputPath -Root $RepoRoot
+    $cleanPhaseWatch.Stop()
+    $phaseTimingsMs["cleanInstall"] = [int64]$cleanPhaseWatch.ElapsedMilliseconds
 
     if ($SimulateUpgrade) {
+        $upgradePhaseWatch = [System.Diagnostics.Stopwatch]::StartNew()
         $sentinelPath = Join-Path $DataDir "upgrade-sentinel.txt"
         Set-Content -LiteralPath $sentinelPath -Value "preserve across installer rerun" -Encoding UTF8
 
@@ -924,10 +931,19 @@ try {
             localPolishingRuntime = $localPolishingRuntime
         }
         $smoke = $secondSmoke
+        $upgradePhaseWatch.Stop()
+        $phaseTimingsMs["upgrade"] = [int64]$upgradePhaseWatch.ElapsedMilliseconds
     }
 
     if ($VerifyMediaPreparation) {
+        $mediaPhaseWatch = [System.Diagnostics.Stopwatch]::StartNew()
         $mediaPreparation = Invoke-InstalledMediaPreparationSmoke -InstallRoot $InstallDir -RuntimeDataDir $DataDir
+        $mediaPhaseWatch.Stop()
+        $phaseTimingsMs["mediaPreparation"] = [int64]$mediaPhaseWatch.ElapsedMilliseconds
+    }
+    $installerSha256After = (Get-FileHash -LiteralPath $InstallerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($installerSha256After -cne $installerSha256Before) {
+        throw "Installer bytes changed during smoke verification: $InstallerPath"
     }
     $smokeOkProperty = if ($smoke) {
         $smoke.PSObject.Properties |
@@ -945,6 +961,8 @@ try {
     $result = [ordered]@{
         ok = $smokeOk
         installer = $InstallerPath
+        installerSha256 = $installerSha256Before
+        phaseTimingsMs = $phaseTimingsMs
         cleanInstall = $cleanInstall
         desktopSmokeExitCode = $smoke.processExitCode
         installDir = $InstallDir
@@ -992,10 +1010,15 @@ try {
             reason = "KeepInstalled"
         }
     } else {
+        $uninstallPhaseWatch = [System.Diagnostics.Stopwatch]::StartNew()
         $result.uninstall = Invoke-InstalledUninstallCheck -InstallRoot $InstallDir -RuntimeDataDir $DataDir -Strict:$VerifyUninstall
         Remove-InstallerSmokeArtifacts -InstallRoot $InstallDir -RuntimeDataDir $DataDir -TempRoot $tmpRoot
         $cleanupCompleted = $true
+        $uninstallPhaseWatch.Stop()
+        $phaseTimingsMs["uninstall"] = [int64]$uninstallPhaseWatch.ElapsedMilliseconds
     }
+    $totalSmokeStopwatch.Stop()
+    $phaseTimingsMs["total"] = [int64]$totalSmokeStopwatch.ElapsedMilliseconds
 
     Write-SmokeJson -Payload ([pscustomobject]$result) -Path $OutputPath -Root $RepoRoot
     if (-not $result.ok) {

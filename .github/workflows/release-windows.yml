@@ -2436,6 +2436,18 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+      - name: Start background installer smoke candidate
+        if: needs.release-plan.outputs.official-release == 'true'
+        shell: pwsh
+        run: |
+          & .\scripts\ci\start_installer_smoke_background.ps1 `
+            -PythonExecutable "${{ steps.installer-python.outputs.python }}" `
+            -ArtifactsDir release-artifacts `
+            -OutputPath tmp\installer-smoke\downloaded-release-candidate.json
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to launch background installer smoke candidate."
+          }
+
       - name: Revalidate live release refs before draft creation
         if: needs.release-plan.outputs.official-release == 'true'
         shell: pwsh
@@ -2534,18 +2546,17 @@ jobs:
           if ($installers.Count -ne 1) {
             throw "Expected exactly one downloaded Windows installer candidate, found $($installers.Count)."
           }
-          & .\scripts\smoke_windows_installer.ps1 `
+          $downloadedInstaller = Join-Path $downloadRoot ([string]$installers[0].name)
+          & .\scripts\ci\join_installer_smoke_background.ps1 `
             -PythonExecutable $smokePython `
-            -InstallerPath (Join-Path $downloadRoot ([string]$installers[0].name)) `
-            -OutputPath tmp\installer-smoke\downloaded-release-candidate.json `
-            -SimulateUpgrade `
-            -VerifyFrontend `
-            -VerifyMediaPreparation `
-            -VerifySupportBundle `
-            -VerifyUninstall
+            -DownloadedInstallerPath $downloadedInstaller `
+            -OutputPath tmp\installer-smoke\downloaded-release-candidate.json
+          if ($LASTEXITCODE -ne 0) {
+            throw "The installed installer smoke execution failed."
+          }
           python -m scripts.ci.validate_installer_smoke_report `
             --report tmp\installer-smoke\downloaded-release-candidate.json `
-            --installer (Join-Path $downloadRoot ([string]$installers[0].name))
+            --installer $downloadedInstaller
           if ($LASTEXITCODE -ne 0) {
             throw "The downloaded installer did not produce complete passing smoke evidence."
           }

@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/scriber-shell-core"]
+default-members = [".", "crates/scriber-shell-core"]
+
 [package]
 name = "scriber-desktop"
 version = "0.1.0"
@@ -20,6 +24,7 @@ codec-experimental-shine = []
 
 [lib]
 name = "scriber_desktop_lib"
+path = "src/desktop_entry.rs"
 crate-type = ["rlib"]
 
 [[bin]]
@@ -34,63 +39,17 @@ path = "src/minisign_verify.rs"
 tauri-build = { version = "2.7.4", features = [] }
 
 [dependencies]
+scriber-shell-core = { path = "crates/scriber-shell-core" }
 tauri = { version = "2.12.5", features = ["tray-icon"] }
-tauri-plugin-global-shortcut = "2"
-tauri-plugin-process = "2"
-# Releases publish NSIS `.exe` updater artifacts, never legacy `.nsis.zip`
-# bundles, so the archive-extraction feature stays out of the shell.
-tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-uuid = { version = "1", features = ["v4"] }
-tauri-plugin-opener = "2"
-tauri-plugin-dialog = "2"
-tauri-plugin-deep-link = "2"
-reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
-# Reqwest delegates provider selection to the shell; reuse the updater's ring backend.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 minisign-verify = "=0.2.5"
 base64 = "=0.22.1"
-url = "2.5.8"
-
-[target.'cfg(windows)'.dependencies]
-tauri-winrt-notification = "=0.8.1"
-windows = { version = "0.62.2", features = [
-  "Win32_Devices_Properties",
-  "Win32_Foundation",
-  "Win32_Graphics_Dwm",
-  "Win32_Media_Audio",
-  "Win32_System_Com",
-  "Win32_System_Com_StructuredStorage",
-  "Win32_System_Variant",
-  "Win32_UI_Shell_PropertiesSystem",
-  "UI_Notifications",
-] }
-windows-core = "0.62.2"
-windows-sys = { version = "0.61.2", features = [
-  "Win32_Foundation",
-  "Win32_Security",
-  "Win32_Security_Authorization",
-  "Win32_Security_Credentials",
-  "Win32_Storage_FileSystem",
-  "Win32_System_DataExchange",
-  "Win32_System_Diagnostics_ToolHelp",
-  "Win32_System_IO",
-  "Win32_System_JobObjects",
-  "Win32_System_LibraryLoader",
-  "Win32_System_Memory",
-  "Win32_System_Ole",
-  "Win32_System_Pipes",
-  "Win32_System_Performance",
-  "Win32_System_Registry",
-  "Win32_System_Threading",
-  "Win32_UI_Input_KeyboardAndMouse",
-  "Win32_UI_WindowsAndMessaging",
-] }
 
 [profile.release.package.scriber-desktop]
 # Optimize the desktop UI/IPC shell at level 2 while preserving Cargo's default
 # release settings (dependencies at -O3, build scripts / proc-macros at -O0);
 # audio DSP and diarization live in standalone crates with their own Cargo.toml
 # and keep full -O3.
+opt-level = 2
+
+[profile.release.package.scriber-shell-core]
 opt-level = 2

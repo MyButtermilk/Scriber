@@ -3240,12 +3240,20 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "minisign-verify 0.2.5",
+ "scriber-shell-core",
+ "tauri",
+ "tauri-build",
+]
+
+[[package]]
+name = "scriber-shell-core"
+version = "0.1.0"
+dependencies = [
  "reqwest",
  "rustls",
  "serde",
  "serde_json",
  "tauri",
- "tauri-build",
  "tauri-plugin-deep-link",
  "tauri-plugin-dialog",
  "tauri-plugin-global-shortcut",

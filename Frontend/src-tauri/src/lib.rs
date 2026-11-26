@@ -2165,7 +2165,7 @@ fn initialize_tls_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-pub fn run() {
+pub fn run_with_context(context: tauri::Context<tauri::Wry>) {
     initialize_tls_crypto_provider();
     let initial_youtube_deep_link = youtube_deep_link_request_from_args(env::args());
     let single_instance_guard = match acquire_single_instance_guard_with_youtube_request(
@@ -2341,7 +2341,7 @@ pub fn run() {
             export_dialog::reveal_meeting_export,
             export_dialog::copy_meeting_export_file
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("failed to build Scriber desktop shell");
 
     app.run(|_app_handle, event| {

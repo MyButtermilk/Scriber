@@ -123,12 +123,17 @@ def test_frontend_entrypoint_is_compatible_with_tauri_csp() -> None:
 
 def test_tauri_does_not_expose_general_shell_plugin() -> None:
     cargo = tomllib.loads((TAURI_DIR / "Cargo.toml").read_text(encoding="utf-8"))
+    shell_core_cargo = tomllib.loads(
+        (TAURI_DIR / "crates" / "scriber-shell-core" / "Cargo.toml").read_text(encoding="utf-8")
+    )
     dependencies = cargo["dependencies"]
+    shell_core_dependencies = shell_core_cargo["dependencies"]
     lib_rs = (TAURI_DIR / "src" / "lib.rs").read_text(encoding="utf-8")
 
     assert "tauri-plugin-shell" not in dependencies
+    assert "tauri-plugin-shell" not in shell_core_dependencies
     assert "tauri_plugin_shell" not in lib_rs
-    assert dependencies["tauri-plugin-opener"] == "2"
+    assert shell_core_dependencies["tauri-plugin-opener"] == "2"
     assert "tauri_plugin_opener::init()" in lib_rs
 
 

@@ -306,6 +306,21 @@ def _activate_application_layer(
     version_module = importlib.import_module("src.version")
     if getattr(version_module, "__version__", None) != app_manifest["applicationVersion"]:
         raise LayerValidationError("Application code version does not match its manifest.")
+    # Apply validated application-layer YouTube player/client overrides right
+    # after mounting the checksummed app layer, before any worker or probe use.
+    try:
+        client_compat = importlib.import_module("src.yt_dlp_client_compat")
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"src.yt_dlp_client_compat"}:
+            raise
+    else:
+        apply_overrides = getattr(client_compat, "apply_youtube_client_compat_overrides", None)
+        if callable(apply_overrides):
+            try:
+                apply_overrides()
+            except ModuleNotFoundError as exc:
+                if exc.name != "yt_dlp" and not str(exc.name or "").startswith("yt_dlp."):
+                    raise
     return app_manifest
 
 

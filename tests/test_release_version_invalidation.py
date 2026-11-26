@@ -74,6 +74,7 @@ def isolated_release_source(tmp_path: Path) -> Path:
     # staged. These exact leaves never traverse generated native target trees.
     selected.extend(
         [
+            "Frontend/src-tauri/crates/scriber-shell-core/Cargo.toml",
             "native/scriber-audio-sidecar/Cargo.toml",
             "native/scriber-audio-sidecar/Cargo.lock",
             "native/scriber-audio-sidecar/build.rs",

@@ -78,6 +78,9 @@ def _apply_youtube_only_runtime_policy() -> None:
     policy = importlib.import_module("backend_runtime.yt_dlp_policy")
     apply_policy = policy.apply_youtube_only_runtime_policy
     apply_policy()
+    from src.yt_dlp_client_compat import apply_youtube_client_compat_overrides
+
+    apply_youtube_client_compat_overrides()
 
 
 class DownloadProgress:

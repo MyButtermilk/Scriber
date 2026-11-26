@@ -7,10 +7,14 @@ application nor repeats downloads, installation, or runtime checks.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
+
+SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 MEDIA_CHECK_NAMES = frozenset(
     {
@@ -95,6 +99,11 @@ def _shell_panic_check(report: dict[str, Any], prefix: str) -> None:
         raise ReportValidationError(f"Invalid required smoke field: {count_path}")
 
 
+def _sha256_file(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
 def validate_report(report: Any, *, installer: Path) -> None:
     if not isinstance(report, dict):
         raise ReportValidationError("Smoke report must be a JSON object")
@@ -104,7 +113,19 @@ def validate_report(report: Any, *, installer: Path) -> None:
     recorded_installer = _field(report, "installer")
     if not isinstance(recorded_installer, str) or not Path(recorded_installer).is_absolute():
         raise ReportValidationError("Smoke installer path must be absolute")
-    if Path(recorded_installer).resolve(strict=True) != expected_installer:
+    recorded_path = Path(recorded_installer).resolve(strict=True)
+    if not recorded_path.is_file():
+        raise ReportValidationError("Recorded smoke installer is not a file")
+    recorded_sha256 = report.get("installerSha256")
+    if recorded_sha256 is not None:
+        if not isinstance(recorded_sha256, str) or not SHA256_HEX_PATTERN.fullmatch(recorded_sha256):
+            raise ReportValidationError("Invalid required smoke field: installerSha256")
+        expected_sha256 = _sha256_file(expected_installer)
+        if recorded_sha256 != expected_sha256:
+            raise ReportValidationError("Smoke report installerSha256 does not match the expected installer")
+        if recorded_path != expected_installer and _sha256_file(recorded_path) != expected_sha256:
+            raise ReportValidationError("Recorded smoke installer bytes no longer match the expected installer")
+    elif recorded_path != expected_installer:
         raise ReportValidationError("Smoke report belongs to a different installer")
 
     for prefix in ("", "cleanInstall."):
