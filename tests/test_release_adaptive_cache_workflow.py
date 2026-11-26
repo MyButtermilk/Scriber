@@ -150,7 +150,9 @@ def test_release_quality_suite_blocks_signing_after_parallel_packaging_preparati
     plan = jobs["release-plan"]
     selector = next(step for step in plan["steps"] if step.get("id") == "quality-source")
     planner_python = next(step for step in plan["steps"] if step.get("name") == "Set up release planning Python")
-    assert planner_python["with"]["python-version"] == "${{ env.SCRIBER_RELEASE_PYTHON_VERSION }}"
+    assert planner_python["with"]["python-version"] == "3.14"
+    planner_path = next(step for step in plan["steps"] if step.get("id") == "release-path")
+    assert "-PythonVersion $env:SCRIBER_RELEASE_PYTHON_VERSION" in planner_path["run"]
     assert plan["steps"].index(planner_python) < plan["steps"].index(selector)
     assert "scripts.ci.release_quality_source select" in selector["run"]
     assert "continue-on-error" not in selector
@@ -857,15 +859,31 @@ def test_cold_producers_avoid_redundant_toolchain_setup_and_track_active_nsis_ca
 
     assert tauri_steps["Set up Python"]["with"]["python-version"] == "3.14"
 
-    assert backend_names.index("Restore finished component fallbacks in parallel") < backend_names.index("Set up Rust")
+    assert backend_names.index("Restore finished component fallbacks in parallel") < backend_names.index(
+        "Resolve Rust worker caches"
+    )
+    assert backend_names.index("Resolve Rust worker caches") < backend_names.index("Set up Rust")
+    assert "-ValidateRustWorkerCachesOnly" in backend_by_name["Resolve Rust worker caches"]["run"]
+    assert (
+        backend_by_name["Restore Sherpa ONNX archive cache"]["if"]
+        == "steps.cold-rust-workers.outputs.diarization-usable != 'true'"
+    )
     for name in (
         "Set up Rust",
         "Restore Rust dependency state",
         "Remove application outputs from Rust dependency state",
     ):
-        condition = backend_by_name[name]["if"]
-        assert "steps.cold-rust-audio-cache.outputs.cache-hit != 'true'" in condition
-        assert "steps.cold-rust-diarization-cache.outputs.cache-hit != 'true'" in condition
+        assert backend_by_name[name]["if"] == "steps.cold-rust-workers.outputs.rust-needed == 'true'"
+    build_and_attest = backend_by_name["Build and attest backend product"]["run"]
+    assert "steps.cold-rust-workers.outputs.audio-usable" in build_and_attest
+    assert "steps.cold-rust-workers.outputs.diarization-usable" in build_and_attest
+    assert "steps.cold-ffmpeg.outputs.usable" in build_and_attest
+
+    sidecar_script = _read("scripts/build_tauri_backend_sidecar.ps1")
+    assert "Diarization worker release builds require native Rust 1.97.0 for x86_64-pc-windows-msvc" in sidecar_script
+    cargo_toml = _read("Frontend/src-tauri/Cargo.toml")
+    assert "[profile.release.package.scriber-desktop]" in cargo_toml
+    assert '[profile.release.package."*"]' not in cargo_toml
 
     assert build_by_name["Restore Tauri bundler cache"]["with"]["key"].endswith("-nsis-3.13")
     assert build_by_name["Save Tauri bundler cache"]["with"]["key"].endswith("-nsis-3.13")

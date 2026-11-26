@@ -233,25 +233,40 @@ Already implemented and should not be regressed:
   When changing toolchains, rebuild the cache and verify a warm run.
 - `Frontend\src-tauri\Cargo.toml` keeps the shell library crate type to
   `["rlib"]` for Windows desktop releases and compiles the shell crate itself at
-  `opt-level = 2` while retaining `opt-level = 3` for dependencies (`[profile.release.package."*"]`);
-  audio DSP and diarization live in standalone crates with their own `Cargo.toml`.
+  `opt-level = 2` via `[profile.release.package.scriber-desktop]` so external
+  dependencies retain Cargo's default release `-O3` and build scripts /
+  proc-macros stay at Cargo's default `-O0`; audio DSP and diarization live in
+  standalone crates with their own `Cargo.toml`.
   Do not restore Tauri mobile `staticlib`/`cdylib` outputs unless mobile targets
   are introduced; they create extra release library artifacts that do not help
   the NSIS updater build.
-- Cold Windows release producers avoid redundant toolchain installs:
-  `prepare-tauri-cold` uses the runner's preinstalled Python `3.14` minor
-  series for stdlib helper scripts instead of downloading the exact CPython
-  patch installer, `release-qualification.yml` does the same for its three
-  Ubuntu stdlib API jobs, and `prepare-backend-cold` sets up Rust and restores
-  shared Rust dependency caches only when the audio or diarization sidecar
-  caches miss. `build-windows` restores the `nsis-3.13` Tauri bundler cache and
-  `Frontend/node_modules` before waiting on cold producers so they overlap
-  producer compilation, and polls cold product readiness every 5 seconds.
+- Cold Windows release producers and stdlib planners avoid redundant toolchain
+  installs: `release-plan`, `prepare-tauri-cold`, and `release-qualification.yml`
+  use the runner's preinstalled Python `3.14` minor series for stdlib helper
+  scripts (keeping `SCRIBER_RELEASE_PYTHON_VERSION` explicit for frozen-runtime
+  probing and builds), and `prepare-backend-cold` validates restored Rust audio
+  and diarization sidecar caches (`-ValidateRustWorkerCachesOnly`) before
+  deciding whether to set up pinned Rust `1.97.0`, restore Sherpa ONNX / shared
+  Rust dependency caches, or mark rebuilt worker caches for publication. Both
+  Rust worker rebuild paths enforce native Rust `1.97.0` for
+  `x86_64-pc-windows-msvc`. `build-windows` restores the `nsis-3.13` Tauri
+  bundler cache and `Frontend/node_modules` before waiting on cold producers so
+  they overlap producer compilation, and polls cold product readiness every 5
+  seconds.
+- `Frontend\src-tauri\tauri.conf.json` and `-FastLocalInstaller` default to
+  efficient NSIS `/SOLID bzip2` compression (`SetCompressor /SOLID "bzip2"` in
+  `installer-template.nsi`), matching the measured signed-tag production
+  variable `SCRIBER_NSIS_COMPRESSION=bzip2` while preserving explicit
+  `lzma`/`zlib`/`none` overrides.
 - `scripts/ci/github_release_api.py` uses thread-local HTTP/1.1 Keep-Alive
-  connections (stripping `Authorization` on every asset-download redirect),
-  `scripts/ci/wait_release_quality_gates.py`'s `gh_json()` reuses that
-  Keep-Alive client when `GH_TOKEN`/`GITHUB_TOKEN` is set instead of spawning a
-  `gh` subprocess per API call, and `sync_draft_release_assets.py` /
+  connections with zero-timeout socket liveness checks before reuse,
+  per-request deadline enforcement across pooled sockets, loopback HTTP
+  restricted to loopback-configured test clients, upload final-chunk holding
+  until SHA-256 verification completes, and `Authorization` stripping on every
+  asset-download redirect. `scripts/ci/wait_release_quality_gates.py`'s
+  `gh_json()` reuses that Keep-Alive client when `GH_TOKEN`/`GITHUB_TOKEN` is
+  set (falling back to `gh api` when an HTTPS proxy applies to
+  `api.github.com`), and `sync_draft_release_assets.py` /
   `verify_github_release_state.py` verify downloaded assets concurrently
   (largest-first, bounded workers) when backed by `GitHubApi`, preserving every
   exact-ID and SHA-256 invariant.

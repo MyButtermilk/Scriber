@@ -24,6 +24,7 @@ def test_tauri_uses_the_reviewed_scriber_nsis_template():
     config = json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))
     nsis = config["bundle"]["windows"]["nsis"]
 
+    assert nsis["compression"] == "bzip2"
     assert nsis["installMode"] == "currentUser"
     assert nsis["template"] == "./windows/installer-template.nsi"
     assert nsis["installerHooks"] == "./windows/installer-hooks.nsh"

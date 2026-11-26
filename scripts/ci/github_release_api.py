@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import http.client
 import json
+import select
 import ssl
 import threading
 import time
@@ -22,6 +23,8 @@ MAX_JSON_REQUEST_BYTES = 64 * 1024
 MAX_ASSET_BYTES = 512 * 1024 * 1024
 MAX_DOWNLOAD_REDIRECTS = 5
 KEEPALIVE_IDLE_TTL_SEC = 15.0
+GET_KEEPALIVE_IDLE_TTL_SEC = 60.0
+MUTATING_KEEPALIVE_IDLE_TTL_SEC = 1.0
 UPLOAD_HOST = "uploads.github.com"
 _DEFAULT_URLOPEN = urlopen
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
@@ -61,15 +64,22 @@ class _FileUploadBody:
         self._started = True
         size_bytes = 0
         digest = hashlib.sha256()
+        # Hold back the final chunk until EOF and SHA-256 verification succeed
+        # so a same-size mid-upload mutation aborts before Content-Length completes.
+        pending_chunk: bytes | None = None
         with self._source.open("rb") as source:
             while chunk := source.read(1024 * 1024):
                 size_bytes += len(chunk)
                 if size_bytes > self._expected_size or size_bytes > MAX_ASSET_BYTES:
                     raise GitHubApiError("GitHub release asset changed or exceeded its upload-size limit.")
                 digest.update(chunk)
-                yield chunk
+                if pending_chunk is not None:
+                    yield pending_chunk
+                pending_chunk = chunk
         if size_bytes != self._expected_size or digest.hexdigest() != self._expected_sha256:
             raise GitHubApiError("GitHub release asset changed while it was being uploaded.")
+        if pending_chunk is not None:
+            yield pending_chunk
         self.completed = True
 
 
@@ -86,6 +96,11 @@ class GitHubApi:
             raise ValueError("A GitHub API token is required.")
         self._token = token
         self._api_url = api_url.rstrip("/")
+        parsed_api = urlsplit(self._api_url)
+        self._allow_loopback_http = parsed_api.scheme.lower() == "http" and (parsed_api.hostname or "").lower() in {
+            "127.0.0.1",
+            "localhost",
+        }
         self._timeout_sec = timeout_sec
         self._ssl_context = ssl.create_default_context()
         self._local = threading.local()
@@ -114,12 +129,40 @@ class GitHubApi:
             self._local.pool = pool
         return pool
 
+    @staticmethod
+    def _is_connection_alive(connection: http.client.HTTPConnection) -> bool:
+        sock = connection.sock
+        if sock is None:
+            return False
+        try:
+            # A healthy idle keep-alive socket must not already be readable;
+            # readiness indicates a server FIN/RST or unexpected trailing data.
+            readable, _, exceptional = select.select([sock], [], [sock], 0.0)
+            return not readable and not exceptional
+        except OSError, ValueError:
+            return False
+
+    @staticmethod
+    def _remaining_timeout(deadline: float, *, label: str) -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise GitHubApiError(f"GitHub API {label} timed out.")
+        return remaining
+
+    @staticmethod
+    def _apply_socket_timeout(connection: http.client.HTTPConnection, timeout_sec: float) -> None:
+        connection.timeout = timeout_sec
+        if connection.sock is not None:
+            connection.sock.settimeout(timeout_sec)
+
     def _acquire_connection(
         self,
         *,
         scheme: str,
         host: str,
         port: int,
+        timeout_sec: float,
+        max_idle_sec: float,
     ) -> tuple[http.client.HTTPConnection, bool]:
         key = (scheme, host, port)
         pool = self._pool()
@@ -127,23 +170,25 @@ class GitHubApi:
         now = time.monotonic()
         if entry is not None:
             existing, last_used = entry
-            if existing.sock is not None and (now - last_used) <= KEEPALIVE_IDLE_TTL_SEC:
-                return existing, True
-            pool.pop(key, None)
-            with contextlib.suppress(OSError):
-                existing.close()
+            if (now - last_used) <= max_idle_sec and self._is_connection_alive(existing):
+                try:
+                    self._apply_socket_timeout(existing, timeout_sec)
+                    return existing, True
+                except OSError:
+                    pass
+            self._discard_connection(scheme=scheme, host=host, port=port)
         if scheme == "https":
             connection: http.client.HTTPConnection = http.client.HTTPSConnection(
                 host,
                 port,
-                timeout=self._timeout_sec,
+                timeout=timeout_sec,
                 context=self._ssl_context,
             )
-        elif scheme == "http" and host in {"127.0.0.1", "localhost"}:
+        elif scheme == "http" and self._allow_loopback_http and host in {"127.0.0.1", "localhost"}:
             connection = http.client.HTTPConnection(
                 host,
                 port,
-                timeout=self._timeout_sec,
+                timeout=timeout_sec,
             )
         else:
             raise GitHubApiError(f"Refusing non-HTTPS connection to {host!r}.")
@@ -162,8 +207,11 @@ class GitHubApi:
     def _discard_connection(self, *, scheme: str, host: str, port: int) -> None:
         entry = self._pool().pop((scheme, host, port), None)
         if entry is not None:
+            connection = entry[0]
+            with self._connections_lock, contextlib.suppress(ValueError):
+                self._tracked_connections.remove(connection)
             with contextlib.suppress(OSError):
-                entry[0].close()
+                connection.close()
 
     @staticmethod
     def _parse_endpoint(url: str) -> tuple[str, str, int, str]:
@@ -187,7 +235,12 @@ class GitHubApi:
         accept: str,
         body: bytes | None,
         content_type: str | None,
+        timeout_sec: float | None = None,
     ) -> bytes:
+        effective_timeout = self._timeout_sec if timeout_sec is None else timeout_sec
+        if effective_timeout <= 0:
+            raise GitHubApiError(f"GitHub API {method} {path} timed out.")
+        deadline = time.monotonic() + effective_timeout
         scheme, host, port, target = self._parse_endpoint(f"{self._api_url}{path}")
         headers = {
             "Accept": accept,
@@ -202,17 +255,30 @@ class GitHubApi:
             headers["Content-Length"] = str(len(body))
 
         max_attempts = 2 if method == "GET" else 1
+        max_idle_sec = GET_KEEPALIVE_IDLE_TTL_SEC if method == "GET" else MUTATING_KEEPALIVE_IDLE_TTL_SEC
         for attempt in range(max_attempts):
-            connection, reused = self._acquire_connection(scheme=scheme, host=host, port=port)
+            remaining = self._remaining_timeout(deadline, label=f"{method} {path}")
+            connection, reused = self._acquire_connection(
+                scheme=scheme,
+                host=host,
+                port=port,
+                timeout_sec=remaining,
+                max_idle_sec=max_idle_sec,
+            )
             try:
                 connection.request(method, target, body=body, headers=headers)
+                self._apply_socket_timeout(connection, self._remaining_timeout(deadline, label=f"{method} {path}"))
                 response = connection.getresponse()
                 status = int(response.status)
+                self._apply_socket_timeout(connection, self._remaining_timeout(deadline, label=f"{method} {path}"))
                 payload = response.read(MAX_RESPONSE_BYTES + 1)
                 if response.will_close or len(payload) > MAX_RESPONSE_BYTES:
                     self._discard_connection(scheme=scheme, host=host, port=port)
                 else:
                     self._touch_connection(scheme=scheme, host=host, port=port)
+            except GitHubApiError:
+                self._discard_connection(scheme=scheme, host=host, port=port)
+                raise
             except _STALE_KEEPALIVE_ERRORS as error:
                 self._discard_connection(scheme=scheme, host=host, port=port)
                 if reused and attempt + 1 < max_attempts:
@@ -245,9 +311,11 @@ class GitHubApi:
         accept: str = "application/vnd.github+json",
         body: bytes | None = None,
         content_type: str | None = None,
+        timeout_sec: float | None = None,
     ) -> bytes:
         if not path.startswith("/") or path.startswith("//"):
             raise ValueError("GitHub API paths must be absolute API paths.")
+        effective_timeout = self._timeout_sec if timeout_sec is None else timeout_sec
         if urlopen is _DEFAULT_URLOPEN:
             return self._request_keepalive(
                 path,
@@ -256,6 +324,7 @@ class GitHubApi:
                 accept=accept,
                 body=body,
                 content_type=content_type,
+                timeout_sec=effective_timeout,
             )
         request = self._build_request(
             path,
@@ -265,7 +334,7 @@ class GitHubApi:
             content_type=content_type,
         )
         try:
-            with urlopen(request, timeout=self._timeout_sec) as response:
+            with urlopen(request, timeout=effective_timeout) as response:
                 status = int(response.status)
                 payload = response.read(MAX_RESPONSE_BYTES + 1)
         except HTTPError as error:
@@ -335,12 +404,12 @@ class GitHubApi:
             raise ValueError(f"GitHub API {method} {path} request exceeded the JSON-size limit.")
         return payload
 
-    def get_json(self, path: str) -> dict[str, Any]:
-        payload = self._request(path, method="GET", expected_status=200)
+    def get_json(self, path: str, *, timeout_sec: float | None = None) -> dict[str, Any]:
+        payload = self._request(path, method="GET", expected_status=200, timeout_sec=timeout_sec)
         return self._parse_json_object(payload, method="GET", path=path)
 
-    def get_json_list(self, path: str) -> list[dict[str, Any]]:
-        payload = self._request(path, method="GET", expected_status=200)
+    def get_json_list(self, path: str, *, timeout_sec: float | None = None) -> list[dict[str, Any]]:
+        payload = self._request(path, method="GET", expected_status=200, timeout_sec=timeout_sec)
         try:
             parsed = json.loads(payload)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -355,6 +424,7 @@ class GitHubApi:
         value: dict[str, Any],
         *,
         expected_status: int = 201,
+        timeout_sec: float | None = None,
     ) -> dict[str, Any]:
         if expected_status not in {200, 201}:
             raise ValueError("GitHub API JSON POST status must be 200 or 201.")
@@ -364,16 +434,24 @@ class GitHubApi:
             expected_status=expected_status,
             body=self._encode_json_object(value, method="POST", path=path),
             content_type="application/json",
+            timeout_sec=timeout_sec,
         )
         return self._parse_json_object(payload, method="POST", path=path)
 
-    def patch_json(self, path: str, value: dict[str, Any]) -> dict[str, Any]:
+    def patch_json(
+        self,
+        path: str,
+        value: dict[str, Any],
+        *,
+        timeout_sec: float | None = None,
+    ) -> dict[str, Any]:
         payload = self._request(
             path,
             method="PATCH",
             expected_status=200,
             body=self._encode_json_object(value, method="PATCH", path=path),
             content_type="application/json",
+            timeout_sec=timeout_sec,
         )
         return self._parse_json_object(payload, method="PATCH", path=path)
 
@@ -383,7 +461,12 @@ class GitHubApi:
         *,
         destination: Path,
         max_bytes: int,
+        timeout_sec: float | None = None,
     ) -> dict[str, Any]:
+        effective_timeout = self._timeout_sec if timeout_sec is None else timeout_sec
+        if effective_timeout <= 0:
+            raise GitHubApiError(f"GitHub API GET {path} timed out.")
+        deadline = time.monotonic() + effective_timeout
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_name(f".{destination.name}.partial-{uuid4().hex}")
         current_url = f"{self._api_url}{path}"
@@ -400,13 +483,25 @@ class GitHubApi:
                 if send_authorization:
                     headers["Authorization"] = f"Bearer {self._token}"
 
+                connection: http.client.HTTPConnection | None = None
                 response: http.client.HTTPResponse | None = None
                 for attempt in range(2):
-                    connection, reused = self._acquire_connection(scheme=scheme, host=host, port=port)
+                    remaining = self._remaining_timeout(deadline, label=f"GET {path}")
+                    connection, reused = self._acquire_connection(
+                        scheme=scheme,
+                        host=host,
+                        port=port,
+                        timeout_sec=remaining,
+                        max_idle_sec=GET_KEEPALIVE_IDLE_TTL_SEC,
+                    )
                     try:
                         connection.request("GET", target, headers=headers)
+                        self._apply_socket_timeout(connection, self._remaining_timeout(deadline, label=f"GET {path}"))
                         response = connection.getresponse()
                         break
+                    except GitHubApiError:
+                        self._discard_connection(scheme=scheme, host=host, port=port)
+                        raise
                     except _STALE_KEEPALIVE_ERRORS as error:
                         self._discard_connection(scheme=scheme, host=host, port=port)
                         if reused and attempt == 0:
@@ -415,18 +510,27 @@ class GitHubApi:
                     except (http.client.HTTPException, OSError) as error:
                         self._discard_connection(scheme=scheme, host=host, port=port)
                         raise GitHubApiError(f"GitHub API GET {path} could not be reached.") from error
-                if response is None:
+                if response is None or connection is None:
                     raise GitHubApiError(f"GitHub API GET {path} could not be reached.")
 
                 status = int(response.status)
                 if status in _REDIRECT_STATUSES:
                     location = response.getheader("Location")
+                    discarded = False
                     try:
-                        response.read(MAX_RESPONSE_BYTES + 1)
-                    except http.client.HTTPException, OSError:
+                        self._apply_socket_timeout(connection, self._remaining_timeout(deadline, label=f"GET {path}"))
+                        redirect_body = response.read(MAX_RESPONSE_BYTES + 1)
+                        if len(redirect_body) > MAX_RESPONSE_BYTES:
+                            self._discard_connection(scheme=scheme, host=host, port=port)
+                            discarded = True
+                    except GitHubApiError, http.client.HTTPException, OSError:
                         self._discard_connection(scheme=scheme, host=host, port=port)
-                    if response.will_close:
-                        self._discard_connection(scheme=scheme, host=host, port=port)
+                        discarded = True
+                    if not discarded:
+                        if response.will_close:
+                            self._discard_connection(scheme=scheme, host=host, port=port)
+                        else:
+                            self._touch_connection(scheme=scheme, host=host, port=port)
                     if not location:
                         raise GitHubApiError(
                             f"GitHub API GET {path} returned redirect HTTP {status} without Location.",
@@ -438,12 +542,21 @@ class GitHubApi:
                     continue
 
                 if status != 200:
+                    discarded = False
                     try:
-                        response.read(MAX_RESPONSE_BYTES + 1)
-                    except http.client.HTTPException, OSError:
+                        self._apply_socket_timeout(connection, self._remaining_timeout(deadline, label=f"GET {path}"))
+                        error_body = response.read(MAX_RESPONSE_BYTES + 1)
+                        if len(error_body) > MAX_RESPONSE_BYTES:
+                            self._discard_connection(scheme=scheme, host=host, port=port)
+                            discarded = True
+                    except GitHubApiError, http.client.HTTPException, OSError:
                         self._discard_connection(scheme=scheme, host=host, port=port)
-                    if response.will_close:
-                        self._discard_connection(scheme=scheme, host=host, port=port)
+                        discarded = True
+                    if not discarded:
+                        if response.will_close:
+                            self._discard_connection(scheme=scheme, host=host, port=port)
+                        else:
+                            self._touch_connection(scheme=scheme, host=host, port=port)
                     raise GitHubApiError(
                         f"GitHub API GET {path} returned HTTP {status}, expected 200.",
                         status_code=status,
@@ -453,13 +566,22 @@ class GitHubApi:
                 digest = hashlib.sha256()
                 try:
                     with temporary.open("wb") as output:
-                        while chunk := response.read(1024 * 1024):
+                        while True:
+                            self._apply_socket_timeout(
+                                connection, self._remaining_timeout(deadline, label=f"GET {path}")
+                            )
+                            chunk = response.read(1024 * 1024)
+                            if not chunk:
+                                break
                             size_bytes += len(chunk)
                             if size_bytes > max_bytes:
                                 self._discard_connection(scheme=scheme, host=host, port=port)
                                 raise GitHubApiError(f"GitHub release asset {path} exceeded the download-size limit.")
                             digest.update(chunk)
                             output.write(chunk)
+                except GitHubApiError:
+                    self._discard_connection(scheme=scheme, host=host, port=port)
+                    raise
                 except (http.client.HTTPException, OSError) as error:
                     self._discard_connection(scheme=scheme, host=host, port=port)
                     raise GitHubApiError(f"GitHub API GET {path} could not be reached.") from error
@@ -541,9 +663,20 @@ class GitHubApi:
         path_label: str,
         body: _FileUploadBody,
         expected_size: int,
+        timeout_sec: float | None = None,
     ) -> dict[str, Any]:
+        effective_timeout = self._timeout_sec if timeout_sec is None else timeout_sec
+        if effective_timeout <= 0:
+            raise GitHubApiError(f"GitHub API POST {path_label} timed out.")
+        deadline = time.monotonic() + effective_timeout
         scheme, host, port, target = self._parse_endpoint(f"{base_url}?{query}")
-        connection, _reused = self._acquire_connection(scheme=scheme, host=host, port=port)
+        connection, _reused = self._acquire_connection(
+            scheme=scheme,
+            host=host,
+            port=port,
+            timeout_sec=self._remaining_timeout(deadline, label=f"POST {path_label}"),
+            max_idle_sec=MUTATING_KEEPALIVE_IDLE_TTL_SEC,
+        )
         try:
             connection.putrequest("POST", target)
             connection.putheader("Accept", "application/vnd.github+json")
@@ -555,9 +688,12 @@ class GitHubApi:
             connection.putheader("X-GitHub-Api-Version", "2022-11-28")
             connection.endheaders()
             for chunk in body:
+                self._apply_socket_timeout(connection, self._remaining_timeout(deadline, label=f"POST {path_label}"))
                 connection.send(chunk)
+            self._apply_socket_timeout(connection, self._remaining_timeout(deadline, label=f"POST {path_label}"))
             response = connection.getresponse()
             status = int(response.status)
+            self._apply_socket_timeout(connection, self._remaining_timeout(deadline, label=f"POST {path_label}"))
             payload = response.read(MAX_RESPONSE_BYTES + 1)
             if response.will_close or len(payload) > MAX_RESPONSE_BYTES:
                 self._discard_connection(scheme=scheme, host=host, port=port)

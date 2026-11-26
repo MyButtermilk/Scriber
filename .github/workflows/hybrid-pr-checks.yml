@@ -46,7 +46,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
-          python scripts/ci/wait_release_quality_gates.py
+          python -m scripts.ci.wait_release_quality_gates
           --repo "${{ github.repository }}"
           --run-id "${{ github.run_id }}"
           --run-attempt "${{ github.run_attempt }}"

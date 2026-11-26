@@ -87,7 +87,8 @@ def test_release_barrier_is_exercised_against_real_current_run_checks() -> None:
     job = _workflow_jobs()["release-quality-contract"]
     assert job["needs"] == "quality-gates"
     assert job["permissions"] == {"contents": "read", "actions": "read"}
-    invocation = next(step for step in job["steps"] if "wait_release_quality_gates.py" in step.get("run", ""))
+    invocation = next(step for step in job["steps"] if "scripts.ci.wait_release_quality_gates" in step.get("run", ""))
+    assert "python -m scripts.ci.wait_release_quality_gates" in invocation["run"]
     assert '--job-prefix "Reusable quality gates"' in invocation["run"]
     for identity in (
         "github.repository",

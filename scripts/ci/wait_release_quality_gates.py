@@ -17,8 +17,12 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.request import getproxies, proxy_bypass
 
-from scripts.ci.github_release_api import GitHubApi, GitHubApiError
+try:
+    from scripts.ci.github_release_api import GitHubApi, GitHubApiError
+except ModuleNotFoundError:
+    from github_release_api import GitHubApi, GitHubApiError  # type: ignore[import-not-found,no-redef]
 
 QUALITY_PREFIX = "Exact-revision quality gates / "
 JOB_PREFIXES = ("Exact-revision quality gates", "Reusable quality gates")
@@ -41,26 +45,31 @@ class GateError(Exception):
     """A fixed diagnostic code, never an API response or subprocess stderr."""
 
 
-def _shared_github_api(token: str, timeout: float) -> GitHubApi:
+def _uses_https_proxy(host: str = "api.github.com") -> bool:
+    proxies = getproxies()
+    if not (proxies.get("https") or proxies.get("all")):
+        return False
+    return not proxy_bypass(host)
+
+
+def _shared_github_api(token: str) -> GitHubApi:
     global _API_CLIENT
     with _API_CLIENT_LOCK:
         if _API_CLIENT is None or _API_CLIENT[0] != token:
             if _API_CLIENT is not None:
                 _API_CLIENT[1].close()
-            _API_CLIENT = (token, GitHubApi(token=token, timeout_sec=timeout))
-        client = _API_CLIENT[1]
-        client._timeout_sec = timeout
-        return client
+            _API_CLIENT = (token, GitHubApi(token=token, timeout_sec=30.0))
+        return _API_CLIENT[1]
 
 
 def gh_json(endpoint: str, timeout: float) -> dict[str, Any]:
     token = (os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN") or "").strip()
-    if token and subprocess.run is _DEFAULT_SUBPROCESS_RUN:
+    if token and subprocess.run is _DEFAULT_SUBPROCESS_RUN and not _uses_https_proxy():
         normalized = endpoint if endpoint.startswith("/") else f"/{endpoint}"
         if normalized.startswith("//") or "://" in endpoint:
             raise GateError("github_request_failed")
         try:
-            value = _shared_github_api(token, timeout).get_json(normalized)
+            value = _shared_github_api(token).get_json(normalized, timeout_sec=timeout)
         except GitHubApiError as error:
             if "did not return valid JSON" in str(error) or "did not return a JSON object" in str(error):
                 raise GateError("invalid_github_json") from None

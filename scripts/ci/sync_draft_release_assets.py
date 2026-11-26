@@ -486,13 +486,6 @@ def sync_draft_release_assets(
 
     uploaded: dict[str, dict[str, Any]] = {}
     for name, local in expected.items():
-        current_assets = _listed_assets(
-            api,
-            repository=repository,
-            release_id=release_id,
-            complete=True,
-        )
-        _assert_remote_asset_set(current_assets, expected=expected, uploaded=uploaded)
         size_bytes, digest = _sha256_file(local["source"], expected_size=local["sizeBytes"])
         if size_bytes != local["sizeBytes"] or digest != local["sha256"]:
             raise ValueError(f"Release asset {name!r} changed before upload.")

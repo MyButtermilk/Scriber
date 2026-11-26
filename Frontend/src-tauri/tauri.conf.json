@@ -47,6 +47,7 @@
     },
     "windows": {
       "nsis": {
+        "compression": "bzip2",
         "installMode": "currentUser",
         "template": "./windows/installer-template.nsi",
         "installerHooks": "./windows/installer-hooks.nsh"

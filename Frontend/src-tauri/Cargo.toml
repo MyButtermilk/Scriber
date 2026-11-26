@@ -88,11 +88,9 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 
-[profile.release]
-# Optimize the desktop UI/IPC shell at level 2 while keeping dependencies at
-# level 3; audio DSP and diarization live in standalone crates with their own
-# Cargo.toml and keep full -O3.
+[profile.release.package.scriber-desktop]
+# Optimize the desktop UI/IPC shell at level 2 while preserving Cargo's default
+# release settings (dependencies at -O3, build scripts / proc-macros at -O0);
+# audio DSP and diarization live in standalone crates with their own Cargo.toml
+# and keep full -O3.
 opt-level = 2
-
-[profile.release.package."*"]
-opt-level = 3

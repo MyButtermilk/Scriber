@@ -100,7 +100,7 @@ jobs:
       - name: Set up release planning Python
         uses: actions/setup-python@v6
         with:
-          python-version: ${{ env.SCRIBER_RELEASE_PYTHON_VERSION }}
+          python-version: "3.14"
 
       - name: Select exact-revision quality evidence
         id: quality-source
@@ -522,13 +522,6 @@ jobs:
           path: build/rust-diarization-sidecar-cache
           key: scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}
 
-      - name: Restore Sherpa ONNX archive cache
-        if: steps.cold-rust-diarization-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/restore@v6
-        with:
-          path: build/sherpa-onnx-archive-cache
-          key: scriber-sherpa-onnx-archive-${{ runner.os }}-${{ hashFiles('build/cache-keys/sherpa-onnx-archive.txt') }}
-
       - name: Restore FFmpeg Profile B cache
         id: cold-ffmpeg-cache
         uses: actions/cache/restore@v6
@@ -562,20 +555,37 @@ jobs:
           if ("${{ steps.cold-ffmpeg-cache.outputs.cache-hit }}" -ne "true") { $arguments.RestoreFfmpeg = $true }
           & .\scripts\ci\restore_component_cache_artifacts_parallel.ps1 @arguments
 
+      - name: Resolve Rust worker caches
+        id: cold-rust-workers
+        shell: pwsh
+        run: |
+          $pythonPath = if (Test-Path -LiteralPath ".\.venv\Scripts\python.exe" -PathType Leaf) { ".\.venv\Scripts\python.exe" } else { "python" }
+          $raw = & .\scripts\build_tauri_backend_sidecar.ps1 -PythonPath $pythonPath -ValidateRustWorkerCachesOnly
+          if ($LASTEXITCODE -ne 0) {
+            throw "Rust worker cache usability validation failed."
+          }
+          $validation = ($raw | Out-String).Trim() | ConvertFrom-Json
+          $audioUsable = [bool]$validation.audioUsable
+          $diarizationUsable = [bool]$validation.diarizationUsable
+          $rustNeeded = [bool]$validation.rustNeeded
+          "audio-usable=$($audioUsable.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "diarization-usable=$($diarizationUsable.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "rust-needed=$($rustNeeded.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Validated Rust worker caches: audioUsable=$audioUsable diarizationUsable=$diarizationUsable rustNeeded=$rustNeeded"
+
+      - name: Restore Sherpa ONNX archive cache
+        if: steps.cold-rust-workers.outputs.diarization-usable != 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: build/sherpa-onnx-archive-cache
+          key: scriber-sherpa-onnx-archive-${{ runner.os }}-${{ hashFiles('build/cache-keys/sherpa-onnx-archive.txt') }}
+
       - name: Set up Rust
-        if: >-
-          (steps.cold-rust-audio-cache.outputs.cache-hit != 'true' &&
-           steps.cold-component-artifacts.outputs.rust-audio-sidecar-restored != 'true') ||
-          (steps.cold-rust-diarization-cache.outputs.cache-hit != 'true' &&
-           steps.cold-component-artifacts.outputs.rust-diarization-sidecar-restored != 'true')
+        if: steps.cold-rust-workers.outputs.rust-needed == 'true'
         uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
 
       - name: Restore Rust dependency state
-        if: >-
-          (steps.cold-rust-audio-cache.outputs.cache-hit != 'true' &&
-           steps.cold-component-artifacts.outputs.rust-audio-sidecar-restored != 'true') ||
-          (steps.cold-rust-diarization-cache.outputs.cache-hit != 'true' &&
-           steps.cold-component-artifacts.outputs.rust-diarization-sidecar-restored != 'true')
+        if: steps.cold-rust-workers.outputs.rust-needed == 'true'
         uses: actions/cache/restore@v6
         with:
           path: |
@@ -591,11 +601,7 @@ jobs:
             scriber-rust-dependencies-v1-${{ runner.os }}-
 
       - name: Remove application outputs from Rust dependency state
-        if: >-
-          (steps.cold-rust-audio-cache.outputs.cache-hit != 'true' &&
-           steps.cold-component-artifacts.outputs.rust-audio-sidecar-restored != 'true') ||
-          (steps.cold-rust-diarization-cache.outputs.cache-hit != 'true' &&
-           steps.cold-component-artifacts.outputs.rust-diarization-sidecar-restored != 'true')
+        if: steps.cold-rust-workers.outputs.rust-needed == 'true'
         shell: pwsh
         run: |
           & .\scripts\ci\prune_rust_dependency_cache.ps1
@@ -669,9 +675,9 @@ jobs:
             PublishBackend = $true
           }
           if ("${{ steps.cold-backend-runtime.outputs.usable }}" -ne "true") { $exportArguments.PublishBackendRuntime = $true }
-          if ("${{ steps.cold-rust-audio-cache.outputs.cache-hit }}" -ne "true" -and "${{ steps.cold-component-artifacts.outputs.rust-audio-sidecar-restored }}" -ne "true") { $exportArguments.PublishRustAudio = $true }
-          if ("${{ steps.cold-rust-diarization-cache.outputs.cache-hit }}" -ne "true" -and "${{ steps.cold-component-artifacts.outputs.rust-diarization-sidecar-restored }}" -ne "true") { $exportArguments.PublishRustDiarization = $true }
-          if ("${{ steps.cold-ffmpeg-cache.outputs.cache-hit }}" -ne "true" -and "${{ steps.cold-component-artifacts.outputs.ffmpeg-profile-b-restored }}" -ne "true") { $exportArguments.PublishFfmpeg = $true }
+          if ("${{ steps.cold-rust-workers.outputs.audio-usable }}" -ne "true") { $exportArguments.PublishRustAudio = $true }
+          if ("${{ steps.cold-rust-workers.outputs.diarization-usable }}" -ne "true") { $exportArguments.PublishRustDiarization = $true }
+          if ("${{ steps.cold-ffmpeg.outputs.usable }}" -ne "true") { $exportArguments.PublishFfmpeg = $true }
           & .\scripts\ci\sync_cold_backend_product.ps1 @exportArguments
 
       - name: Upload attested backend product

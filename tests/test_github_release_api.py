@@ -309,3 +309,182 @@ def test_github_api_keepalive_reuses_connection_and_strips_auth_on_download_redi
         "Bearer private-release-token",
     ]
     assert seen_auth["blob"] == [None]
+
+
+def test_github_api_keepalive_handles_stale_sockets_uploads_redirects_timeouts_and_threads(
+    tmp_path: Path,
+) -> None:
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    post_attempts = 0
+    upload_bodies: list[bytes] = []
+    close_after_response = {"enabled": False}
+
+    class _Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, format: str, *args: object) -> None:
+            return None
+
+        def do_GET(self) -> None:
+            if self.path == "/ping":
+                body = b'{"ok":true}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                if close_after_response["enabled"]:
+                    self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(body)
+                if close_after_response["enabled"]:
+                    self.close_connection = True
+                return
+            if self.path == "/slow":
+                time.sleep(0.35)
+                body = b'{"slow":true}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if self.path == "/redirect-loop":
+                self.send_response(302)
+                self.send_header("Location", "/redirect-loop")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if self.path.startswith("/assets/"):
+                payload = f"asset-bytes-{self.path}".encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_POST(self) -> None:
+            nonlocal post_attempts
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length)
+            if self.path == "/drop-mid-response":
+                post_attempts += 1
+                self.close_connection = True
+                return
+            if self.path.startswith("/repos/example/project/releases/42/assets"):
+                upload_bodies.append(raw)
+                body = (
+                    f'{{"id":101,"name":"demo.bin","state":"uploaded","size":{len(raw)},'
+                    f'"digest":"sha256:{sha256(raw).hexdigest()}"}}'
+                ).encode()
+                self.send_response(201)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            body = b'{"created":true}'
+            self.send_response(201)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    api = GitHubApi(token="private-release-token", api_url=base, timeout_sec=5.0)
+    try:
+        # 1. Server closes idle connection silently -> liveness check replaces it for POST.
+        assert api.get_json("/ping") == {"ok": True}
+        pooled_conn = next(iter(api._pool().values()))[0]
+        assert pooled_conn.sock is not None
+        # Simulate peer FIN by closing the server-accepted half via Connection: close first,
+        # and also verify _tracked_connections shrinks on discard.
+        close_after_response["enabled"] = True
+        assert api.get_json("/ping") == {"ok": True}
+        assert len(api._tracked_connections) == 0
+        close_after_response["enabled"] = False
+
+        # 2. Mutating POST never retries when server drops after receiving request bytes.
+        assert api.get_json("/ping") == {"ok": True}
+        with pytest.raises(GitHubApiError, match="could not be reached"):
+            api.post_json("/drop-mid-response", {"draft": True})
+        assert post_attempts == 1
+
+        # 3. _upload_keepalive streams and succeeds cleanly; tampered file fails before completion.
+        payload = b"streamed-keepalive-upload-bytes"
+        source = tmp_path / "demo.bin"
+        source.write_bytes(payload)
+        uploaded = api._upload_keepalive(
+            base_url=f"{base}/repos/example/project/releases/42/assets",
+            query="name=demo.bin",
+            path_label="/repos/example/project/releases/42/assets",
+            body=github_release_api._FileUploadBody(
+                source=source,
+                expected_size=len(payload),
+                expected_sha256=sha256(payload).hexdigest(),
+            ),
+            expected_size=len(payload),
+        )
+        assert uploaded["id"] == 101
+        assert upload_bodies == [payload]
+
+        # Same-size mutation detected before final chunk is sent -> server never stores it.
+        tampered = tmp_path / "tampered.bin"
+        tampered.write_bytes(b"X" * len(payload))
+        with pytest.raises(GitHubApiError, match="changed while it was being uploaded"):
+            api._upload_keepalive(
+                base_url=f"{base}/repos/example/project/releases/42/assets",
+                query="name=tampered.bin",
+                path_label="/repos/example/project/releases/42/assets",
+                body=github_release_api._FileUploadBody(
+                    source=tampered,
+                    expected_size=len(payload),
+                    expected_sha256=sha256(payload).hexdigest(),
+                ),
+                expected_size=len(payload),
+            )
+        assert len(upload_bodies) == 1
+
+        # 4. Redirect limit is enforced.
+        with pytest.raises(GitHubApiError, match="redirect limit"):
+            api.download_asset("/redirect-loop", destination=tmp_path / "loop.bin", max_bytes=128)
+
+        # 5. Per-request timeout_sec is enforced even on a reused pooled socket.
+        assert api.get_json("/ping", timeout_sec=5.0) == {"ok": True}
+        with pytest.raises(GitHubApiError, match="could not be reached|timed out"):
+            api.get_json("/slow", timeout_sec=0.05)
+
+        # 6. Concurrent threaded downloads isolate sockets per thread.
+        def _dl(idx: int) -> bytes:
+            dest = tmp_path / f"asset-{idx}.bin"
+            api.download_asset(f"/assets/{idx}", destination=dest, max_bytes=128)
+            return dest.read_bytes()
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(_dl, range(6)))
+        assert results == [f"asset-bytes-/assets/{idx}".encode() for idx in range(6)]
+    finally:
+        api.close()
+        server.shutdown()
+        server.server_close()
+
+
+def test_github_api_https_client_refuses_loopback_http_downgrade() -> None:
+    https_api = GitHubApi(token="private-release-token", api_url="https://api.github.com")
+    with pytest.raises(GitHubApiError, match="Refusing non-HTTPS connection"):
+        https_api._acquire_connection(
+            scheme="http",
+            host="127.0.0.1",
+            port=8080,
+            timeout_sec=5.0,
+            max_idle_sec=15.0,
+        )

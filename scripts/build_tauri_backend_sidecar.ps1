@@ -52,6 +52,7 @@ param(
     [switch]$RustDiarizationPrestageOnly,
     [string]$RustDiarizationResultPath = "",
     [string]$RustDiarizationPrestageBackendDir = "",
+    [switch]$ValidateRustWorkerCachesOnly,
     [switch]$DeterministicResearchMetadata,
     [switch]$LocalPyInstallerNoClean,
     [ValidateSet("Official", "ClangPgo", "ClangPgoTail")]
@@ -2173,6 +2174,97 @@ function Invoke-DiarizationWorkerResourceSmoke {
     return $smoke
 }
 
+function Test-RustAudioSidecarCacheUsable {
+    param([string]$Root)
+
+    $cacheRoot = Join-Path $Root "build\rust-audio-sidecar-cache"
+    Assert-UnderRoot -Root $Root -Path $cacheRoot -Label "Rust audio sidecar cache"
+    $exeName = if ($IsWindows -or $env:OS -eq "Windows_NT") { "scriber-audio-sidecar.exe" } else { "scriber-audio-sidecar" }
+    $cacheExe = Join-Path $cacheRoot $exeName
+    $cacheManifestPath = Join-Path $cacheRoot "audio-sidecar-cache-manifest.json"
+    $inputManifest = Get-RustAudioSidecarInputManifest -Root $Root
+    $inputManifestJson = $inputManifest | ConvertTo-Json -Depth 8 -Compress
+    $cacheKey = Get-StringSha256 -Value $inputManifestJson
+    $workerVersion = [string]$inputManifest.workerVersion
+    $isWindowsHost = [bool]($IsWindows -or $env:OS -eq "Windows_NT")
+
+    if (-not ((Test-Path -LiteralPath $cacheExe -PathType Leaf) -and (Test-Path -LiteralPath $cacheManifestPath -PathType Leaf))) {
+        return $false
+    }
+    try {
+        $cacheManifest = Get-Content -LiteralPath $cacheManifestPath -Raw | ConvertFrom-Json
+        $cachedPeVersion = Get-WindowsPeApplicationVersion `
+            -Path $cacheExe `
+            -Label "Cached Rust audio sidecar"
+        $cacheHit = (
+            [int](Get-ObjectPropertyValue -Object $cacheManifest -Name "apiVersion") -eq 3 -and
+            ([string]$cacheManifest.cacheKey) -eq $cacheKey -and
+            [string](Get-ObjectPropertyValue -Object $cacheManifest -Name "workerVersion") -ceq $workerVersion -and
+            [string]$cacheManifest.executableSha256 -eq (Get-Sha256Hex -Path $cacheExe) -and
+            [int64]$cacheManifest.executableLength -eq [int64](Get-Item -LiteralPath $cacheExe).Length -and
+            [string](Get-ObjectPropertyValue -Object $cacheManifest -Name "producerCompiler") -cmatch '(?m)^rustc 1\.97\.0 \(' -and
+            [string](Get-ObjectPropertyValue -Object $cacheManifest -Name "producerCompiler") -cmatch '(?m)^host: x86_64-pc-windows-msvc$'
+        )
+        if ($isWindowsHost) {
+            $cacheHit = (
+                $cacheHit -and
+                $cachedPeVersion -ceq $workerVersion -and
+                [string](Get-ObjectPropertyValue -Object $cacheManifest -Name "executablePeVersion") -ceq $workerVersion
+            )
+        }
+        return [bool]$cacheHit
+    } catch {
+        return $false
+    }
+}
+
+function Test-RustDiarizationSidecarCacheUsable {
+    param(
+        [string]$Root,
+        [string]$Python,
+        [string]$WorkerCacheRoot
+    )
+
+    if (-not ($IsWindows -or $env:OS -eq "Windows_NT")) {
+        return $false
+    }
+    Assert-UnderRoot -Root $Root -Path $WorkerCacheRoot -Label "Rust diarization sidecar cache"
+    $exeName = "scriber-diarization-sidecar.exe"
+    $workerManifestName = "scriber-diarization-sidecar.manifest.json"
+    $cacheResourceRoot = Join-Path $WorkerCacheRoot "backend"
+    $cacheResourceDir = Join-Path $cacheResourceRoot "tools\diarization"
+    $cacheExe = Join-Path $cacheResourceDir $exeName
+    $cacheWorkerManifest = Join-Path $cacheResourceDir $workerManifestName
+    $cacheManifestPath = Join-Path $WorkerCacheRoot "diarization-sidecar-cache-manifest.json"
+    $buildMetadataPath = Join-Path $WorkerCacheRoot "diarization-sidecar-build-metadata.json"
+    if (
+        -not (Test-Path -LiteralPath $cacheExe -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $cacheWorkerManifest -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $cacheManifestPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $buildMetadataPath -PathType Leaf)
+    ) {
+        return $false
+    }
+    try {
+        $inputManifest = Get-RustDiarizationSidecarInputManifest -Root $Root
+        $cacheKey = Get-StringSha256 -Value ($inputManifest | ConvertTo-Json -Depth 8 -Compress)
+        $cacheManifest = Get-Content -LiteralPath $cacheManifestPath -Raw | ConvertFrom-Json
+        $cachedBuildMetadata = Get-Content -LiteralPath $buildMetadataPath -Raw | ConvertFrom-Json
+        $cachedArchive = Get-ObjectPropertyValue -Object $cachedBuildMetadata -Name "archive"
+        $cacheHit = (
+            ([string]$cacheManifest.cacheKey) -eq $cacheKey -and
+            ([string]$cachedBuildMetadata.cacheKey) -eq $cacheKey -and
+            ([string](Get-ObjectPropertyValue -Object $cachedArchive -Name "sha256")) -eq "f6555701d6397d74f1302b0666a661f32708b599a14a5fde80835d4902fcd315"
+        )
+        if ($cacheHit) {
+            Invoke-DiarizationWorkerResourceSmoke -Root $Root -Python $Python -ResourceRoot $cacheResourceRoot | Out-Null
+        }
+        return [bool]$cacheHit
+    } catch {
+        return $false
+    }
+}
+
 function Copy-RustDiarizationSidecarToBackend {
     param(
         [string]$Root,
@@ -2237,9 +2329,15 @@ function Copy-RustDiarizationSidecarToBackend {
     $cargoVersion = $null
     if (-not $cacheHit) {
         $archive = Get-SherpaOnnxStaticArchive -Root $Root -CacheRoot $ArchiveCacheRoot
-        $rustcVersion = (& rustc -Vv 2>$null) -join "`n"
-        if ($LASTEXITCODE -ne 0 -or -not $rustcVersion) {
-            throw "rustc is required to build the diarization worker."
+        $rustcVersion = (& rustc --version --verbose 2>$null) -join "`n"
+        if (
+            $LASTEXITCODE -ne 0 -or
+            -not $rustcVersion -or
+            $rustcVersion -cnotmatch '(?m)^rustc 1\.97\.0 \(' -or
+            $rustcVersion -cnotmatch '(?m)^host: x86_64-pc-windows-msvc$' -or
+            $env:CARGO_BUILD_TARGET
+        ) {
+            throw "Diarization worker release builds require native Rust 1.97.0 for x86_64-pc-windows-msvc without a target override."
         }
         $cargoVersion = (& cargo -V 2>$null) -join "`n"
         if ($LASTEXITCODE -ne 0 -or -not $cargoVersion) {
@@ -3429,7 +3527,7 @@ Assert-UnderRoot -Root $RepoRoot -Path $SherpaOnnxArchiveCacheRoot -Label "Sherp
 Assert-UnderRoot -Root $RepoRoot -Path $RustDiarizationTargetRoot -Label "RustDiarizationTargetRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $LocalPolishingRuntimeCacheRoot -Label "LocalPolishingRuntimeCacheRoot"
 
-if (-not $RustAudioOnly -and -not $RustAudioStageFromCacheOnly -and -not $RustDiarizationPrestageOnly) {
+if (-not $RustAudioOnly -and -not $RustAudioStageFromCacheOnly -and -not $RustDiarizationPrestageOnly -and -not $ValidateRustWorkerCachesOnly) {
     $runtimeLockCandidate = if ([System.IO.Path]::IsPathRooted($PythonRuntimeLockPath)) {
         $PythonRuntimeLockPath
     } else {
@@ -3445,6 +3543,21 @@ if (-not $RustAudioOnly -and -not $RustAudioStageFromCacheOnly -and -not $RustDi
         -Flavor $PythonRuntimeFlavor `
         -JitMode $PythonJitMode `
         -RuntimeLock $PythonRuntimeLockPath
+}
+
+if ($ValidateRustWorkerCachesOnly) {
+    $audioUsable = Test-RustAudioSidecarCacheUsable -Root $RepoRoot
+    $diarizationUsable = Test-RustDiarizationSidecarCacheUsable `
+        -Root $RepoRoot `
+        -Python $PythonPath `
+        -WorkerCacheRoot $RustDiarizationSidecarCacheRoot
+    [ordered]@{
+        ok = $true
+        audioUsable = [bool]$audioUsable
+        diarizationUsable = [bool]$diarizationUsable
+        rustNeeded = [bool]((-not $audioUsable) -or (-not $diarizationUsable))
+    } | ConvertTo-Json -Compress
+    return
 }
 
 if ($RustAudioOnly) {
