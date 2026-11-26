@@ -571,3 +571,21 @@ def test_post_upload_download_hash_must_match_exact_asset_id(tmp_path: Path) -> 
 
     assert api.upload_calls
     assert api.downloaded_ids == [api.upload_calls[0]["assetId"]]
+
+
+def test_concurrent_post_upload_downloads_verify_every_asset_and_fail_closed_on_tamper(
+    tmp_path: Path,
+) -> None:
+    api = FakePublisherApi(exists=False)
+    api.supports_concurrent_downloads = True  # type: ignore[attr-defined]
+
+    report = _sync(api, tmp_path)
+    assert report["assetCount"] == 2
+    assert {asset["assetId"] for asset in report["assets"]} == set(api.downloaded_ids)
+
+    tampered = FakePublisherApi(exists=False, tamper_download=True)
+    tampered.supports_concurrent_downloads = True  # type: ignore[attr-defined]
+    second_dir = tmp_path / "tampered"
+    second_dir.mkdir()
+    with pytest.raises(ValueError, match="Downloaded GitHub release asset bytes"):
+        _sync(tampered, second_dir)

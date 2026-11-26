@@ -327,3 +327,41 @@ def test_expected_state_target_must_equal_event_sha(tmp_path: Path) -> None:
             download_dir=tmp_path / "download",
             expected_state_report=prior,
         )
+
+
+def test_concurrent_state_verification_downloads_all_assets_and_fails_on_tamper(
+    tmp_path: Path,
+) -> None:
+    expected, files = _expected_dir(tmp_path)
+    api = FakeReleaseApi(files)
+    api.supports_concurrent_downloads = True  # type: ignore[attr-defined]
+    prior = _expected_state_report(tmp_path, api)
+
+    report = verify_github_release_state(
+        api,
+        repository=REPOSITORY,
+        release_tag=RELEASE_TAG,
+        release_id=RELEASE_ID,
+        expected_target_commitish=TARGET_COMMIT,
+        phase="draft",
+        expected_dir=expected,
+        download_dir=tmp_path / "concurrent-ok",
+        expected_state_report=prior,
+    )
+    assert report["assetCount"] == len(files)
+    for name, content in files.items():
+        assert (tmp_path / "concurrent-ok" / name).read_bytes() == content
+
+    api.downloaded_files["latest.json"] = b"tampered"
+    with pytest.raises(ValueError, match="Downloaded GitHub release asset bytes"):
+        verify_github_release_state(
+            api,
+            repository=REPOSITORY,
+            release_tag=RELEASE_TAG,
+            release_id=RELEASE_ID,
+            expected_target_commitish=TARGET_COMMIT,
+            phase="draft",
+            expected_dir=expected,
+            download_dir=tmp_path / "concurrent-tampered",
+            expected_state_report=prior,
+        )

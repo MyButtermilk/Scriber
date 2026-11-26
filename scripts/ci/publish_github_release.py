@@ -336,9 +336,10 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     token = (os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN") or "").strip()
+    client = GitHubApi(token=token)
     try:
         report = publish_verified_github_release(
-            GitHubApi(token=token),
+            client,
             repository=args.repository,
             release_tag=args.release_tag,
             release_id=args.release_id,
@@ -352,6 +353,8 @@ def main() -> int:
         _write_report(args.output, error.report)
         print(str(error), file=sys.stderr)
         return 1
+    finally:
+        client.close()
     _write_report(args.output, report)
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0

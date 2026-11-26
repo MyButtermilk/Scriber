@@ -842,3 +842,27 @@ def test_passive_handoff_rejects_duplicate_manifest_paths() -> None:
     assert "-not $attestationPaths.Add([string]$entry.path)" in cold
     assert "passive" in handoff
     assert "never executes" in handoff
+
+
+def test_cold_producers_avoid_redundant_toolchain_setup_and_track_active_nsis_cache() -> None:
+    workflow = yaml.safe_load(_read(".github/workflows/release-windows.yml"))
+    tauri_steps = {step["name"]: step for step in workflow["jobs"]["prepare-tauri-cold"]["steps"]}
+    backend_steps = workflow["jobs"]["prepare-backend-cold"]["steps"]
+    backend_by_name = {step["name"]: step for step in backend_steps}
+    backend_names = [step["name"] for step in backend_steps]
+    build_steps = {step["name"]: step for step in workflow["jobs"]["build-windows"]["steps"]}
+
+    assert tauri_steps["Set up Python"]["with"]["python-version"] == "3.14"
+
+    assert backend_names.index("Restore finished component fallbacks in parallel") < backend_names.index("Set up Rust")
+    for name in (
+        "Set up Rust",
+        "Restore Rust dependency state",
+        "Remove application outputs from Rust dependency state",
+    ):
+        condition = backend_by_name[name]["if"]
+        assert "steps.cold-rust-audio-cache.outputs.cache-hit != 'true'" in condition
+        assert "steps.cold-rust-diarization-cache.outputs.cache-hit != 'true'" in condition
+
+    assert build_steps["Restore Tauri bundler cache"]["with"]["key"].endswith("-nsis-3.13")
+    assert build_steps["Save Tauri bundler cache"]["with"]["key"].endswith("-nsis-3.13")

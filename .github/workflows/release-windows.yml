@@ -225,9 +225,13 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Set up Python
+        # Cold Tauri preparation only runs stdlib helper scripts (version sync,
+        # updater config overlay, dependency snapshot) and never builds Python
+        # artifacts. Match the preinstalled 3.14.x in hostedtoolcache instead of
+        # downloading and installing the exact patch release (~50s saved).
         uses: actions/setup-python@v6
         with:
-          python-version: ${{ env.SCRIBER_RELEASE_PYTHON_VERSION }}
+          python-version: "3.14"
 
       - name: Set up Node
         uses: actions/setup-node@v6
@@ -381,9 +385,6 @@ jobs:
         with:
           python-version: ${{ env.SCRIBER_RELEASE_PYTHON_VERSION }}
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
-
       - name: Compute deterministic release cache keys
         shell: pwsh
         run: |
@@ -393,26 +394,6 @@ jobs:
           & .\scripts\ci\finalize_release_cache_keys.ps1 `
             -SourceCommit $env:GITHUB_SHA `
             -RustToolchain $env:SCRIBER_RELEASE_RUST_TOOLCHAIN
-
-      - name: Restore Rust dependency state
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            .cargo/registry/index
-            .cargo/registry/cache
-            .cargo/git/db
-            Frontend/src-tauri/target/release/.fingerprint
-            Frontend/src-tauri/target/release/build
-            Frontend/src-tauri/target/release/deps
-            Frontend/src-tauri/target/release/incremental
-          key: scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}
-          restore-keys: |
-            scriber-rust-dependencies-v1-${{ runner.os }}-
-
-      - name: Remove application outputs from Rust dependency state
-        shell: pwsh
-        run: |
-          & .\scripts\ci\prune_rust_dependency_cache.ps1
 
       - name: Restore frozen backend runtime cache
         id: cold-backend-runtime-cache
@@ -542,6 +523,7 @@ jobs:
           key: scriber-rust-diarization-sidecar-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-diarization-sidecar.txt') }}
 
       - name: Restore Sherpa ONNX archive cache
+        if: steps.cold-rust-diarization-cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v6
         with:
           path: build/sherpa-onnx-archive-cache
@@ -579,6 +561,44 @@ jobs:
           if ("${{ steps.cold-rust-diarization-cache.outputs.cache-hit }}" -ne "true") { $arguments.RestoreRustDiarization = $true }
           if ("${{ steps.cold-ffmpeg-cache.outputs.cache-hit }}" -ne "true") { $arguments.RestoreFfmpeg = $true }
           & .\scripts\ci\restore_component_cache_artifacts_parallel.ps1 @arguments
+
+      - name: Set up Rust
+        if: >-
+          (steps.cold-rust-audio-cache.outputs.cache-hit != 'true' &&
+           steps.cold-component-artifacts.outputs.rust-audio-sidecar-restored != 'true') ||
+          (steps.cold-rust-diarization-cache.outputs.cache-hit != 'true' &&
+           steps.cold-component-artifacts.outputs.rust-diarization-sidecar-restored != 'true')
+        uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
+
+      - name: Restore Rust dependency state
+        if: >-
+          (steps.cold-rust-audio-cache.outputs.cache-hit != 'true' &&
+           steps.cold-component-artifacts.outputs.rust-audio-sidecar-restored != 'true') ||
+          (steps.cold-rust-diarization-cache.outputs.cache-hit != 'true' &&
+           steps.cold-component-artifacts.outputs.rust-diarization-sidecar-restored != 'true')
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            .cargo/registry/index
+            .cargo/registry/cache
+            .cargo/git/db
+            Frontend/src-tauri/target/release/.fingerprint
+            Frontend/src-tauri/target/release/build
+            Frontend/src-tauri/target/release/deps
+            Frontend/src-tauri/target/release/incremental
+          key: scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}
+          restore-keys: |
+            scriber-rust-dependencies-v1-${{ runner.os }}-
+
+      - name: Remove application outputs from Rust dependency state
+        if: >-
+          (steps.cold-rust-audio-cache.outputs.cache-hit != 'true' &&
+           steps.cold-component-artifacts.outputs.rust-audio-sidecar-restored != 'true') ||
+          (steps.cold-rust-diarization-cache.outputs.cache-hit != 'true' &&
+           steps.cold-component-artifacts.outputs.rust-diarization-sidecar-restored != 'true')
+        shell: pwsh
+        run: |
+          & .\scripts\ci\prune_rust_dependency_cache.ps1
 
       - name: Resolve FFmpeg Profile B
         id: cold-ffmpeg
@@ -1057,7 +1077,7 @@ jobs:
           path: |
             ~/.cache/tauri
             ~\AppData\Local\tauri
-          key: scriber-tauri-bundler-${{ runner.os }}-nsis-3.11
+          key: scriber-tauri-bundler-${{ runner.os }}-nsis-3.13
 
       - name: Restore backend sidecar cache
         id: backend-sidecar-cache
@@ -2314,7 +2334,7 @@ jobs:
           path: |
             ~/.cache/tauri
             ~\AppData\Local\tauri
-          key: scriber-tauri-bundler-${{ runner.os }}-nsis-3.11
+          key: scriber-tauri-bundler-${{ runner.os }}-nsis-3.13
 
       - name: Collect release artifacts
         shell: pwsh

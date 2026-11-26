@@ -232,9 +232,23 @@ Already implemented and should not be regressed:
   full commit SHA. Keep the Rust version and compiled-cache identity aligned.
   When changing toolchains, rebuild the cache and verify a warm run.
 - `Frontend\src-tauri\Cargo.toml` keeps the shell library crate type to
-  `["rlib"]` for Windows desktop releases. Do not restore Tauri mobile
-  `staticlib`/`cdylib` outputs unless mobile targets are introduced; they create
-  extra release library artifacts that do not help the NSIS updater build.
+  `["rlib"]` for Windows desktop releases and compiles the shell crate itself at
+  `opt-level = 2` while retaining `opt-level = 3` for dependencies (`[profile.release.package."*"]`);
+  audio DSP and diarization live in standalone crates with their own `Cargo.toml`.
+  Do not restore Tauri mobile `staticlib`/`cdylib` outputs unless mobile targets
+  are introduced; they create extra release library artifacts that do not help
+  the NSIS updater build.
+- Cold Windows release producers avoid redundant toolchain installs:
+  `prepare-tauri-cold` uses the runner's preinstalled Python `3.14` minor
+  series for stdlib helper scripts instead of downloading the exact CPython
+  patch installer, and `prepare-backend-cold` sets up Rust and restores shared
+  Rust dependency caches only when the audio or diarization sidecar caches miss.
+  The Tauri bundler cache tracks the active NSIS release (`nsis-3.13`).
+- `scripts/ci/github_release_api.py` uses thread-local HTTP/1.1 Keep-Alive
+  connections (stripping `Authorization` on every asset-download redirect), and
+  `sync_draft_release_assets.py` / `verify_github_release_state.py` verify
+  downloaded assets concurrently (largest-first, bounded workers) when backed by
+  `GitHubApi`, preserving every exact-ID and SHA-256 invariant.
 - `v*` tag releases require Tauri updater signing. Authenticode is optional
   until `SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE=1` is configured; that switch
   remains fail-closed for certificate, publisher, and timestamp evidence.

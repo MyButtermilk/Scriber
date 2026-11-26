@@ -229,3 +229,83 @@ def test_github_api_rejects_upload_url_for_different_release_before_network(
             expected_size=1,
             expected_sha256=sha256(b"x").hexdigest(),
         )
+
+
+def test_github_api_keepalive_reuses_connection_and_strips_auth_on_download_redirect(
+    tmp_path: Path,
+) -> None:
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    seen_auth: dict[str, list[str | None]] = {"api": [], "blob": []}
+    connection_ids: list[int] = []
+    payload = b"redirected-installer-bytes"
+
+    class _Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, format: str, *args: object) -> None:
+            return None
+
+        def do_GET(self) -> None:
+            connection_ids.append(id(self.connection))
+            if self.path == "/repos/example/project/releases/42":
+                seen_auth["api"].append(self.headers.get("Authorization"))
+                body = b'{"id":42,"draft":true}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if self.path == "/repos/example/project/releases/assets/99":
+                seen_auth["api"].append(self.headers.get("Authorization"))
+                self.send_response(302)
+                self.send_header("Location", "/blob/asset-99")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if self.path == "/blob/asset-99":
+                seen_auth["blob"].append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    api = GitHubApi(
+        token="private-release-token",
+        api_url=f"http://127.0.0.1:{server.server_port}",
+        timeout_sec=5.0,
+    )
+    try:
+        assert api.supports_concurrent_downloads is True
+        assert api.get_json("/repos/example/project/releases/42") == {"id": 42, "draft": True}
+        assert api.get_json("/repos/example/project/releases/42") == {"id": 42, "draft": True}
+        destination = tmp_path / "asset.exe"
+        downloaded = api.download_asset(
+            "/repos/example/project/releases/assets/99",
+            destination=destination,
+            max_bytes=len(payload),
+        )
+        assert destination.read_bytes() == payload
+        assert downloaded == {"sizeBytes": len(payload), "sha256": sha256(payload).hexdigest()}
+    finally:
+        api.close()
+        server.shutdown()
+        server.server_close()
+
+    assert len(set(connection_ids)) == 1
+    assert seen_auth["api"] == [
+        "Bearer private-release-token",
+        "Bearer private-release-token",
+        "Bearer private-release-token",
+    ]
+    assert seen_auth["blob"] == [None]

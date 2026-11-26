@@ -87,3 +87,12 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+[profile.release]
+# Optimize the desktop UI/IPC shell at level 2 while keeping dependencies at
+# level 3; audio DSP and diarization live in standalone crates with their own
+# Cargo.toml and keep full -O3.
+opt-level = 2
+
+[profile.release.package."*"]
+opt-level = 3

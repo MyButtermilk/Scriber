@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Protocol, cast
@@ -558,7 +559,7 @@ def sync_draft_release_assets(
     )
     _assert_remote_asset_set(final_assets, expected=expected, uploaded=uploaded)
 
-    for name, local in expected.items():
+    def _verify_downloaded_asset(name: str, local: dict[str, Any]) -> None:
         remote = uploaded[name]
         destination = verification_dir / name
         downloaded = api.download_asset(
@@ -574,6 +575,18 @@ def sync_draft_release_assets(
         )
         if downloaded_size != local["sizeBytes"] or downloaded_sha256 != local["sha256"]:
             raise ValueError(f"Stored GitHub release asset bytes do not match for {name!r}.")
+
+    if getattr(api, "supports_concurrent_downloads", False) and len(expected) > 1:
+        # Submit largest assets first so small metadata files finish concurrently
+        # while the installer binary downloads.
+        ordered_items = sorted(expected.items(), key=lambda item: (-item[1]["sizeBytes"], item[0]))
+        with ThreadPoolExecutor(max_workers=min(6, len(ordered_items))) as executor:
+            futures = [executor.submit(_verify_downloaded_asset, name, local) for name, local in ordered_items]
+            for future in futures:
+                future.result()
+    else:
+        for name, local in expected.items():
+            _verify_downloaded_asset(name, local)
 
     verification_entries = list(verification_dir.iterdir())
     if any(entry.is_symlink() or not entry.is_file() for entry in verification_entries) or {
@@ -661,7 +674,8 @@ def main() -> int:
     args = parser.parse_args()
 
     token = (os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN") or "").strip()
-    api = _require_client_capabilities(GitHubApi(token=token))
+    client = GitHubApi(token=token)
+    api = _require_client_capabilities(client)
 
     def run(verification_dir: Path) -> dict[str, Any]:
         return sync_draft_release_assets(
@@ -674,11 +688,14 @@ def main() -> int:
             verification_dir=verification_dir,
         )
 
-    if args.verification_dir is not None:
-        report = run(args.verification_dir.resolve())
-    else:
-        with TemporaryDirectory(prefix="scriber-release-upload-") as temporary:
-            report = run(Path(temporary))
+    try:
+        if args.verification_dir is not None:
+            report = run(args.verification_dir.resolve())
+        else:
+            with TemporaryDirectory(prefix="scriber-release-upload-") as temporary:
+                report = run(Path(temporary))
+    finally:
+        client.close()
 
     payload = json.dumps(report, indent=2, sort_keys=True)
     print(payload)

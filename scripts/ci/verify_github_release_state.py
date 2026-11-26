@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -253,7 +254,8 @@ def verify_github_release_state(
     if any(download_dir.iterdir()):
         raise ValueError("Release asset download directory must be empty.")
     downloaded: dict[str, dict[str, Any]] = {}
-    for name in sorted(live):
+
+    def _download_one(name: str) -> tuple[str, dict[str, Any]]:
         asset = live[name]
         result = api.download_asset(
             f"/repos/{repository}/releases/assets/{asset['assetId']}",
@@ -262,7 +264,19 @@ def verify_github_release_state(
         )
         if result.get("sizeBytes") != asset["sizeBytes"] or result.get("sha256") != asset["sha256"]:
             raise ValueError(f"Downloaded GitHub release asset bytes do not match for {name!r}.")
-        downloaded[name] = asset
+        return name, asset
+
+    if getattr(api, "supports_concurrent_downloads", False) and len(live) > 1:
+        ordered_names = sorted(live, key=lambda item: (-live[item]["sizeBytes"], item))
+        with ThreadPoolExecutor(max_workers=min(6, len(ordered_names))) as executor:
+            futures = [executor.submit(_download_one, name) for name in ordered_names]
+            for future in futures:
+                name, asset = future.result()
+                downloaded[name] = asset
+    else:
+        for name in sorted(live):
+            _, asset = _download_one(name)
+            downloaded[name] = asset
 
     final_release = api.get_json(release_by_id_path(repository, release_id))
     require_release_identity(
@@ -312,17 +326,21 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     token = (os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN") or "").strip()
-    report = verify_github_release_state(
-        GitHubApi(token=token),
-        repository=args.repository,
-        release_tag=args.release_tag,
-        release_id=args.release_id,
-        expected_target_commitish=args.expected_target_commitish,
-        phase=args.phase,
-        expected_dir=args.expected_dir.resolve(),
-        download_dir=args.download_dir.resolve(),
-        expected_state_report=args.expected_state_report.resolve(),
-    )
+    client = GitHubApi(token=token)
+    try:
+        report = verify_github_release_state(
+            client,
+            repository=args.repository,
+            release_tag=args.release_tag,
+            release_id=args.release_id,
+            expected_target_commitish=args.expected_target_commitish,
+            phase=args.phase,
+            expected_dir=args.expected_dir.resolve(),
+            download_dir=args.download_dir.resolve(),
+            expected_state_report=args.expected_state_report.resolve(),
+        )
+    finally:
+        client.close()
     payload = json.dumps(report, indent=2, sort_keys=True)
     print(payload)
     args.output.parent.mkdir(parents=True, exist_ok=True)
