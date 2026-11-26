@@ -509,7 +509,7 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
   }
 
   .transcript-content {
-    @apply text-lg leading-relaxed text-foreground/90;
+    @apply text-[15.5px] leading-[1.75] text-foreground/90;
   }
 }
 

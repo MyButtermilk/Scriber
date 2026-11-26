@@ -171,3 +171,68 @@ test("match cycling wraps around in both directions", () => {
   assert.equal(cycleMatchIndex(-1, 3, -1), 2);
   assert.equal(cycleMatchIndex(0, 0, 1), -1);
 });
+
+test("mid-sentence timed chunk boundaries are repaired and split at logical discourse transitions", () => {
+  const transcript = [
+    "[0:09] All right. It's true. The last video you watched on this channel is the last video you will ever see from that space, which is bittersweet, for sure... But this video is the first one ever shot in this space, and that's very exciting. This, frankly, is... pretty insane. This is the biggest project I've ever done. It is this whole building. It is two stories. It's about 30,000 square feet, and it's going to take about the next year or so from the time of... shooting this... to build it all up. Now, here's the thing. I'm not an architect, I'm not a interior designer, I'm not a professional floor planner, any of that stuff... All I know is exactly what I want the dream video studio to",
+    "[0:57] look and feel and work like. And so I found the space and... now we're going to do it. Now, it's funny, most of the advice that I've gotten has been basically not to do this... And that's understandable. Like, it's already inherently risky to empty the piggy bank into a construction project. So I get it. But also, like, anytime it's a big investment like you see this in cars, too, people always talk about, like, building it for the person you're going to sell it to later when you're done. Like, think about making it sellable. Think about the next guy. But I've kind of just... thrown all of that away... just for the love of the game.",
+    "[1:37] Because I know that the video production space that I want this to be, this doesn't exist in any other form. Like, this is going to be a brand new thing. So, yeah, not really thinking all about who else is going to buy it after me. This is just... going to be the best possible space for what it's designed for. It actually took more than a year to find this space, and I guess there's about a year of work probably left ahead of us for construction... Now what's fun for you... is this being recorded... in secret a year ago from when you're watching it. And the next video you get to watch is the finished studio, which is sick. So this is going to be an empty building tour,",
+    "[2:08] and we will walk through every single room together today.",
+  ].join("\n");
+
+  const blocks = parseTranscriptContent(transcript);
+  assert.ok(blocks.length >= 4, `expected logical paragraphs, got ${blocks.length}`);
+
+  // No sentence is cut in half across block boundaries.
+  for (const block of blocks) {
+    assert.ok(
+      /[.!?…]["'”’»)\]]*$/.test(block.text),
+      `block ended mid-sentence: ${JSON.stringify(block.text.slice(-50))}`,
+    );
+  }
+  const combined = blocks.map((block) => block.text).join(" ");
+  assert.ok(combined.includes("dream video studio to look and feel and work like."));
+  assert.ok(combined.includes("empty building tour, and we will walk through every single room together today."));
+  // Natural discourse transitions open their own paragraphs.
+  assert.ok(blocks.some((block) => block.text.startsWith("Now, here's the thing.")));
+  assert.ok(blocks.some((block) => block.text.startsWith("Now, it's funny,")));
+  assert.ok(blocks.some((block) => block.text.startsWith("Now what's fun for you")));
+});
+
+test("German abbreviations, dates, and mid-sentence ellipses do not trigger false breaks", () => {
+  const transcript = [
+    "[0:00] Dr. Müller erklärte am 26.11.2026 z. B. die Regelung bzw. die Ausnahme für ca. 3.5 Mio. Euro. Danach besprachen wir die Planung für das neue Quartal und die offenen Fristen im Team.",
+    "[0:18] Erstens müssen wir die Verträge prüfen, denn d. h. alle Fristen laufen bald ab. Zweitens planen wir den nächsten Schritt mit Prof. Weber am 12. Mai im Büro.",
+  ].join("\n");
+
+  const blocks = parseTranscriptContent(transcript);
+  assert.ok(blocks.length >= 2);
+  assert.ok(blocks[0].text.includes("Dr. Müller erklärte am 26.11.2026 z. B."));
+  assert.ok(blocks.some((block) => block.text.startsWith("Erstens müssen wir")));
+});
+
+test("long unpunctuated STT run-ons split cleanly on clause boundaries without losing words", () => {
+  const words = Array.from({ length: 140 }, (_, i) => (i % 12 === 11 ? `wort${i},` : `wort${i}`));
+  const blocks = parseTranscriptContent(`[0:00] ${words.join(" ")}`);
+  assert.ok(blocks.length >= 2);
+  assert.equal(blocks.map((block) => block.text).join(" "), words.join(" "));
+});
+
+test("lexical topic shift (TextTiling) breaks a long speaker turn even without transition words", () => {
+  const cooking = [
+    "[0:00] Speaker 0: The sourdough starter needs warm water and fresh rye flour every morning.",
+    "[0:08] Speaker 0: Fermentation builds gluten structure inside the dough before baking in the cast iron pot.",
+    "[0:16] Speaker 0: A crispy crust forms when steam traps moisture around the loaf during oven spring.",
+  ];
+  const astronomy = [
+    "[0:26] Speaker 0: Radio telescopes capture faint pulsar signals across distant galactic nebulae.",
+    "[0:34] Speaker 0: Orbital mirrors calibrate infrared spectroscopy for exoplanet atmospheres and cosmic dust.",
+    "[0:42] Speaker 0: Deep space probes transmit telemetry back to parabolic antennas on Earth.",
+  ];
+  const blocks = parseTranscriptContent([...cooking, ...astronomy].join("\n"));
+  assert.equal(blocks.length, 2);
+  assert.equal(blocks[0].continued, undefined);
+  assert.equal(blocks[1].continued, true);
+  assert.ok(blocks[0].text.includes("sourdough starter"));
+  assert.ok(blocks[1].text.startsWith("Radio telescopes capture"));
+});

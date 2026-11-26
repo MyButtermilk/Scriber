@@ -160,31 +160,43 @@ const SPEAKER_COLORS = [
     bg: "bg-blue-100 dark:bg-blue-900/40",
     text: "text-blue-700 dark:text-blue-300",
     border: "border-blue-300 dark:border-blue-700",
+    rail: "border-l-blue-400/75 dark:border-l-blue-500/65",
+    dot: "bg-blue-500 dark:bg-blue-400",
   },
   {
     bg: "bg-emerald-100 dark:bg-emerald-900/40",
     text: "text-emerald-700 dark:text-emerald-300",
     border: "border-emerald-300 dark:border-emerald-700",
+    rail: "border-l-emerald-400/75 dark:border-l-emerald-500/65",
+    dot: "bg-emerald-500 dark:bg-emerald-400",
   },
   {
     bg: "bg-amber-100 dark:bg-amber-900/40",
     text: "text-amber-700 dark:text-amber-300",
     border: "border-amber-300 dark:border-amber-700",
+    rail: "border-l-amber-400/75 dark:border-l-amber-500/65",
+    dot: "bg-amber-500 dark:bg-amber-400",
   },
   {
     bg: "bg-purple-100 dark:bg-purple-900/40",
     text: "text-purple-700 dark:text-purple-300",
     border: "border-purple-300 dark:border-purple-700",
+    rail: "border-l-purple-400/75 dark:border-l-purple-500/65",
+    dot: "bg-purple-500 dark:bg-purple-400",
   },
   {
     bg: "bg-rose-100 dark:bg-rose-900/40",
     text: "text-rose-700 dark:text-rose-300",
     border: "border-rose-300 dark:border-rose-700",
+    rail: "border-l-rose-400/75 dark:border-l-rose-500/65",
+    dot: "bg-rose-500 dark:bg-rose-400",
   },
   {
     bg: "bg-cyan-100 dark:bg-cyan-900/40",
     text: "text-cyan-700 dark:text-cyan-300",
     border: "border-cyan-300 dark:border-cyan-700",
+    rail: "border-l-cyan-400/75 dark:border-l-cyan-500/65",
+    dot: "bg-cyan-500 dark:bg-cyan-400",
   },
 ];
 
@@ -194,6 +206,33 @@ interface BlockMatches {
   /** Global index of this block's first match. */
   offset: number;
   matches: TranscriptMatch[];
+}
+
+interface SpeakerTurnGroup {
+  speaker: string | undefined;
+  items: Array<{ block: TranscriptBlock; index: number }>;
+}
+
+function groupBlocksIntoSpeakerTurns(blocks: readonly TranscriptBlock[]): SpeakerTurnGroup[] {
+  const groups: SpeakerTurnGroup[] = [];
+  blocks.forEach((block, index) => {
+    const previous = groups[groups.length - 1];
+    if (previous && block.continued && previous.speaker === block.speaker) {
+      previous.items.push({ block, index });
+      return;
+    }
+    groups.push({ speaker: block.speaker, items: [{ block, index }] });
+  });
+  return groups;
+}
+
+function formatSpeakerDisplayName(
+  speaker: string,
+  t: ReturnType<typeof useI18n>["t"],
+  formatNumber: ReturnType<typeof useI18n>["formatNumber"],
+): string {
+  const speakerNumber = genericSpeakerNumber(speaker);
+  return speakerNumber !== null ? t("Speaker {{number}}", { number: formatNumber(speakerNumber) }) : speaker;
 }
 
 function highlightedText(text: string, matches: readonly TranscriptMatch[], activeMatch: number): ReactNode {
@@ -219,48 +258,90 @@ function highlightedText(text: string, matches: readonly TranscriptMatch[], acti
   return parts;
 }
 
-// One parsed transcript block: an optional quiet timestamp/speaker row above
-// text whose explicit line breaks are preserved.
+// One parsed transcript block inside either a multi-speaker turn rail or an
+// editorial timestamp-gutter layout for single-speaker / undiarized recordings.
 const TranscriptBlockView = memo(function TranscriptBlockView({
   block,
   matches,
   activeMatch,
+  editorialRail,
 }: {
   block: TranscriptBlock;
   matches: readonly TranscriptMatch[];
   activeMatch: number;
+  editorialRail: boolean;
 }) {
   const { formatNumber, t } = useI18n();
-  const speakerNumber = genericSpeakerNumber(block.speaker);
   const speakerLabel =
-    block.speaker === undefined || block.continued
-      ? ""
-      : speakerNumber !== null
-        ? t("Speaker {{number}}", { number: formatNumber(speakerNumber) })
-        : block.speaker;
+    block.speaker === undefined || block.continued ? "" : formatSpeakerDisplayName(block.speaker, t, formatNumber);
   const colors = SPEAKER_COLORS[speakerColorIndex(block.speaker, SPEAKER_COLORS.length)];
   const hasHeader = Boolean(block.startLabel || speakerLabel);
+
+  if (editorialRail && !speakerLabel) {
+    return (
+      <div
+        className={`flex flex-col gap-1 sm:grid sm:grid-cols-[3.75rem_minmax(0,1fr)] sm:items-baseline sm:gap-x-5 ${
+          block.sectionBreak ? "mt-2 border-t border-border/45 pt-5" : ""
+        }`}
+        data-transcript-block=""
+        data-transcript-section-break={block.sectionBreak ? "true" : undefined}
+      >
+        {hasHeader ? (
+          <div
+            className="flex items-center gap-2 text-xs sm:justify-end"
+            data-transcript-block-header=""
+          >
+            {block.startLabel && (
+              <span
+                className={`font-mono tabular-nums select-none ${
+                  block.sectionBreak
+                    ? "rounded bg-muted/70 px-1.5 py-0.5 text-[11px] font-medium text-foreground/75"
+                    : "text-[11px] text-muted-foreground/80"
+                }`}
+                data-transcript-timestamp=""
+              >
+                {block.startLabel}
+              </span>
+            )}
+          </div>
+        ) : (
+          <div className="hidden sm:block" aria-hidden="true" />
+        )}
+        {block.text && (
+          <p className="max-w-[70ch] whitespace-pre-wrap break-words leading-[1.75]">
+            {highlightedText(block.text, matches, activeMatch)}
+          </p>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col gap-1" data-transcript-block="">
+    <div
+      className={`flex flex-col gap-1 ${block.sectionBreak ? "mt-1 border-t border-border/35 pt-3" : ""}`}
+      data-transcript-block=""
+      data-transcript-section-break={block.sectionBreak ? "true" : undefined}
+    >
       {hasHeader && (
         <div className="flex flex-wrap items-center gap-2 text-xs" data-transcript-block-header="">
           {block.startLabel && (
-            <span className="font-mono tabular-nums text-muted-foreground" data-transcript-timestamp="">
+            <span className="font-mono text-[11px] tabular-nums text-muted-foreground/85" data-transcript-timestamp="">
               {block.startLabel}
             </span>
           )}
           {speakerLabel && (
             <span
-              className={`inline-flex items-center rounded-full border px-2.5 py-0.5 font-medium ${colors.bg} ${colors.text} ${colors.border}`}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-medium ${colors.bg} ${colors.text} ${colors.border}`}
               data-transcript-speaker=""
             >
+              <span className={`h-1.5 w-1.5 rounded-full ${colors.dot}`} aria-hidden="true" />
               {speakerLabel}
             </span>
           )}
         </div>
       )}
       {block.text && (
-        <p className="whitespace-pre-wrap break-words leading-relaxed">
+        <p className="max-w-[70ch] whitespace-pre-wrap break-words leading-[1.75]">
           {highlightedText(block.text, matches, activeMatch)}
         </p>
       )}
@@ -272,28 +353,144 @@ const TranscriptBlocksView = memo(function TranscriptBlocksView({
   blocks,
   matchesByBlock,
   activeMatch,
+  selectedSpeaker,
+  onSelectSpeaker,
 }: {
   blocks: readonly TranscriptBlock[];
   matchesByBlock: ReadonlyMap<number, BlockMatches>;
   activeMatch: number;
+  selectedSpeaker: string | null;
+  onSelectSpeaker: (speaker: string | null) => void;
 }) {
+  const { formatNumber, t } = useI18n();
+  const hasSpeakers = useMemo(() => blocks.some((block) => block.speaker !== undefined), [blocks]);
+  const hasTimestamps = useMemo(() => blocks.some((block) => block.startLabel !== undefined), [blocks]);
+  const speakerStats = useMemo(() => {
+    if (!hasSpeakers) return [];
+    const counts = new Map<string, number>();
+    let totalWords = 0;
+    for (const block of blocks) {
+      if (!block.speaker) continue;
+      const words = block.text.trim() ? block.text.trim().split(/\s+/).length : 0;
+      counts.set(block.speaker, (counts.get(block.speaker) ?? 0) + words);
+      totalWords += words;
+    }
+    return Array.from(counts.entries()).map(([speaker, words]) => ({
+      speaker,
+      words,
+      sharePercent: totalWords > 0 ? Math.round((words / totalWords) * 100) : 0,
+    }));
+  }, [blocks, hasSpeakers]);
+
+  const turnGroups = useMemo(() => groupBlocksIntoSpeakerTurns(blocks), [blocks]);
+  const useEditorialRail = !hasSpeakers && hasTimestamps;
+  const activeSelectedSpeaker =
+    selectedSpeaker !== null && speakerStats.some((entry) => entry.speaker === selectedSpeaker)
+      ? selectedSpeaker
+      : null;
+
+  const renderBlock = (block: TranscriptBlock, index: number) => {
+    const entry = matchesByBlock.get(index);
+    const localActive =
+      entry && activeMatch >= entry.offset && activeMatch < entry.offset + entry.matches.length
+        ? activeMatch - entry.offset
+        : -1;
+    return (
+      <TranscriptBlockView
+        key={index}
+        block={block}
+        matches={entry?.matches ?? EMPTY_MATCHES}
+        activeMatch={localActive}
+        editorialRail={useEditorialRail}
+      />
+    );
+  };
+
   return (
     <div className="space-y-4">
-      {blocks.map((block, index) => {
-        const entry = matchesByBlock.get(index);
-        const localActive =
-          entry && activeMatch >= entry.offset && activeMatch < entry.offset + entry.matches.length
-            ? activeMatch - entry.offset
-            : -1;
-        return (
-          <TranscriptBlockView
-            key={index}
-            block={block}
-            matches={entry?.matches ?? EMPTY_MATCHES}
-            activeMatch={localActive}
-          />
-        );
-      })}
+      {speakerStats.length >= 2 && (
+        <div
+          className="flex flex-wrap items-center gap-1.5 border-b border-border/50 pb-3"
+          role="group"
+          aria-label={t("Filter transcript by speaker")}
+          data-transcript-speaker-filters=""
+        >
+          <button
+            type="button"
+            onClick={() => onSelectSpeaker(null)}
+            aria-pressed={activeSelectedSpeaker === null}
+            data-transcript-speaker-filter="all"
+            className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
+              activeSelectedSpeaker === null
+                ? "border-foreground/25 bg-foreground/10 text-foreground"
+                : "border-border/60 bg-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+            }`}
+          >
+            {t("All speakers")}
+          </button>
+          {speakerStats.map(({ speaker, sharePercent }) => {
+            const colors = SPEAKER_COLORS[speakerColorIndex(speaker, SPEAKER_COLORS.length)];
+            const active = activeSelectedSpeaker === speaker;
+            const displayName = formatSpeakerDisplayName(speaker, t, formatNumber);
+            return (
+              <button
+                key={speaker}
+                type="button"
+                onClick={() => onSelectSpeaker(active ? null : speaker)}
+                aria-pressed={active}
+                data-transcript-speaker-filter={speaker}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
+                  active
+                    ? `${colors.bg} ${colors.text} ${colors.border}`
+                    : "border-border/60 bg-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                }`}
+              >
+                <span className={`h-2 w-2 rounded-full ${colors.dot}`} aria-hidden="true" />
+                <span>{displayName}</span>
+                {sharePercent > 0 && (
+                  <span className="font-mono text-[11px] opacity-75">
+                    {formatNumber(sharePercent)}%
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {hasSpeakers ? (
+        <div className="space-y-5">
+          {turnGroups.map((group, groupIndex) => {
+            const hasSearchMatch = group.items.some(({ index }) => matchesByBlock.has(index));
+            const dimmed = activeSelectedSpeaker !== null && group.speaker !== activeSelectedSpeaker && !hasSearchMatch;
+            if (group.speaker === undefined) {
+              return (
+                <div
+                  key={`turn-${groupIndex}`}
+                  className={`space-y-3 transition-opacity ${dimmed ? "opacity-30" : ""}`}
+                >
+                  {group.items.map(({ block, index }) => renderBlock(block, index))}
+                </div>
+              );
+            }
+            const colors = SPEAKER_COLORS[speakerColorIndex(group.speaker, SPEAKER_COLORS.length)];
+            return (
+              <div
+                key={`turn-${groupIndex}`}
+                data-transcript-speaker-turn={group.speaker}
+                data-dimmed={dimmed ? "true" : undefined}
+                className={`space-y-3 border-l-[3px] pl-4 transition-opacity ${colors.rail} ${
+                  dimmed ? "opacity-25" : ""
+                }`}
+              >
+                {group.items.map(({ block, index }) => renderBlock(block, index))}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="space-y-4">{blocks.map((block, index) => renderBlock(block, index))}</div>
+      )}
     </div>
   );
 });
@@ -940,6 +1137,7 @@ export default function TranscriptDetail() {
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
   const [activeMatch, setActiveMatch] = useState(0);
+  const [selectedSpeaker, setSelectedSpeaker] = useState<string | null>(null);
   const [findFocusRequest, setFindFocusRequest] = useState(0);
   const findInputRef = useRef<HTMLInputElement | null>(null);
   const findToggleRef = useRef<HTMLButtonElement | null>(null);
@@ -1448,6 +1646,8 @@ export default function TranscriptDetail() {
                         blocks={transcriptBlocks}
                         matchesByBlock={matchesByBlock}
                         activeMatch={activeMatchIndex}
+                        selectedSpeaker={selectedSpeaker}
+                        onSelectSpeaker={setSelectedSpeaker}
                       />
                     ) : (
                       t("No transcript text captured.")
