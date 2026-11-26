@@ -194,15 +194,18 @@ def test_both_build_and_downloaded_installer_smoke_use_selected_python_and_keep_
     steps = _steps()
     selected = "${{ steps.installer-python.outputs.python }}"
     build = steps["Build Windows installer"]["run"]
-    background_start = steps["Start background installer smoke candidate"]["run"]
+    draft_sync = steps["Create and sync exact-ID draft release assets"]["run"]
     installed = steps["Smoke downloaded installer candidate"]["run"]
     start_helper = (ROOT / "scripts" / "ci" / "start_installer_smoke_background.ps1").read_text(encoding="utf-8")
     join_helper = (ROOT / "scripts" / "ci" / "join_installer_smoke_background.ps1").read_text(encoding="utf-8")
     assert selected in build
     assert '"-PythonExecutable"' in build
     assert '"-RunMediaPreparationSmoke"' in build
-    assert selected in background_start
-    assert "start_installer_smoke_background.ps1" in background_start
+    assert selected in draft_sync
+    assert "start_installer_smoke_background.ps1" in draft_sync
+    assert "join_installer_smoke_background.ps1" in draft_sync
+    assert "-JoinOnly" in draft_sync
+    assert "-AbortIfRunning" in draft_sync
     assert selected in installed
     assert "join_installer_smoke_background.ps1" in installed
     for helper_text in (start_helper, join_helper):
@@ -220,19 +223,20 @@ def test_release_consolidates_startup_smoke_on_required_installed_candidate_gate
     steps = _steps()
     names = list(steps)
     build = steps["Build Windows installer"]["run"]
-    background_start = steps["Start background installer smoke candidate"]
+    draft_sync = steps["Create and sync exact-ID draft release assets"]
     installed = steps["Smoke downloaded installer candidate"]
     publication = steps["Verify and publish exact GitHub release transaction"]
     assert '$buildArgs += "-SkipSmoke"' in build
     assert "if (-not $isOfficialRelease)" not in build
-    assert background_start["if"] == "needs.release-plan.outputs.official-release == 'true'"
+    assert "Start background installer smoke candidate" not in steps
+    assert draft_sync["if"] == "needs.release-plan.outputs.official-release == 'true'"
     assert installed["id"] == "installed-smoke"
     assert installed["if"] == publication["if"] == "needs.release-plan.outputs.official-release == 'true'"
     assert not installed.get("continue-on-error", False)
     assert (
         names.index("Upload build artifacts")
-        < names.index("Start background installer smoke candidate")
         < names.index("Revalidate live release refs before draft creation")
+        < names.index("Create and sync exact-ID draft release assets")
         < names.index("Cryptographically verify downloaded updater signatures")
         < names.index("Smoke downloaded installer candidate")
         < names.index("Verify and publish exact GitHub release transaction")

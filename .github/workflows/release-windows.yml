@@ -2436,18 +2436,6 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-      - name: Start background installer smoke candidate
-        if: needs.release-plan.outputs.official-release == 'true'
-        shell: pwsh
-        run: |
-          & .\scripts\ci\start_installer_smoke_background.ps1 `
-            -PythonExecutable "${{ steps.installer-python.outputs.python }}" `
-            -ArtifactsDir release-artifacts `
-            -OutputPath tmp\installer-smoke\downloaded-release-candidate.json
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to launch background installer smoke candidate."
-          }
-
       - name: Revalidate live release refs before draft creation
         if: needs.release-plan.outputs.official-release == 'true'
         shell: pwsh
@@ -2470,29 +2458,59 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $downloadRoot = "build\release-api-roundtrip"
-          if (Test-Path -LiteralPath $downloadRoot) {
-            Remove-Item -LiteralPath $downloadRoot -Recurse -Force
-          }
-          New-Item -ItemType Directory -Path $downloadRoot | Out-Null
-          python -m scripts.ci.sync_draft_release_assets `
-            --repository "${{ github.repository }}" `
-            --release-tag "${{ needs.release-plan.outputs.release-tag }}" `
-            --release-title "Scriber ${{ needs.release-plan.outputs.release-version }}" `
-            --target-commitish "${{ github.sha }}" `
-            --expected-dir release-artifacts `
-            --verification-dir $downloadRoot `
-            --output build\release-asset-api-roundtrip.json `
-            --github-output $env:GITHUB_OUTPUT
-          if ($LASTEXITCODE -ne 0) {
-            throw "Creating, binding, and verifying exact generated-note metadata plus the ID-bound draft asset set failed."
-          }
-          python scripts\verify_release_asset_set.py `
-            --expected-dir release-artifacts `
-            --downloaded-dir $downloadRoot `
-            --output build\release-asset-roundtrip.json
-          if ($LASTEXITCODE -ne 0) {
-            throw "The exact-ID draft release content verification failed."
+          $smokePython = (Resolve-Path -LiteralPath "${{ steps.installer-python.outputs.python }}" -ErrorAction Stop).Path
+          $smokeStarted = $false
+          $smokeJoined = $false
+          try {
+            & .\scripts\ci\start_installer_smoke_background.ps1 `
+              -PythonExecutable $smokePython `
+              -ArtifactsDir release-artifacts `
+              -OutputPath tmp\installer-smoke\downloaded-release-candidate.json
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to launch background installer smoke candidate."
+            }
+            $smokeStarted = $true
+
+            $downloadRoot = "build\release-api-roundtrip"
+            if (Test-Path -LiteralPath $downloadRoot) {
+              Remove-Item -LiteralPath $downloadRoot -Recurse -Force
+            }
+            New-Item -ItemType Directory -Path $downloadRoot | Out-Null
+            python -m scripts.ci.sync_draft_release_assets `
+              --repository "${{ github.repository }}" `
+              --release-tag "${{ needs.release-plan.outputs.release-tag }}" `
+              --release-title "Scriber ${{ needs.release-plan.outputs.release-version }}" `
+              --target-commitish "${{ github.sha }}" `
+              --expected-dir release-artifacts `
+              --verification-dir $downloadRoot `
+              --output build\release-asset-api-roundtrip.json `
+              --github-output $env:GITHUB_OUTPUT
+            if ($LASTEXITCODE -ne 0) {
+              throw "Creating, binding, and verifying exact generated-note metadata plus the ID-bound draft asset set failed."
+            }
+            python scripts\verify_release_asset_set.py `
+              --expected-dir release-artifacts `
+              --downloaded-dir $downloadRoot `
+              --output build\release-asset-roundtrip.json
+            if ($LASTEXITCODE -ne 0) {
+              throw "The exact-ID draft release content verification failed."
+            }
+
+            # Join inside the same step so GitHub Actions step-end cleanup cannot
+            # terminate the background smoke child before it writes its report.
+            & .\scripts\ci\join_installer_smoke_background.ps1 `
+              -PythonExecutable $smokePython `
+              -OutputPath tmp\installer-smoke\downloaded-release-candidate.json `
+              -JoinOnly `
+              -DeferFailure
+            $smokeJoined = $true
+          } finally {
+            if ($smokeStarted -and -not $smokeJoined) {
+              & .\scripts\ci\join_installer_smoke_background.ps1 `
+                -PythonExecutable $smokePython `
+                -OutputPath tmp\installer-smoke\downloaded-release-candidate.json `
+                -AbortIfRunning
+            }
           }
 
       - name: Cryptographically verify downloaded updater signatures
