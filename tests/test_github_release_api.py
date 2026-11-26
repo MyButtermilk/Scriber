@@ -373,6 +373,9 @@ def test_github_api_keepalive_handles_stale_sockets_uploads_redirects_timeouts_a
             nonlocal post_attempts
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length)
+            if len(raw) != length:
+                self.close_connection = True
+                return
             if self.path == "/drop-mid-response":
                 post_attempts += 1
                 self.close_connection = True
@@ -488,3 +491,44 @@ def test_github_api_https_client_refuses_loopback_http_downgrade() -> None:
             timeout_sec=5.0,
             max_idle_sec=15.0,
         )
+
+
+def test_github_api_get_retries_windows_connection_aborted_on_reused_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts: list[bool] = []
+
+    class _FakeResponse:
+        status = 200
+        will_close = False
+
+        def read(self, _limit: int) -> bytes:
+            return b'{"recovered":true}'
+
+    class _FakeConnection:
+        def __init__(self, *, fail_once: bool) -> None:
+            self.fail_once = fail_once
+            self.timeout = 5.0
+            self.sock = None
+
+        def request(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def getresponse(self) -> _FakeResponse:
+            if self.fail_once:
+                raise ConnectionAbortedError("WinError 10053")
+            return _FakeResponse()
+
+        def close(self) -> None:
+            return None
+
+    api = GitHubApi(token="private-release-token", api_url="https://api.github.com")
+
+    def fake_acquire(**_kwargs: object) -> tuple[Any, bool]:
+        reused = len(attempts) == 0
+        attempts.append(reused)
+        return _FakeConnection(fail_once=reused), reused
+
+    monkeypatch.setattr(api, "_acquire_connection", fake_acquire)
+    assert api.get_json("/repos/example/project/releases/42") == {"recovered": True}
+    assert attempts == [True, False]

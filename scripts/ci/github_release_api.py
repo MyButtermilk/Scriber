@@ -31,6 +31,7 @@ _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _STALE_KEEPALIVE_ERRORS = (
     http.client.RemoteDisconnected,
     http.client.BadStatusLine,
+    ConnectionAbortedError,
     ConnectionResetError,
     BrokenPipeError,
 )
