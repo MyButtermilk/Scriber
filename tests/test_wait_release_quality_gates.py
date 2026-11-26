@@ -242,3 +242,38 @@ def test_gh_client_uses_argument_list_and_never_exposes_stderr(monkeypatch: pyte
     monkeypatch.setattr(subprocess, "run", failed_run)
     with pytest.raises(GateError, match="^github_request_failed$"):
         gh_json(BASE, 4)
+
+
+def test_gh_json_uses_persistent_github_api_when_token_is_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts.ci import wait_release_quality_gates as module
+    from scripts.ci.github_release_api import GitHubApiError
+
+    seen: list[str] = []
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self._timeout_sec = 30.0
+
+        def get_json(self, path: str) -> dict[str, Any]:
+            seen.append(path)
+            if path.endswith("/bad-json"):
+                raise GitHubApiError("GitHub API GET /bad-json did not return valid JSON.")
+            if path.endswith("/fail"):
+                raise GitHubApiError("token-must-not-leak", status_code=500)
+            return {"ok": True, "path": path}
+
+    fake = _FakeClient()
+    monkeypatch.setenv("GH_TOKEN", "secret-token")
+    monkeypatch.setattr(module, "_shared_github_api", lambda _token, _timeout: fake)
+
+    assert gh_json(BASE, 5) == {"ok": True, "path": f"/{BASE}"}
+    assert seen == [f"/{BASE}"]
+
+    with pytest.raises(GateError, match="^invalid_github_json$"):
+        gh_json("repos/MyButtermilk/Scriber/bad-json", 5)
+
+    with pytest.raises(GateError, match="^github_request_failed$") as caught:
+        gh_json("repos/MyButtermilk/Scriber/fail", 5)
+    assert "token-must-not-leak" not in str(caught.value)

@@ -892,6 +892,35 @@ jobs:
             Write-Warning "Linux planner and Windows packager cache keys differed; cold artifacts will be ignored and the normal path retained."
           }
 
+      # Overlap packaging-only bundler and frontend dependency restores with
+      # cold producer compilation so the packager starts bundling immediately
+      # after cold product import.
+      - name: Restore Tauri bundler cache
+        id: tauri-bundler-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cache/tauri
+            ~\AppData\Local\tauri
+          key: scriber-tauri-bundler-${{ runner.os }}-nsis-3.13
+
+      - name: Restore frontend dependency cache
+        id: frontend-node-modules-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: Frontend/node_modules
+          key: scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('build/cache-keys/frontend-dependencies.txt') }}
+
+      - name: Restore npm package store
+        id: npm-package-store-cache
+        if: steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.package-store-paths.outputs.npm }}
+          key: scriber-npm-package-store-v1-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('build/cache-keys/frontend-dependencies.txt') }}
+          restore-keys: |
+            scriber-npm-package-store-v1-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-
+
       - name: Wait for attested cold products
         id: cold-products-ready
         if: >-
@@ -1070,15 +1099,6 @@ jobs:
           path: build/sherpa-onnx-archive-cache
           key: scriber-sherpa-onnx-archive-${{ runner.os }}-${{ hashFiles('build/cache-keys/sherpa-onnx-archive.txt') }}
 
-      - name: Restore Tauri bundler cache
-        id: tauri-bundler-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cache/tauri
-            ~\AppData\Local\tauri
-          key: scriber-tauri-bundler-${{ runner.os }}-nsis-3.13
-
       - name: Restore backend sidecar cache
         id: backend-sidecar-cache
         if: steps.cold-products.outputs.usable != 'true'
@@ -1221,23 +1241,6 @@ jobs:
         with:
           path: build/python-wheelhouse
           key: scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/python-dependencies.txt') }}
-
-      - name: Restore frontend dependency cache
-        id: frontend-node-modules-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: Frontend/node_modules
-          key: scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('build/cache-keys/frontend-dependencies.txt') }}
-
-      - name: Restore npm package store
-        id: npm-package-store-cache
-        if: steps.frontend-node-modules-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/restore@v6
-        with:
-          path: ${{ steps.package-store-paths.outputs.npm }}
-          key: scriber-npm-package-store-v1-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('build/cache-keys/frontend-dependencies.txt') }}
-          restore-keys: |
-            scriber-npm-package-store-v1-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-
 
       - name: Restore Python wheelhouse release artifact
         id: python-wheelhouse-artifact

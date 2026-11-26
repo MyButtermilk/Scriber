@@ -241,14 +241,20 @@ Already implemented and should not be regressed:
 - Cold Windows release producers avoid redundant toolchain installs:
   `prepare-tauri-cold` uses the runner's preinstalled Python `3.14` minor
   series for stdlib helper scripts instead of downloading the exact CPython
-  patch installer, and `prepare-backend-cold` sets up Rust and restores shared
-  Rust dependency caches only when the audio or diarization sidecar caches miss.
-  The Tauri bundler cache tracks the active NSIS release (`nsis-3.13`).
+  patch installer, `release-qualification.yml` does the same for its three
+  Ubuntu stdlib API jobs, and `prepare-backend-cold` sets up Rust and restores
+  shared Rust dependency caches only when the audio or diarization sidecar
+  caches miss. `build-windows` restores the `nsis-3.13` Tauri bundler cache and
+  `Frontend/node_modules` before waiting on cold producers so they overlap
+  producer compilation, and polls cold product readiness every 5 seconds.
 - `scripts/ci/github_release_api.py` uses thread-local HTTP/1.1 Keep-Alive
-  connections (stripping `Authorization` on every asset-download redirect), and
-  `sync_draft_release_assets.py` / `verify_github_release_state.py` verify
-  downloaded assets concurrently (largest-first, bounded workers) when backed by
-  `GitHubApi`, preserving every exact-ID and SHA-256 invariant.
+  connections (stripping `Authorization` on every asset-download redirect),
+  `scripts/ci/wait_release_quality_gates.py`'s `gh_json()` reuses that
+  Keep-Alive client when `GH_TOKEN`/`GITHUB_TOKEN` is set instead of spawning a
+  `gh` subprocess per API call, and `sync_draft_release_assets.py` /
+  `verify_github_release_state.py` verify downloaded assets concurrently
+  (largest-first, bounded workers) when backed by `GitHubApi`, preserving every
+  exact-ID and SHA-256 invariant.
 - `v*` tag releases require Tauri updater signing. Authenticode is optional
   until `SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE=1` is configured; that switch
   remains fail-closed for certificate, publisher, and timestamp evidence.

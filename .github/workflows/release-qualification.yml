@@ -34,7 +34,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.14.9"
+          python-version: "3.14"
       - name: Select canonical main quality evidence
         id: quality-source
         env:
@@ -74,7 +74,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.14.9"
+          python-version: "3.14"
       - name: Verify selected main quality evidence
         env:
           GH_TOKEN: ${{ github.token }}
@@ -118,7 +118,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.14.9"
+          python-version: "3.14"
       - name: Verify current-run quality evidence
         env:
           GH_TOKEN: ${{ github.token }}

@@ -850,7 +850,10 @@ def test_cold_producers_avoid_redundant_toolchain_setup_and_track_active_nsis_ca
     backend_steps = workflow["jobs"]["prepare-backend-cold"]["steps"]
     backend_by_name = {step["name"]: step for step in backend_steps}
     backend_names = [step["name"] for step in backend_steps]
-    build_steps = {step["name"]: step for step in workflow["jobs"]["build-windows"]["steps"]}
+    build_steps = workflow["jobs"]["build-windows"]["steps"]
+    build_by_name = {step["name"]: step for step in build_steps}
+    build_names = [step["name"] for step in build_steps]
+    qualification = yaml.safe_load(_read(".github/workflows/release-qualification.yml"))
 
     assert tauri_steps["Set up Python"]["with"]["python-version"] == "3.14"
 
@@ -864,5 +867,12 @@ def test_cold_producers_avoid_redundant_toolchain_setup_and_track_active_nsis_ca
         assert "steps.cold-rust-audio-cache.outputs.cache-hit != 'true'" in condition
         assert "steps.cold-rust-diarization-cache.outputs.cache-hit != 'true'" in condition
 
-    assert build_steps["Restore Tauri bundler cache"]["with"]["key"].endswith("-nsis-3.13")
-    assert build_steps["Save Tauri bundler cache"]["with"]["key"].endswith("-nsis-3.13")
+    assert build_by_name["Restore Tauri bundler cache"]["with"]["key"].endswith("-nsis-3.13")
+    assert build_by_name["Save Tauri bundler cache"]["with"]["key"].endswith("-nsis-3.13")
+    wait_index = build_names.index("Wait for attested cold products")
+    assert build_names.index("Restore Tauri bundler cache") < wait_index
+    assert build_names.index("Restore frontend dependency cache") < wait_index
+
+    for job_name in ("qualification-plan", "reuse-main-quality", "qualification-contract"):
+        steps = {step["name"]: step for step in qualification["jobs"][job_name]["steps"]}
+        assert steps["Set up Python"]["with"]["python-version"] == "3.14"

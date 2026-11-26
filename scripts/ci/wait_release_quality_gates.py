@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from scripts.ci.github_release_api import GitHubApi, GitHubApiError
 
 QUALITY_PREFIX = "Exact-revision quality gates / "
 JOB_PREFIXES = ("Exact-revision quality gates", "Reusable quality gates")
@@ -28,13 +32,44 @@ REQUIRED_JOB_SUFFIXES = (
 )
 REQUIRED_JOB_NAMES = tuple(QUALITY_PREFIX + suffix for suffix in REQUIRED_JOB_SUFFIXES)
 _PENDING_STATUSES = {"queued", "in_progress", "waiting", "pending", "requested"}
+_DEFAULT_SUBPROCESS_RUN = subprocess.run
+_API_CLIENT_LOCK = threading.Lock()
+_API_CLIENT: tuple[str, GitHubApi] | None = None
 
 
 class GateError(Exception):
     """A fixed diagnostic code, never an API response or subprocess stderr."""
 
 
+def _shared_github_api(token: str, timeout: float) -> GitHubApi:
+    global _API_CLIENT
+    with _API_CLIENT_LOCK:
+        if _API_CLIENT is None or _API_CLIENT[0] != token:
+            if _API_CLIENT is not None:
+                _API_CLIENT[1].close()
+            _API_CLIENT = (token, GitHubApi(token=token, timeout_sec=timeout))
+        client = _API_CLIENT[1]
+        client._timeout_sec = timeout
+        return client
+
+
 def gh_json(endpoint: str, timeout: float) -> dict[str, Any]:
+    token = (os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN") or "").strip()
+    if token and subprocess.run is _DEFAULT_SUBPROCESS_RUN:
+        normalized = endpoint if endpoint.startswith("/") else f"/{endpoint}"
+        if normalized.startswith("//") or "://" in endpoint:
+            raise GateError("github_request_failed")
+        try:
+            value = _shared_github_api(token, timeout).get_json(normalized)
+        except GitHubApiError as error:
+            if "did not return valid JSON" in str(error) or "did not return a JSON object" in str(error):
+                raise GateError("invalid_github_json") from None
+            raise GateError("github_request_failed") from None
+        except ValueError:
+            raise GateError("github_request_failed") from None
+        if not isinstance(value, dict):
+            raise GateError("invalid_github_json")
+        return value
     try:
         result = subprocess.run(
             [

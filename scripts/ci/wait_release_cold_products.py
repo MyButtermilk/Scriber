@@ -61,7 +61,7 @@ def wait_for_cold_products(
     head_sha: str,
     evidence_path: Path,
     timeout_seconds: float = 2400,
-    poll_seconds: float = 10,
+    poll_seconds: float = 5,
     api: Callable[[str, float], dict[str, Any]] = gh_json,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
