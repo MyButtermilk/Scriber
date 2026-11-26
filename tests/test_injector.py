@@ -110,10 +110,13 @@ def _final(text: str) -> TranscriptionFrame:
 def test_immediate_injection_keeps_the_event_loop_responsive_and_ordered():
     injector = TextInjector(inject_immediately=True)
     injected: list[tuple[str, str]] = []
+    enough_ticks = threading.Event()
 
     def slow_injection(text: str) -> None:
         # Clipboard leases, Office COM, and app pre-delays block like this.
-        time.sleep(0.15)
+        # Wait for the event-loop heartbeat to prove the loop stays responsive
+        # even under Windows' 15.6 ms timer granularity and xdist load.
+        enough_ticks.wait(timeout=1.0)
         injected.append((text, threading.current_thread().name))
 
     async def run() -> int:
@@ -124,6 +127,8 @@ def test_immediate_injection_keeps_the_event_loop_responsive_and_ordered():
             nonlocal ticks
             while not done.is_set():
                 ticks += 1
+                if ticks >= 10:
+                    enough_ticks.set()
                 await asyncio.sleep(0.01)
 
         beat = asyncio.create_task(heartbeat())
