@@ -31,8 +31,27 @@ def test_existing_cached_player_and_default_client_selection_remain_supported():
     client = INNERTUBE_CLIENTS["tv_downgraded"]["INNERTUBE_CONTEXT"]["client"]
     assert client["deviceMake"] == "Samsung"
     assert client["osName"] == "Tizen"
+    assert YoutubeIE._DEFAULT_PLAYER_JS_VARIANT == "tv"
+    assert YoutubeIE._DEFAULT_AUTHED_CLIENTS == ("tv_downgraded", "web_embedded", "web")
     assert QuickJSJCP._construct_stdin is _bounded_ejs_input
     provider = SimpleNamespace(_lib_script=SimpleNamespace(code=""), _core_script=SimpleNamespace(code=""))
     script = _bounded_ejs_input(provider, "cached", True, [])
     assert '"preprocessed_player": "cached"' in script
     assert '"output_preprocessed"' not in script
+
+
+def test_yt_dlp_ssl_context_uses_windows_native_truststore():
+    import sys
+
+    import truststore
+    from yt_dlp.networking import _helper as net_helper
+    from yt_dlp.networking import common as net_common
+
+    apply_compatibility_fixes()
+    assert net_helper.make_ssl_context is net_common.make_ssl_context
+    ctx = net_common.make_ssl_context(verify=True)
+    if sys.platform == "win32":
+        assert isinstance(ctx, truststore.SSLContext)
+        assert ctx.check_hostname is True
+    unverified = net_common.make_ssl_context(verify=False)
+    assert unverified.check_hostname is False

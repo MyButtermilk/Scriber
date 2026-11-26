@@ -29,8 +29,13 @@ disconnect revoke pending offers. Visitor cookies must not replace a sign-in or
 invalidate a private login. Bind automatic retries to both attempt and transcript
 identity. Queue observed video handoffs through acceptance and job creation.
 Distinguish browser/protocol timeouts from the five-minute sign-in timeout.
-`backend_runtime.yt_dlp_compat` corrects the pinned TV identity and disables
-unneeded EJS player-cache output without relaxing the hardened wrapper bounds.
+`backend_runtime.yt_dlp_compat` corrects the pinned TV identity (`#17723`),
+uses the `tv` default `player_js_variant` (`#18124`) and authenticated TV-first
+client order (`#18051`), enables Windows native `truststore` TLS verification
+for yt-dlp HTTPS requests, and disables unneeded EJS player-cache output
+without relaxing the hardened wrapper bounds. Caption extraction sets
+`ignore_no_formats_error: True` so available subtitles are never discarded when
+media format selection yields no playable streams.
 Validate accepted authentication with a real download before reporting sign-in recovery.
 
 ## Provider requests and media processing

@@ -524,6 +524,7 @@ async def download_youtube_transcript(
             "no_warnings": True,
             "noplaylist": True,
             "skip_download": True,
+            "ignore_no_formats_error": True,
             "socket_timeout": 15,
             "retries": 3,
             "fragment_retries": 3,

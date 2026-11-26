@@ -47,11 +47,13 @@ async def test_sign_in_recovery_uses_imported_private_jar_in_both_extractors(mon
     session = YouTubeSession()
     monkeypatch.setattr("src.youtube_session.youtube_session", session)
     calls = []
+    seen_options = []
 
     class FakeYoutubeDL:
         def __init__(self, options):
             self.cookiejar = CookieJar()
             self.options = options
+            seen_options.append(options)
 
         def __enter__(self):
             return self
@@ -87,6 +89,8 @@ async def test_sign_in_recovery_uses_imported_private_jar_in_both_extractors(mon
     session.connect("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tprivate-session")
     result = await run()
     assert result is not None if audio else result is None  # No captions correctly allows audio fallback.
+    if not audio:
+        assert seen_options[-1].get("ignore_no_formats_error") is True
     assert calls[-1][0].value == "private-session"
     calls[-1][0].value = "extractor-mutated"
     assert session.snapshot()[0].value == "private-session"

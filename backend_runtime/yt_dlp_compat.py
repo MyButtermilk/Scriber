@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import ssl
+import sys
+from collections.abc import Callable
 from typing import Any
+
+_ORIGINAL_MAKE_SSL_CONTEXT: Callable[..., Any] | None = None
 
 
 def _bounded_ejs_input(self: Any, player: str, preprocessed: bool, requests: list[Any], /) -> str:
@@ -23,9 +30,74 @@ def _bounded_ejs_input(self: Any, player: str, preprocessed: bool, requests: lis
     )
 
 
+def _make_native_ssl_context(
+    verify: bool = True,
+    client_certificate: str | None = None,
+    client_certificate_key: str | None = None,
+    client_certificate_password: Any = None,
+    legacy_support: bool = False,
+    use_certifi: bool = True,
+) -> Any:
+    assert _ORIGINAL_MAKE_SSL_CONTEXT is not None
+    if not verify or sys.platform != "win32":
+        return _ORIGINAL_MAKE_SSL_CONTEXT(
+            verify=verify,
+            client_certificate=client_certificate,
+            client_certificate_key=client_certificate_key,
+            client_certificate_password=client_certificate_password,
+            legacy_support=legacy_support,
+            use_certifi=use_certifi,
+        )
+    try:
+        import truststore
+    except ImportError:
+        return _ORIGINAL_MAKE_SSL_CONTEXT(
+            verify=verify,
+            client_certificate=client_certificate,
+            client_certificate_key=client_certificate_key,
+            client_certificate_password=client_certificate_password,
+            legacy_support=legacy_support,
+            use_certifi=use_certifi,
+        )
+
+    from yt_dlp.networking.exceptions import RequestError
+
+    # Use the OS certificate policy, including managed Windows trust roots,
+    # while preserving yt-dlp's ALPN, cipher suite, and TLS 1.2 baseline.
+    context: Any = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    if hasattr(context, "keylog_filename"):
+        context.keylog_filename = os.environ.get("SSLKEYLOGFILE") or None
+    with contextlib.suppress(NotImplementedError):
+        context.set_alpn_protocols(["http/1.1"])
+    if legacy_support:
+        context.options |= 4  # SSL_OP_LEGACY_SERVER_CONNECT
+        context.set_ciphers("DEFAULT")
+    elif ssl.OPENSSL_VERSION_INFO >= (1, 1, 1) and not ssl.OPENSSL_VERSION.startswith("LibreSSL"):
+        context.set_ciphers("@SECLEVEL=2:ECDH+AESGCM:ECDH+CHACHA20:ECDH+AES:DHE+AES:!aNULL:!eNULL:!aDSS:!SHA1:!AESCCM")
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+    if client_certificate:
+        try:
+            context.load_cert_chain(
+                client_certificate,
+                keyfile=client_certificate_key,
+                password=client_certificate_password,
+            )
+        except ssl.SSLError as exc:
+            raise RequestError("Unable to load client certificate") from exc
+        if getattr(context, "post_handshake_auth", None) is not None:
+            context.post_handshake_auth = True
+    return context
+
+
 def apply_compatibility_fixes() -> None:
+    global _ORIGINAL_MAKE_SSL_CONTEXT
     from yt_dlp.extractor.youtube._base import INNERTUBE_CLIENTS
+    from yt_dlp.extractor.youtube._video import YoutubeIE
     from yt_dlp.extractor.youtube.jsc._builtin.quickjs import QuickJSJCP
+    from yt_dlp.networking import _helper as net_helper
+    from yt_dlp.networking import common as net_common
     from yt_dlp.version import __version__
 
     if __version__ != "2026.08.19":
@@ -41,4 +113,18 @@ def apply_compatibility_fixes() -> None:
         osName="Tizen",
         osVersion="2.4.0",
     )
+    # Upstream yt-dlp/yt-dlp#18124 (fixes #18123): YouTube's November 2026
+    # `main` player variants trigger a preprocessing TypeError in EJS 0.8.0
+    # (`a.addOnDisposeCallback is not a function`), leaving zero playable
+    # formats. Defaulting `player_js_variant` to `tv` restores n-challenge
+    # solving without changing the pinned runtime or QuickJS wrapper bounds.
+    YoutubeIE._DEFAULT_PLAYER_JS_VARIANT = "tv"
+    # Upstream yt-dlp/yt-dlp#18051: prioritize the TV client ahead of
+    # `web_embedded` for authenticated sessions.
+    YoutubeIE._DEFAULT_AUTHED_CLIENTS = ("tv_downgraded", "web_embedded", "web")
     QuickJSJCP._construct_stdin = _bounded_ejs_input
+
+    if _ORIGINAL_MAKE_SSL_CONTEXT is None:
+        _ORIGINAL_MAKE_SSL_CONTEXT = net_helper.make_ssl_context
+    net_helper.make_ssl_context = _make_native_ssl_context
+    net_common.make_ssl_context = _make_native_ssl_context
