@@ -822,9 +822,6 @@ if (-not (Test-Path $InstallerPath)) {
     throw "Missing installer: $InstallerPath"
 }
 $InstallerPath = (Resolve-Path $InstallerPath).Path
-$installerSha256Before = (Get-FileHash -LiteralPath $InstallerPath -Algorithm SHA256).Hash.ToLowerInvariant()
-$totalSmokeStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-$phaseTimingsMs = [ordered]@{}
 if ($LegacyDataDir) {
     if (-not (Test-Path -LiteralPath $LegacyDataDir -PathType Container)) {
         throw "Missing LegacyDataDir: $LegacyDataDir"
@@ -863,6 +860,13 @@ $meetingResources = $null
 $localPolishingRuntime = $null
 $cleanupCompleted = $false
 try {
+    $totalSmokeStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $phaseTimingsMs = [ordered]@{}
+    $installerSha256Before = if (Test-Path -LiteralPath $InstallerPath -PathType Leaf) {
+        (Get-FileHash -LiteralPath $InstallerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    } else {
+        $null
+    }
     $cleanPhaseWatch = [System.Diagnostics.Stopwatch]::StartNew()
     Invoke-ProcessChecked -FilePath $InstallerPath -ArgumentList @("/S", "/D=$InstallDir") -Label "Silent installer"
     $appExe = Resolve-InstalledAppExe -Root $InstallDir
@@ -941,9 +945,11 @@ try {
         $mediaPhaseWatch.Stop()
         $phaseTimingsMs["mediaPreparation"] = [int64]$mediaPhaseWatch.ElapsedMilliseconds
     }
-    $installerSha256After = (Get-FileHash -LiteralPath $InstallerPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($installerSha256After -cne $installerSha256Before) {
-        throw "Installer bytes changed during smoke verification: $InstallerPath"
+    if ($null -ne $installerSha256Before) {
+        $installerSha256After = (Get-FileHash -LiteralPath $InstallerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($installerSha256After -cne $installerSha256Before) {
+            throw "Installer bytes changed during smoke verification: $InstallerPath"
+        }
     }
     $smokeOkProperty = if ($smoke) {
         $smoke.PSObject.Properties |
