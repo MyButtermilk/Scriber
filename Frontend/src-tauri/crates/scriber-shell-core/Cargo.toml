@@ -5,6 +5,18 @@ description = "Scriber desktop shell core (context-independent Tauri logic)"
 authors = ["Scriber"]
 edition = "2021"
 
+[features]
+default = []
+# Codec lab gates. These names intentionally carry no dependency yet: a
+# candidate is not part of the installer until measured, pinned, and promoted.
+codec-experimental-flacenc-stable = []
+codec-experimental-flacenc-nightly = []
+codec-experimental-rezin-flac = []
+codec-experimental-ruopus = []
+codec-experimental-libopusenc = []
+codec-experimental-mp3lame = []
+codec-experimental-shine = []
+
 [lib]
 name = "scriber_shell_core"
 path = "../../src/lib.rs"

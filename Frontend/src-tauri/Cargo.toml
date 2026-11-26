@@ -14,13 +14,13 @@ default-run = "scriber-desktop"
 default = []
 # Codec lab gates. These names intentionally carry no dependency yet: a
 # candidate is not part of the installer until measured, pinned, and promoted.
-codec-experimental-flacenc-stable = []
-codec-experimental-flacenc-nightly = []
-codec-experimental-rezin-flac = []
-codec-experimental-ruopus = []
-codec-experimental-libopusenc = []
-codec-experimental-mp3lame = []
-codec-experimental-shine = []
+codec-experimental-flacenc-stable = ["scriber-shell-core/codec-experimental-flacenc-stable"]
+codec-experimental-flacenc-nightly = ["scriber-shell-core/codec-experimental-flacenc-nightly"]
+codec-experimental-rezin-flac = ["scriber-shell-core/codec-experimental-rezin-flac"]
+codec-experimental-ruopus = ["scriber-shell-core/codec-experimental-ruopus"]
+codec-experimental-libopusenc = ["scriber-shell-core/codec-experimental-libopusenc"]
+codec-experimental-mp3lame = ["scriber-shell-core/codec-experimental-mp3lame"]
+codec-experimental-shine = ["scriber-shell-core/codec-experimental-shine"]
 
 [lib]
 name = "scriber_desktop_lib"
